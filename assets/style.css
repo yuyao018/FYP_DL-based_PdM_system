@@ -1,0 +1,38 @@
+/* Global Reset */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #0a1628 !important;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+input::placeholder {
+  color: rgba(120, 160, 210, 0.4) !important;
+}
+
+input:focus {
+  outline: none;
+}
+
+/* Button Hover Effect */
+#signin-btn:hover {
+  background: linear-gradient(90deg, #1e7de8 0%, #3a95ff 100%) !important;
+  box-shadow: 0 6px 28px rgba(42, 133, 240, 0.5) !important;
+  transform: translateY(-1px);
+}
+
+/* Role Selector Hover Effect */
+#role-user:hover,
+#role-admin:hover {
+  opacity: 0.85;
+}
+
+/* Fix SVG icon container overflow and alignment */
+.dcc-markdown svg {
+  vertical-align: middle !important;
+  display: inline-block !important;
+}

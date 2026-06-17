@@ -1,0 +1,4 @@
+dash
+dash-bootstrap-components
+supabase
+python-dotenv
