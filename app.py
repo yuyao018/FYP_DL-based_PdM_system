@@ -3,6 +3,28 @@ from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
+import os
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Supabase client (with fallback for development without credentials)
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+supabase: Client | None = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("[OK] Successfully connected to Supabase!")
+    except Exception as e:
+        print(f"[WARN] Error connecting to Supabase: {e}")
+        print("   Note: Make sure your .env file is set up correctly!")
+else:
+    print("[WARN] Supabase credentials not found in .env file")
+    print("   The app will run, but login will be disabled until you add SUPABASE_URL and SUPABASE_KEY to .env")
 
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
@@ -28,6 +50,7 @@ def display_page(pathname):
 # Login callback
 @app.callback(
     Output("url", "pathname"),
+    Output("login-status", "children"),
     Input("signin-btn", "n_clicks"),
     State("username-input", "value"),
     State("password-input", "value"),
@@ -35,8 +58,22 @@ def display_page(pathname):
 )
 def handle_login(n_clicks, username, password):
     if not username or not password:
-        return '/'
-    return '/dashboard'
+        return "/", html.Span("Please enter your credentials.",
+                              style={"color": "#ff6b6b", "fontSize": "13px"})
+    
+    # Check if Supabase is connected
+    if not supabase:
+        return "/", html.Span("Supabase not connected! Please check your .env file.",
+                              style={"color": "#ff6b6b", "fontSize": "13px"})
+    
+    try:
+        # Try to sign in with email/password (assuming username is email here)
+        response = supabase.auth.sign_in_with_password({"email": username, "password": password})
+        return "/dashboard", html.Span("Login successful!",
+                                       style={"color": "#4aff9e", "fontSize": "13px"})
+    except Exception as e:
+        return "/", html.Span(f"Login failed: {str(e)}",
+                              style={"color": "#ff6b6b", "fontSize": "13px"})
 
 # Logout callback
 @app.callback(
@@ -45,6 +82,11 @@ def handle_login(n_clicks, username, password):
     prevent_initial_call=True,
 )
 def handle_logout(n_clicks):
+    if supabase:
+        try:
+            supabase.auth.sign_out()
+        except:
+            pass
     return '/'
 
 # Role toggle callback
@@ -73,21 +115,6 @@ def toggle_role(user_clicks, admin_clicks):
     if active_id == "role-admin":
         return inactive_style, active_style
     return active_style, inactive_style
-
-# Login status callback
-@app.callback(
-    Output("login-status", "children"),
-    Input("signin-btn", "n_clicks"),
-    State("username-input", "value"),
-    State("password-input", "value"),
-    prevent_initial_call=True,
-)
-def update_login_status(n_clicks, username, password):
-    if not username or not password:
-        return html.Span("Please enter your credentials.",
-                         style={"color": "#ff6b6b", "fontSize": "13px"})
-    return html.Span(f"✓ Authenticating as {username}…",
-                     style={"color": "#4aff9e", "fontSize": "13px"})
 
 
 if __name__ == "__main__":
