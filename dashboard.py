@@ -75,21 +75,37 @@ def logout_icon():
     return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}', style={'width': '28px', 'height': '28px'})
 
 
-def create_dashboard_layout():
-    engine_data = [
-        {"id": "01", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "02", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "03", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "04", "status": "warning", "degradation": 43, "rul": 30},
-        {"id": "05", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "06", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "07", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "08", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "09", "status": "critical", "degradation": 15, "rul": 20},
-        {"id": "10", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "11", "status": "healthy", "degradation": 80, "rul": 120},
-        {"id": "12", "status": "healthy", "degradation": 80, "rul": 120},
-    ]
+def create_dashboard_layout(supabase):
+    engine_data = []
+    try:
+        if supabase:
+            response = supabase.table("engines").select("*").execute()
+            print(f"[DEBUG] Raw rows: {response.data}")
+
+            for engine in (response.data or []):
+                raw_status = (engine.get("condition_status") or "healthy").lower().strip()
+                if raw_status not in ("healthy", "warning", "critical"):
+                    raw_status = "healthy"
+
+                current_cycle = engine.get("current_cycle") or 0
+                # Derive a rough RUL from current_cycle (adjust max_life to your dataset)
+                max_life = 100
+                rul = max(0, max_life - current_cycle)
+                degradation = max(0, min(100, int((rul / max_life) * 100)))
+
+                engine_data.append({
+                    "db_id":       engine.get("id"),
+                    "id":          str(engine.get("engine_id", "?")).zfill(2),
+                    "status":      raw_status,
+                    "degradation": degradation,
+                    "rul":         rul,
+                })
+
+            print(f"[DEBUG] Parsed engine_data: {engine_data}")
+
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] {traceback.format_exc()}")
 
     status_colors = {
         "healthy": {"bg": "rgba(0, 255, 100, 0.15)", "border": "#00ff64", "text": "#00ff64"},
@@ -100,55 +116,82 @@ def create_dashboard_layout():
     def engine_card(engine):
         colors = status_colors[engine["status"]]
         return html.Div(
-            style={
-                "background": "#101a2f",
-                "border": "1px solid rgba(74, 158, 255, 0.2)",
-                "borderRadius": "12px",
-                "padding": "16px",
-                "display": "flex",
-                "flexDirection": "column",
-                "gap": "8px",
-            },
-            children=[
-                html.Div(
-                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
-                    children=[
-                        html.Div(
-                            style={"display": "flex", "alignItems": "center", "gap": "8px"},
-                            children=[
-                                gear_icon(),
-                                html.Span(f"# ENGINE-{engine['id']}", style={"color": "white", "fontWeight": "700", "fontSize": "14px"})
-                            ]
-                        ),
-                        html.Span(
-                            engine["status"].upper(),
-                            style={
-                                "background": colors["bg"],
-                                "color": colors["text"],
-                                "border": f"1px solid {colors['border']}",
-                                "borderRadius": "8px",
-                                "padding": "4px 10px",
-                                "fontSize": "10px",
-                                "fontWeight": "700",
-                            }
-                        )
-                    ]
-                ),
-                html.Div(
-                    style={"display": "flex", "justifyContent": "space-between"},
-                    children=[
-                        html.Span("Degradation", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
-                        html.Span(f"{engine['degradation']}%", style={"color": colors["text"], "fontWeight": "700", "fontSize": "14px"})
-                    ]
-                ),
-                html.Div(
-                    style={"display": "flex", "justifyContent": "space-between"},
-                    children=[
-                        html.Span("Predicted cycles left", style={"color": "rgba(74, 158, 255, 0.7)", "fontSize": "11px"}),
-                        html.Span(f"{engine['rul']}", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "14px"})
-                    ]
-                ),
-            ]
+            # Make the card a clickable link
+            dcc.Link(
+                href=f"/overview/{engine['db_id']}",
+                style={"textDecoration": "none"},
+                children=[
+                    html.Div(
+                        style={
+                            "background": "#101a2f",
+                            "border": "1px solid rgba(74, 158, 255, 0.2)",
+                            "borderRadius": "12px",
+                            "padding": "16px",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "8px",
+                            "cursor": "pointer",
+                            "transition": "border 0.2s, background 0.2s",
+                        },
+                        id={"type": "engine-card", "index": engine["db_id"]},
+                        children=[
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+                                children=[
+                                    html.Div(
+                                        style={"display": "flex", "alignItems": "center", "gap": "8px"},
+                                        children=[
+                                            gear_icon(),
+                                            html.Span(f"# ENGINE-{engine['id']}", style={"color": "white", "fontWeight": "700", "fontSize": "14px"})
+                                        ]
+                                    ),
+                                    html.Span(
+                                        engine["status"].upper(),
+                                        style={
+                                            "background": colors["bg"],
+                                            "color": colors["text"],
+                                            "border": f"1px solid {colors['border']}",
+                                            "borderRadius": "8px",
+                                            "padding": "4px 10px",
+                                            "fontSize": "10px",
+                                            "fontWeight": "700",
+                                        }
+                                    )
+                                ]
+                            ),
+                            html.Div(
+                                style={"display": "flex", "justifyContent": "space-between"},
+                                children=[
+                                    html.Span("Degradation", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
+                                    html.Span(f"{engine['degradation']}%", style={"color": colors["text"], "fontWeight": "700", "fontSize": "14px"})
+                                ]
+                            ),
+                            html.Div(
+                                style={"display": "flex", "justifyContent": "space-between"},
+                                children=[
+                                    html.Span("Predicted cycles left", style={"color": "rgba(74, 158, 255, 0.7)", "fontSize": "11px"}),
+                                    html.Span(f"{engine['rul']}", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "14px"})
+                                ]
+                            ),
+                            # Subtle "view details" hint at the bottom
+                            html.Div(
+                                style={
+                                    "borderTop": "1px solid rgba(74,158,255,0.15)",
+                                    "paddingTop": "8px",
+                                    "display": "flex",
+                                    "justifyContent": "flex-end",
+                                    "alignItems": "center",
+                                    "gap": "4px",
+                                },
+                                children=[
+                                    html.Span("View details", style={"color": "rgba(74,158,255,0.6)", "fontSize": "11px"}),
+                                    html.Span("→", style={"color": "rgba(74,158,255,0.6)", "fontSize": "11px"}),
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
         )
 
     return html.Div(
@@ -319,7 +362,18 @@ def create_dashboard_layout():
                                     ),
                                     html.Div(
                                         style={"display": "grid", "gridTemplateColumns": "repeat(3, 1fr)", "gap": "16px"},
-                                        children=[engine_card(engine) for engine in engine_data]
+                                        children=[engine_card(engine) for engine in engine_data] if engine_data else [
+                                            html.Div(
+                                                "No data.",
+                                                style={
+                                                    "color": "rgba(255,255,255,0.7)",
+                                                    "fontSize": "16px",
+                                                    "textAlign": "center",
+                                                    "padding": "40px 0",
+                                                    "gridColumn": "1 / -1"
+                                                }
+                                            )
+                                        ]
                                     )
                                 ]
                             ),
