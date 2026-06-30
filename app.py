@@ -94,22 +94,50 @@ def toggle_sidebar(n, is_open):
 )
 def handle_login(n_clicks, username, password):
     if not username or not password:
-        return "/", html.Span("Please enter your credentials.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"})
-    
-    # Check if Supabase is connected
+        return "/", html.Span(
+            "Please enter your credentials.",
+            style={"color": "#ff6b6b", "fontSize": "13px"}
+        )
+
     if not supabase:
-        return "/", html.Span("Supabase not connected! Please check your .env file.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"})
-    
+        return "/", html.Span(
+            "Supabase not connected. Check your .env file.",
+            style={"color": "#ff6b6b", "fontSize": "13px"}
+        )
+
     try:
-        # Try to sign in with email/password (assuming username is email here)
-        response = supabase.auth.sign_in_with_password({"email": username, "password": password})
-        return "/dashboard", html.Span("Login successful!",
-                                       style={"color": "#4aff9e", "fontSize": "13px"})
+        # Call RPC function to verify username + password
+        resp = supabase.rpc("verify_login", {
+            "p_username": username,
+            "p_password": password,
+        }).execute()
+
+        if not resp.data:
+            return "/", html.Span(
+                "Invalid username or password.",
+                style={"color": "#ff6b6b", "fontSize": "13px"}
+            )
+
+        user = resp.data[0]
+
+        # Update last_login_at
+        supabase.table("users") \
+            .update({"last_login_at": "now()"}) \
+            .eq("username", username) \
+            .execute()
+
+        print(f"[OK] Login: {user['username']} ({user['role']})")
+        return "/dashboard", html.Span(
+            "Login successful!",
+            style={"color": "#4aff9e", "fontSize": "13px"}
+        )
+
     except Exception as e:
-        return "/", html.Span(f"Login failed: {str(e)}",
-                              style={"color": "#ff6b6b", "fontSize": "13px"})
+        print(f"[ERROR] Login: {e}")
+        return "/", html.Span(
+            "Login failed. Please try again.",
+            style={"color": "#ff6b6b", "fontSize": "13px"}
+        )
 
 # Logout callback
 @app.callback(
@@ -121,9 +149,10 @@ def handle_logout(n_clicks):
     if supabase:
         try:
             supabase.auth.sign_out()
-        except:
-            pass
-    return '/'
+            print("[OK] User signed out")
+        except Exception as e:
+            print(f"[WARN] Sign out error: {e}")
+    return "/"
 
 # Role toggle callback
 @app.callback(
