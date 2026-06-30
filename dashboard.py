@@ -79,9 +79,22 @@ def create_dashboard_layout(supabase):
     engine_data = []
     try:
         if supabase:
-            response = supabase.table("engines").select("*").execute()
-            print(f"[DEBUG] Raw rows: {response.data}")
+            response = supabase.table("engines").select("*", count="exact").execute()
+            total_count = response.count
 
+            healthy_res = supabase.table("engines").select("*", count="exact").eq("condition_status", "healthy").execute()
+            healthy_count = healthy_res.count or 0
+
+            warning_res = supabase.table("engines").select("*", count="exact").eq("condition_status", "warning").execute()
+            warning_count = warning_res.count or 0
+
+            critical_res = supabase.table("engines").select("*", count="exact").eq("condition_status", "critical").execute()
+            critical_count = critical_res.count or 0
+
+            alert_res = supabase.table("alert_logs").select("*", count="exact").execute()
+            alert_count = alert_res.count
+
+            print(f"[DEBUG] Raw rows: {response.data}")
             for engine in (response.data or []):
                 raw_status = (engine.get("condition_status") or "healthy").lower().strip()
                 if raw_status not in ("healthy", "warning", "critical"):
@@ -229,6 +242,7 @@ def create_dashboard_layout(supabase):
                         style={"display": "flex", "alignItems": "center", "gap": "20px"},
                         children=[
                             html.Div(
+                                id="user-control-btn",
                                 style={
                                     "background": "rgba(74, 158, 255, 0.15)",
                                     "border": "1px solid rgba(74, 158, 255, 0.5)",
@@ -237,6 +251,7 @@ def create_dashboard_layout(supabase):
                                     "display": "flex",
                                     "alignItems": "center",
                                     "gap": "8px",
+                                    "cursor": "pointer",
                                 },
                                 children=[
                                     html.Span("User Control", style={"color": "#a8d4ff", "fontSize": "14px", "fontWeight": "600"})
@@ -246,7 +261,7 @@ def create_dashboard_layout(supabase):
                                 style={"display": "flex", "alignItems": "center", "gap": "8px"},
                                 children=[
                                     bell_icon(),
-                                    html.Span("2 alerts", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "700"})
+                                    html.Span(f"{str(alert_count)} alerts", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "700"})
                                 ]
                             ),
                             html.Div(
@@ -281,7 +296,7 @@ def create_dashboard_layout(supabase):
                                 },
                                 children=[
                                     html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span("3", style={"color": "white", "fontSize": "36px", "fontWeight": "700"})
+                                    html.Span(str(total_count), style={"color": "white", "fontSize": "36px", "fontWeight": "700"})
                                 ]
                             ),
                             html.Div(
@@ -298,7 +313,7 @@ def create_dashboard_layout(supabase):
                                 },
                                 children=[
                                     html.Span("HEALTHY", style={"color": "#00ff64", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span("1", style={"color": "#00ff64", "fontSize": "36px", "fontWeight": "700"})
+                                    html.Span(str(healthy_count), style={"color": "#00ff64", "fontSize": "36px", "fontWeight": "700"})
                                 ]
                             ),
                             html.Div(
@@ -315,7 +330,7 @@ def create_dashboard_layout(supabase):
                                 },
                                 children=[
                                     html.Span("DEGRADING", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span("1", style={"color": "#ffd93d", "fontSize": "36px", "fontWeight": "700"})
+                                    html.Span(str(warning_count), style={"color": "#ffd93d", "fontSize": "36px", "fontWeight": "700"})
                                 ]
                             ),
                             html.Div(
@@ -332,7 +347,7 @@ def create_dashboard_layout(supabase):
                                 },
                                 children=[
                                     html.Span("CRITICAL", style={"color": "#ff4d4d", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span("1", style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"})
+                                    html.Span(str(critical_count), style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"})
                                 ]
                             )
                         ]

@@ -4,6 +4,7 @@ import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
 from overview import create_overview_layout
+from sensor_trends import create_sensor_trends_layout, register_sensor_callbacks
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -30,6 +31,7 @@ else:
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
+register_sensor_callbacks(app)
 
 # Main app layout with routing
 app.layout = html.Div([
@@ -49,6 +51,11 @@ def display_page(pathname):
         return create_overview_layout(supabase, engine_db_id=int(engine_db_id))
     elif pathname == "/dashboard":
         return create_dashboard_layout(supabase)
+    elif pathname and pathname.startswith("/sensor-trends/"):
+        engine_db_id = pathname.split("/")[-1]
+        return create_sensor_trends_layout(supabase, engine_db_id=int(engine_db_id))
+    elif pathname == "/sensor-trends":
+        return create_sensor_trends_layout(supabase)
     else:
         return create_login_layout()
 
@@ -65,7 +72,7 @@ def toggle_sidebar(n, is_open):
 
     base = {
         "flexShrink": "0",
-        "minHeight": "100vh",
+        "minHeight": "80vh",
         "background": "#0d1e3a",
         "borderRight": "1px solid rgba(74,158,255,0.15)",
         "display": "flex",
