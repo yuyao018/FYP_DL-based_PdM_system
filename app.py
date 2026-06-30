@@ -62,26 +62,23 @@ def display_page(pathname):
 )
 def toggle_sidebar(n, is_open):
     is_open = not is_open
+
+    base = {
+        "flexShrink": "0",
+        "minHeight": "100vh",
+        "background": "#0d1e3a",
+        "borderRight": "1px solid rgba(74,158,255,0.15)",
+        "display": "flex",
+        "flexDirection": "column",
+        "padding": "0",
+        "overflow": "hidden",
+        "transition": "width 0.3s ease",
+    }
+
     if is_open:
-        style = {
-            "width": "210px",          # match overview.py's sidebar width
-            "flexShrink": "0",
-            "minHeight": "100vh",
-            "background": "#0d1e3a",
-            "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex",
-            "flexDirection": "column",
-            "overflow": "hidden",
-            "transition": "width 0.3s",
-        }
+        return {**base, "width": "210px"}, True
     else:
-        style = {
-            "width": "0px",
-            "overflow": "hidden",
-            "padding": "0",
-            "transition": "width 0.3s",
-        }
-    return style, is_open
+        return {**base, "width": "0px"}, False
 
 # Login callback
 @app.callback(

@@ -223,7 +223,7 @@ def build_shap_chart():
 #  SIDEBAR
 # ─────────────────────────────────────────────
 
-def build_sidebar():
+def build_sidebar(active_page="overview"):
     nav_item_base = {
         "display": "flex",
         "alignItems": "center",
@@ -238,9 +238,10 @@ def build_sidebar():
         "transition": "background 0.2s",
     }
 
-    def nav_link(icon_fn, label, active=False, href="#"):
+    def nav_link(icon_fn, label, page_key, href="/"):
+        is_active = active_page == page_key
         style = {**nav_item_base}
-        if active:
+        if is_active:
             style.update({
                 "background": "rgba(74,158,255,0.18)",
                 "color": "white",
@@ -267,46 +268,67 @@ def build_sidebar():
             "display": "flex",
             "flexDirection": "column",
             "padding": "0",
+            "overflow": "hidden",
+            "transition": "width 0.3s ease",
         },
         children=[
-            # Logo / top brand area
-            html.Div(
-                style={
-                    "padding": "22px 20px 18px",
-                    "borderBottom": "1px solid rgba(74,158,255,0.12)",
-                },
+            # ── Dashboard top link ──
+            html.A(
+                href="/dashboard",
+                style={"textDecoration": "none"},
                 children=[
                     html.Div(
-                        style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                        style={
+                            "padding": "20px 20px 18px",
+                            "borderBottom": "1px solid rgba(74,158,255,0.12)",
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "10px",
+                            "cursor": "pointer",
+                        },
                         children=[
                             icon_dashboard(),
-                            html.Span("Dashboard", style={"color": "#a8d4ff", "fontWeight": "700", "fontSize": "15px"}),
+                            html.Span(
+                                "Dashboard",
+                                style={
+                                    "color": "#a8d4ff",
+                                    "fontWeight": "700",
+                                    "fontSize": "15px",
+                                    "whiteSpace": "nowrap",
+                                }
+                            ),
                         ]
                     )
                 ]
             ),
 
-            # Navigation section
+            # ── Navigation links ──
             html.Div(
                 style={"padding": "18px 12px 0"},
                 children=[
                     html.Div(
                         "NAVIGATION",
-                        style={"color": "rgba(168,212,255,0.5)", "fontSize": "10px",
-                               "fontWeight": "700", "letterSpacing": "1.5px",
-                               "padding": "0 6px", "marginBottom": "10px"}
+                        style={
+                            "color": "rgba(168,212,255,0.5)",
+                            "fontSize": "10px",
+                            "fontWeight": "700",
+                            "letterSpacing": "1.5px",
+                            "padding": "0 6px",
+                            "marginBottom": "10px",
+                            "whiteSpace": "nowrap",
+                        }
                     ),
-                    nav_link(icon_overview, "Overview", active=True),
-                    nav_link(icon_sensor, "Sensor Trends"),
-                    nav_link(icon_shap, "Explainability AI"),
-                    nav_link(icon_alert, "Alert Log"),
+                    nav_link(icon_overview, "Overview",        "overview",     "/overview"),
+                    nav_link(icon_sensor,   "Sensor Trends",   "sensor",       "/sensor-trends"),
+                    nav_link(icon_shap,     "Explainability AI","explainability","/explainability"),
+                    nav_link(icon_alert,    "Alert Log",       "alert",        "/alert-log"),
                 ]
             ),
 
-            # Spacer
+            # ── Spacer ──
             html.Div(style={"flex": "1"}),
 
-            # Logged-in user
+            # ── Logged-in user + logout ──
             html.Div(
                 style={
                     "padding": "16px 20px",
@@ -314,19 +336,48 @@ def build_sidebar():
                     "display": "flex",
                     "alignItems": "center",
                     "justifyContent": "space-between",
+                    "gap": "8px",
                 },
                 children=[
-                    html.Div(children=[
-                        html.Div("LOGGED IN AS", style={"color": "rgba(168,212,255,0.5)",
-                                                         "fontSize": "9px", "fontWeight": "700",
-                                                         "letterSpacing": "1.2px", "marginBottom": "2px"}),
-                        html.Div("admin_ds", style={"color": "white", "fontWeight": "700", "fontSize": "13px"}),
-                        html.Div("Administrator", style={"color": "rgba(168,212,255,0.6)", "fontSize": "11px"}),
-                    ]),
+                    html.Div(
+                        style={"minWidth": "0"},
+                        children=[
+                            html.Div(
+                                "LOGGED IN AS",
+                                style={
+                                    "color": "rgba(168,212,255,0.5)",
+                                    "fontSize": "9px",
+                                    "fontWeight": "700",
+                                    "letterSpacing": "1.2px",
+                                    "marginBottom": "2px",
+                                    "whiteSpace": "nowrap",
+                                }
+                            ),
+                            html.Div(
+                                "admin_ds",
+                                style={
+                                    "color": "white",
+                                    "fontWeight": "700",
+                                    "fontSize": "13px",
+                                    "whiteSpace": "nowrap",
+                                    "overflow": "hidden",
+                                    "textOverflow": "ellipsis",
+                                }
+                            ),
+                            html.Div(
+                                "Administrator",
+                                style={
+                                    "color": "rgba(168,212,255,0.6)",
+                                    "fontSize": "11px",
+                                    "whiteSpace": "nowrap",
+                                }
+                            ),
+                        ]
+                    ),
                     html.Div(
                         id="logout-btn",
                         n_clicks=0,
-                        style={"cursor": "pointer"},
+                        style={"cursor": "pointer", "flexShrink": "0"},
                         children=[icon_logout()]
                     )
                 ]
@@ -432,7 +483,6 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
         "#ff4d4d"
     )
 
-    # Degradation status label
     if degradation >= 70:
         degrade_label = ("No Degradation Detected", "#00c875", "rgba(0,200,117,0.12)", "#00c875")
     elif degradation >= 40:
@@ -449,15 +499,57 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
     ]
 
     return html.Div(
-        style={"flex": "1", "display": "flex", "flexDirection": "column", "minWidth": "0"},
+        style={
+            "flex": "1",
+            "display": "flex",
+            "flexDirection": "column",
+            "minWidth": "0",
+            "height": "100vh",       # ← full viewport height
+            "overflow": "hidden",    # ← prevent outer scroll
+        },
         children=[
-            build_topbar(),
-
-            # Scrollable content area
+            # ── Fixed topbar (stays at top always) ──
             html.Div(
-                style={"flex": "1", "overflowY": "auto", "padding": "24px 28px"},
+                style={
+                    "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
+                    "borderBottom": "1px solid rgba(74,158,255,0.18)",
+                    "padding": "0 28px",
+                    "height": "60px",
+                    "minHeight": "60px",
+                    "display": "flex",
+                    "alignItems": "center",
+                    "justifyContent": "space-between",
+                    "flexShrink": "0",   # ← never shrink
+                    "zIndex": "100",
+                },
                 children=[
+                    html.H1(
+                        "ENGINE PROGNOSTIC MONITORING SYSTEM",
+                        style={
+                            "margin": "0",
+                            "fontSize": "18px",
+                            "fontWeight": "700",
+                            "color": "white",
+                            "letterSpacing": "1.2px",
+                        }
+                    ),
+                    html.Div(
+                        id="sidebar-toggle",
+                        n_clicks=0,
+                        style={"cursor": "pointer"},
+                        children=[icon_sidebar()]
+                    ),
+                ]
+            ),
 
+            # ── Scrollable content below topbar ──
+            html.Div(
+                style={
+                    "flex": "1",
+                    "overflowY": "auto",   # ← only this scrolls
+                    "padding": "24px 28px",
+                },
+                children=[
                     # Engine title row
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "gap": "14px", "marginBottom": "22px"},
@@ -470,12 +562,10 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                         ]
                     ),
 
-                    # ── Row 1: RUL Chart + RUL Panel ──
+                    # Row 1: RUL Chart + RUL Panel
                     html.Div(
                         style={"display": "flex", "gap": "20px", "marginBottom": "20px"},
                         children=[
-
-                            # Predicted RUL chart card
                             card(
                                 style_extra={"flex": "3"},
                                 children=[
@@ -487,25 +577,19 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                     )
                                 ]
                             ),
-
-                            # RUL summary card
                             card(
                                 style_extra={"flex": "1", "display": "flex", "flexDirection": "column",
                                              "alignItems": "center", "justifyContent": "center", "gap": "16px"},
                                 children=[
-                                    html.Div(
-                                        "Remaining Useful Life",
-                                        style={"color": "#a8d4ff", "fontSize": "13px", "fontWeight": "600",
-                                               "textAlign": "center", "letterSpacing": "0.4px"}
-                                    ),
+                                    html.Div("Remaining Useful Life",
+                                             style={"color": "#a8d4ff", "fontSize": "13px", "fontWeight": "600",
+                                                    "textAlign": "center", "letterSpacing": "0.4px"}),
                                     html.Div(
                                         style={"textAlign": "center"},
                                         children=[
-                                            html.Div(
-                                                str(rul),
-                                                style={"color": "#00c875", "fontSize": "58px",
-                                                       "fontWeight": "800", "lineHeight": "1"}
-                                            ),
+                                            html.Div(str(rul),
+                                                     style={"color": "#00c875", "fontSize": "58px",
+                                                            "fontWeight": "800", "lineHeight": "1"}),
                                             html.Div("cycles", style={"color": "#a8d4ff", "fontSize": "14px",
                                                                        "marginTop": "4px"})
                                         ]
@@ -520,19 +604,14 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                                                                   "fontWeight": "700", "fontSize": "14px"})
                                         ]
                                     ),
-                                    # Status pill
                                     html.Div(
                                         degrade_label[0],
                                         style={
-                                            "width": "100%",
-                                            "textAlign": "center",
+                                            "width": "100%", "textAlign": "center",
                                             "background": degrade_label[2],
                                             "border": f"1.5px solid {degrade_label[3]}",
-                                            "borderRadius": "10px",
-                                            "color": degrade_label[1],
-                                            "fontSize": "12px",
-                                            "fontWeight": "700",
-                                            "padding": "8px 0",
+                                            "borderRadius": "10px", "color": degrade_label[1],
+                                            "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
                                         }
                                     )
                                 ]
@@ -540,12 +619,10 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                         ]
                     ),
 
-                    # ── Row 2: Sensor Trends + Top Drivers ──
+                    # Row 2: Sensor Trends + Top Drivers
                     html.Div(
                         style={"display": "flex", "gap": "20px"},
                         children=[
-
-                            # Sensor trends card
                             card(
                                 style_extra={"flex": "1"},
                                 children=[
@@ -555,8 +632,7 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                         children=[
                                             html.Div(
                                                 style={
-                                                    "display": "flex",
-                                                    "alignItems": "center",
+                                                    "display": "flex", "alignItems": "center",
                                                     "justifyContent": "space-between",
                                                     "padding": "10px 0",
                                                     "borderBottom": "1px solid rgba(74,158,255,0.1)",
@@ -573,8 +649,6 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                     )
                                 ]
                             ),
-
-                            # Top drivers (SHAP) card
                             card(
                                 style_extra={"flex": "1"},
                                 children=[
@@ -592,6 +666,130 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
             )
         ]
     )
+
+def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=80):
+    """Returns just the scrollable inner content children (a list)."""
+    degrade_color = (
+        "#00c875" if degradation >= 70 else
+        "#ffd93d" if degradation >= 40 else
+        "#ff4d4d"
+    )
+    if degradation >= 70:
+        degrade_label = ("No Degradation Detected", "#00c875", "rgba(0,200,117,0.12)", "#00c875")
+    elif degradation >= 40:
+        degrade_label = ("Moderate Degradation", "#ffd93d", "rgba(255,217,61,0.12)", "#ffd93d")
+    else:
+        degrade_label = ("Severe Degradation", "#ff4d4d", "rgba(255,77,77,0.12)", "#ff4d4d")
+
+    sensor_list = [
+        ("T30", "HPC outlet temperature"),
+        ("P30", "HPC outlet pressure"),
+        ("Nf",  "Fan speed"),
+        ("phi", "Fuel-air ratio"),
+        ("W31", "HPT coolant bleed"),
+    ]
+
+    return [
+        # Engine title row
+        html.Div(
+            style={"display": "flex", "alignItems": "center", "gap": "14px", "marginBottom": "22px"},
+            children=[
+                html.H2(f"ENGINE-{engine_id}",
+                        style={"margin": "0", "color": "white", "fontSize": "22px", "fontWeight": "800"}),
+                status_badge(status),
+            ]
+        ),
+
+        # Row 1: RUL Chart + RUL Panel
+        html.Div(
+            style={"display": "flex", "gap": "20px", "marginBottom": "20px"},
+            children=[
+                card(
+                    style_extra={"flex": "3"},
+                    children=[
+                        card_title("Predicted RUL"),
+                        dcc.Graph(
+                            figure=build_rul_chart(rul_value=rul),
+                            config={"displayModeBar": False},
+                            style={"height": "200px"},
+                        )
+                    ]
+                ),
+                card(
+                    style_extra={"flex": "1", "display": "flex", "flexDirection": "column",
+                                 "alignItems": "center", "justifyContent": "center", "gap": "16px"},
+                    children=[
+                        html.Div("Remaining Useful Life",
+                                 style={"color": "#a8d4ff", "fontSize": "13px", "fontWeight": "600",
+                                        "textAlign": "center"}),
+                        html.Div(style={"textAlign": "center"}, children=[
+                            html.Div(str(rul), style={"color": "#00c875", "fontSize": "58px",
+                                                       "fontWeight": "800", "lineHeight": "1"}),
+                            html.Div("cycles", style={"color": "#a8d4ff", "fontSize": "14px", "marginTop": "4px"})
+                        ]),
+                        html.Div(
+                            style={"width": "100%", "borderTop": "1px solid rgba(74,158,255,0.18)",
+                                   "paddingTop": "14px", "display": "flex",
+                                   "justifyContent": "space-between", "alignItems": "center"},
+                            children=[
+                                html.Span("Degradation", style={"color": "#a8d4ff", "fontSize": "12px"}),
+                                html.Span(f"{degradation}%", style={"color": degrade_color,
+                                                                      "fontWeight": "700", "fontSize": "14px"})
+                            ]
+                        ),
+                        html.Div(degrade_label[0], style={
+                            "width": "100%", "textAlign": "center",
+                            "background": degrade_label[2],
+                            "border": f"1.5px solid {degrade_label[3]}",
+                            "borderRadius": "10px", "color": degrade_label[1],
+                            "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
+                        })
+                    ]
+                )
+            ]
+        ),
+
+        # Row 2: Sensor Trends + Top Drivers
+        html.Div(
+            style={"display": "flex", "gap": "20px"},
+            children=[
+                card(
+                    style_extra={"flex": "1"},
+                    children=[
+                        card_title("Sensor Trends"),
+                        html.Div(
+                            style={"display": "flex", "flexDirection": "column"},
+                            children=[
+                                html.Div(
+                                    style={"display": "flex", "alignItems": "center",
+                                           "justifyContent": "space-between", "padding": "10px 0",
+                                           "borderBottom": "1px solid rgba(74,158,255,0.1)",
+                                           "cursor": "pointer"},
+                                    children=[
+                                        html.Span(f"{code} ({label})",
+                                                  style={"color": "#a8d4ff", "fontSize": "13px"}),
+                                        html.Span("→", style={"color": "rgba(74,158,255,0.5)", "fontSize": "14px"}),
+                                    ]
+                                )
+                                for code, label in sensor_list
+                            ]
+                        )
+                    ]
+                ),
+                card(
+                    style_extra={"flex": "1"},
+                    children=[
+                        card_title("Top Drivers"),
+                        dcc.Graph(
+                            figure=build_shap_chart(),
+                            config={"displayModeBar": False},
+                            style={"height": "220px"},
+                        )
+                    ]
+                ),
+            ]
+        )
+    ]
 
 
 # ─────────────────────────────────────────────
@@ -641,22 +839,82 @@ def create_overview_layout(supabase, engine_db_id=None):
 
     return html.Div(
         style={
-            "minHeight": "100vh",
+            "height": "100vh",
+            "display": "flex",
+            "flexDirection": "column",   # ← topbar on top, row below
             "fontFamily": "'Segoe UI', 'Inter', sans-serif",
             "background": "#0a1628",
             "color": "white",
-            "display": "flex",
-            "flexDirection": "row",
+            "overflow": "hidden",
         },
         children=[
             dcc.Location(id="url-overview", refresh=False),
-            build_sidebar(),
-            build_overview_content(
-                engine_id=engine_id,
-                status=status,
-                rul=int(rul),
-                degradation=degradation,
+
+            # ── Topbar: full width, always fixed at top ──
+            html.Div(
+                style={
+                    "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
+                    "borderBottom": "1px solid rgba(74,158,255,0.18)",
+                    "padding": "0 28px",
+                    "height": "60px",
+                    "minHeight": "60px",
+                    "flexShrink": "0",        # ← never shrink
+                    "display": "flex",
+                    "alignItems": "center",
+                    "justifyContent": "space-between",
+                    "zIndex": "200",
+                    "width": "100%",
+                },
+                children=[
+                    html.H1(
+                        "ENGINE PROGNOSTIC MONITORING SYSTEM",
+                        style={
+                            "margin": "0",
+                            "fontSize": "18px",
+                            "fontWeight": "700",
+                            "color": "white",
+                            "letterSpacing": "1.2px",
+                        }
+                    ),
+                    html.Div(
+                        id="sidebar-toggle",
+                        n_clicks=0,
+                        style={"cursor": "pointer"},
+                        children=[icon_sidebar()]
+                    ),
+                ]
             ),
+
+            # ── Body: sidebar + content side by side, below topbar ──
+            html.Div(
+                style={
+                    "flex": "1",
+                    "display": "flex",
+                    "flexDirection": "row",   # ← sidebar | content
+                    "overflow": "hidden",
+                    "minHeight": "0",         # ← critical for flex children to scroll
+                },
+                children=[
+                    # Sidebar
+                    build_sidebar(active_page="overview"),
+
+                    # Scrollable content
+                    html.Div(
+                        style={
+                            "flex": "1",
+                            "overflowY": "auto",
+                            "padding": "24px 28px",
+                            "minWidth": "0",
+                        },
+                        children=build_overview_body(
+                            engine_id=engine_id,
+                            status=status,
+                            rul=int(rul),
+                            degradation=degradation,
+                        )
+                    )
+                ]
+            )
         ]
     )
 
