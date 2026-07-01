@@ -59,11 +59,14 @@ def critical_icon():
 
 def bell_icon():
     svg_base64 = base64.b64encode('''
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <path d="M18 15 V10 Q18 6 12 6 Q6 6 6 10 V15 M12 21 Q10 21 10 19 Q10 17 12 17 Q14 17 14 19 Q14 21 12 21" fill="none" stroke="#ffd93d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#ffd93d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
     </svg>
     '''.encode('utf-8')).decode('utf-8')
-    return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}', style={'width': '28px', 'height': '28px'})
+    return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}',
+                    style={'width': '22px', 'height': '22px'})
 
 
 def logout_icon():
@@ -77,6 +80,8 @@ def logout_icon():
 
 def create_dashboard_layout(supabase):
     engine_data = []
+    maintenance_alerts = []
+
     try:
         if supabase:
             response = supabase.table("engines").select("*", count="exact").execute()
@@ -101,7 +106,6 @@ def create_dashboard_layout(supabase):
                     raw_status = "healthy"
 
                 current_cycle = engine.get("current_cycle") or 0
-                # Derive a rough RUL from current_cycle (adjust max_life to your dataset)
                 max_life = 100
                 rul = max(0, max_life - current_cycle)
                 degradation = max(0, min(100, int((rul / max_life) * 100)))
@@ -116,6 +120,47 @@ def create_dashboard_layout(supabase):
 
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 
+            # ── Fetch maintenance alerts from alert_logs, joined to engines ──
+            alerts_resp = supabase.table("alert_logs") \
+                .select("*") \
+                .in_("severity", ["warning", "critical"]) \
+                .eq("status", "open") \
+                .order("triggered_at", desc=True) \
+                .limit(10) \
+                .execute()
+
+            for alert in (alerts_resp.data or []):
+                alert_engine_id = alert.get("engine_id")   # this is engines.id (PK), per your FK
+                if alert_engine_id is None:
+                    continue
+
+                # Look up the engine row for this alert
+                eng_resp = supabase.table("engines") \
+                    .select("id, engine_id, current_cycle") \
+                    .eq("id", alert_engine_id) \
+                    .single() \
+                    .execute()
+                eng = eng_resp.data or {}
+
+                eng_db_id = eng.get("id")                       # engines.id → used for /overview/{id} link
+                eng_display_id = str(eng.get("engine_id", "?")).zfill(2)  # engines.engine_id → display label
+                current_cycle = eng.get("current_cycle") or 0
+
+                max_life = 100
+                rul = max(0, max_life - current_cycle)
+
+                severity = (alert.get("severity") or "warning").lower()
+
+                maintenance_alerts.append({
+                    "db_id": eng_db_id,
+                    "engine_id": eng_display_id,
+                    "severity": severity,
+                    "rul": rul,
+                    "action_text": "Immediate Maintenance" if severity == "critical" else "Schedule Maintenance",
+                })
+
+            print(f"[DEBUG] Maintenance alerts: {maintenance_alerts}")
+
     except Exception as e:
         import traceback
         print(f"[ERROR] {traceback.format_exc()}")
@@ -127,9 +172,9 @@ def create_dashboard_layout(supabase):
     }
 
     def engine_card(engine):
+        # ... unchanged ...
         colors = status_colors[engine["status"]]
         return html.Div(
-            # Make the card a clickable link
             dcc.Link(
                 href=f"/overview/{engine['db_id']}",
                 style={"textDecoration": "none"},
@@ -186,7 +231,6 @@ def create_dashboard_layout(supabase):
                                     html.Span(f"{engine['rul']}", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "14px"})
                                 ]
                             ),
-                            # Subtle "view details" hint at the bottom
                             html.Div(
                                 style={
                                     "borderTop": "1px solid rgba(74,158,255,0.15)",
@@ -207,6 +251,55 @@ def create_dashboard_layout(supabase):
             )
         )
 
+    # ── Maintenance alert card builder ──
+    def maintenance_alert_card(alert):
+        is_critical = alert["severity"] == "critical"
+        icon = critical_icon() if is_critical else warning_icon()
+        color = "#ff4d4d" if is_critical else "#ffd93d"
+        bg = "rgba(255,77,77,0.08)" if is_critical else "rgba(255,217,61,0.08)"
+
+        return dcc.Link(
+            href=f"/overview/{alert['db_id']}",
+            style={"textDecoration": "none"},
+            children=[
+                html.Div(
+                    style={
+                        "background": bg,
+                        "border": f"2px solid {color}",
+                        "borderRadius": "12px",
+                        "padding": "16px",
+                        "cursor": "pointer",
+                    },
+                    children=[
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "8px"},
+                            children=[
+                                html.Div(
+                                    style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                                    children=[
+                                        icon,
+                                        html.Span(f"ENGINE-{alert['engine_id']}", style={"color": color, "fontSize": "18px", "fontWeight": "700"})
+                                    ]
+                                ),
+                                html.Span(alert["severity"].upper(), style={
+                                    "background": f"rgba({'255,77,77' if is_critical else '255,217,61'},0.2)",
+                                    "color": color, "border": f"1px solid {color}",
+                                    "borderRadius": "8px", "padding": "4px 10px",
+                                    "fontSize": "10px", "fontWeight": "700",
+                                })
+                            ]
+                        ),
+                        html.Div(style={"marginBottom": "4px"}, children=[
+                            html.Span(f"RUL = {alert['rul']} cycles", style={"color": "white", "fontSize": "16px"})
+                        ]),
+                        html.Div(children=[
+                            html.Span(alert["action_text"], style={"color": "rgba(255,255,255,0.7)", "fontSize": "14px"})
+                        ])
+                    ]
+                )
+            ]
+        )
+
     return html.Div(
         style={
             "minHeight": "100vh",
@@ -217,7 +310,7 @@ def create_dashboard_layout(supabase):
         },
         children=[
             dcc.Location(id='url-dashboard', refresh=False),
-            # Header
+            # ... header unchanged ...
             html.Div(
                 style={
                     "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
@@ -230,31 +323,24 @@ def create_dashboard_layout(supabase):
                 children=[
                     html.H1(
                         "ENGINE PROGNOSTIC MONITORING SYSTEM",
-                        style={
-                            "margin": "0",
-                            "fontSize": "22px",
-                            "fontWeight": "700",
-                            "color": "white",
-                            "letterSpacing": "1px"
-                        }
+                        style={"margin": "0", "fontSize": "22px", "fontWeight": "700", "color": "white", "letterSpacing": "1px"}
                     ),
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "gap": "20px"},
                         children=[
-                            html.Div(
-                                id="user-control-btn",
-                                style={
-                                    "background": "rgba(74, 158, 255, 0.15)",
-                                    "border": "1px solid rgba(74, 158, 255, 0.5)",
-                                    "borderRadius": "12px",
-                                    "padding": "6px 16px",
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": "8px",
-                                    "cursor": "pointer",
-                                },
+                            dcc.Link(
+                                href="/user-management",
+                                style={"textDecoration": "none"},
                                 children=[
-                                    html.Span("User Control", style={"color": "#a8d4ff", "fontSize": "14px", "fontWeight": "600"})
+                                    html.Div(
+                                        style={
+                                            "background": "rgba(74, 158, 255, 0.15)",
+                                            "border": "1px solid rgba(74, 158, 255, 0.5)",
+                                            "borderRadius": "12px", "padding": "6px 16px",
+                                            "display": "flex", "alignItems": "center", "gap": "8px", "cursor": "pointer",
+                                        },
+                                        children=[html.Span("User Control", style={"color": "#a8d4ff", "fontSize": "14px", "fontWeight": "600"})]
+                                    )
                                 ]
                             ),
                             html.Div(
@@ -265,8 +351,7 @@ def create_dashboard_layout(supabase):
                                 ]
                             ),
                             html.Div(
-                                id="logout-btn",
-                                n_clicks=0,
+                                id="logout-btn", n_clicks=0,
                                 style={"cursor": "pointer", "display": "flex", "alignItems": "center"},
                                 children=[logout_icon()]
                             )
@@ -274,89 +359,26 @@ def create_dashboard_layout(supabase):
                     )
                 ]
             ),
-            # Main content
             html.Div(
                 style={"padding": "24px 32px"},
                 children=[
-                    # Status cards
+                    # ... status cards unchanged ...
                     html.Div(
                         style={"display": "flex", "gap": "20px", "marginBottom": "32px", "justifyContent": "center"},
                         children=[
-                            html.Div(
-                                style={
-                                    "background": "linear-gradient(135deg, #2a354a 0%, #1a2335 100%)",
-                                    "border": "1px solid rgba(255,255,255,0.2)",
-                                    "borderRadius": "12px",
-                                    "padding": "16px 24px",
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": "20px",
-                                    "minWidth": "250px",
-                                    "justifyContent": "space-between"
-                                },
-                                children=[
-                                    html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span(str(total_count), style={"color": "white", "fontSize": "36px", "fontWeight": "700"})
-                                ]
-                            ),
-                            html.Div(
-                                style={
-                                    "background": "linear-gradient(135deg, rgba(0,255,100,0.15) 0%, rgba(0,200,80,0.08) 100%)",
-                                    "border": "2px solid #00ff64",
-                                    "borderRadius": "12px",
-                                    "padding": "16px 24px",
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": "20px",
-                                    "minWidth": "250px",
-                                    "justifyContent": "space-between"
-                                },
-                                children=[
-                                    html.Span("HEALTHY", style={"color": "#00ff64", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span(str(healthy_count), style={"color": "#00ff64", "fontSize": "36px", "fontWeight": "700"})
-                                ]
-                            ),
-                            html.Div(
-                                style={
-                                    "background": "linear-gradient(135deg, rgba(255,217,61,0.15) 0%, rgba(255,174,0,0.08) 100%)",
-                                    "border": "2px solid #ffd93d",
-                                    "borderRadius": "12px",
-                                    "padding": "16px 24px",
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": "20px",
-                                    "minWidth": "250px",
-                                    "justifyContent": "space-between"
-                                },
-                                children=[
-                                    html.Span("DEGRADING", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span(str(warning_count), style={"color": "#ffd93d", "fontSize": "36px", "fontWeight": "700"})
-                                ]
-                            ),
-                            html.Div(
-                                style={
-                                    "background": "linear-gradient(135deg, rgba(255,77,77,0.15) 0%, rgba(255,0,0,0.08) 100%)",
-                                    "border": "2px solid #ff4d4d",
-                                    "borderRadius": "12px",
-                                    "padding": "16px 24px",
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": "20px",
-                                    "minWidth": "250px",
-                                    "justifyContent": "space-between"
-                                },
-                                children=[
-                                    html.Span("CRITICAL", style={"color": "#ff4d4d", "fontSize": "16px", "fontWeight": "600"}),
-                                    html.Span(str(critical_count), style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"})
-                                ]
-                            )
+                            html.Div(style={"background": "linear-gradient(135deg, #2a354a 0%, #1a2335 100%)", "border": "1px solid rgba(255,255,255,0.2)", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
+                                     children=[html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(total_count), style={"color": "white", "fontSize": "36px", "fontWeight": "700"})]),
+                            html.Div(style={"background": "linear-gradient(135deg, rgba(0,255,100,0.15) 0%, rgba(0,200,80,0.08) 100%)", "border": "2px solid #00ff64", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
+                                     children=[html.Span("HEALTHY", style={"color": "#00ff64", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(healthy_count), style={"color": "#00ff64", "fontSize": "36px", "fontWeight": "700"})]),
+                            html.Div(style={"background": "linear-gradient(135deg, rgba(255,217,61,0.15) 0%, rgba(255,174,0,0.08) 100%)", "border": "2px solid #ffd93d", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
+                                     children=[html.Span("DEGRADING", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(warning_count), style={"color": "#ffd93d", "fontSize": "36px", "fontWeight": "700"})]),
+                            html.Div(style={"background": "linear-gradient(135deg, rgba(255,77,77,0.15) 0%, rgba(255,0,0,0.08) 100%)", "border": "2px solid #ff4d4d", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
+                                     children=[html.Span("CRITICAL", style={"color": "#ff4d4d", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(critical_count), style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"})]),
                         ]
                     ),
-                    # Engines grid + alerts
                     html.Div(
                         style={"display": "flex", "gap": "24px"},
                         children=[
-                            # Engines section
                             html.Div(
                                 style={"flex": "3"},
                                 children=[
@@ -367,99 +389,45 @@ def create_dashboard_layout(supabase):
                                             html.Div(
                                                 style={"display": "flex", "gap": "8px"},
                                                 children=[
-                                                    html.Button("All", style={"background": "#007bff", "border": "none", "color": "white", "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
-                                                    html.Button("Healthy", style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)", "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
-                                                    html.Button("Degrading", style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)", "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
-                                                    html.Button("Critical", style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)", "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"})
+                                                    html.Button("All",      id="filter-all",      n_clicks=1,
+                                                                style={"background": "#007bff", "border": "none", "color": "white",
+                                                                    "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px",
+                                                                    "fontWeight": "700", "cursor": "pointer"}),
+                                                    html.Button("Healthy",  id="filter-healthy",  n_clicks=0,
+                                                                style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
+                                                                    "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
+                                                                    "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
+                                                    html.Button("Degrading",id="filter-degrading",n_clicks=0,
+                                                                style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
+                                                                    "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
+                                                                    "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
+                                                    html.Button("Critical", id="filter-critical", n_clicks=0,
+                                                                style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
+                                                                    "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
+                                                                    "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
                                                 ]
-                                            )
+                                            ),
                                         ]
                                     ),
                                     html.Div(
+                                        id="engines-grid",
                                         style={"display": "grid", "gridTemplateColumns": "repeat(3, 1fr)", "gap": "16px"},
                                         children=[engine_card(engine) for engine in engine_data] if engine_data else [
-                                            html.Div(
-                                                "No data.",
-                                                style={
-                                                    "color": "rgba(255,255,255,0.7)",
-                                                    "fontSize": "16px",
-                                                    "textAlign": "center",
-                                                    "padding": "40px 0",
-                                                    "gridColumn": "1 / -1"
-                                                }
-                                            )
+                                            html.Div("No data.", style={"color": "rgba(255,255,255,0.7)", "fontSize": "16px", "textAlign": "center", "padding": "40px 0", "gridColumn": "1 / -1"})
                                         ]
                                     )
                                 ]
                             ),
-                            # Maintenance alerts
+                            # ── Maintenance alerts (now from Supabase) ──
                             html.Div(
                                 style={"flex": "1", "background": "#101a2f", "border": "1px solid rgba(74,158,255,0.3)", "borderRadius": "16px", "padding": "20px"},
                                 children=[
                                     html.H2("Maintenance alerts", style={"margin": "0 0 16px 0", "color": "white", "fontSize": "22px", "fontWeight": "700"}),
                                     html.Div(
                                         style={"display": "flex", "flexDirection": "column", "gap": "16px"},
-                                        children=[
-                                            html.Div(
-                                                style={
-                                                    "background": "rgba(255,217,61,0.08)",
-                                                    "border": "2px solid #ffd93d",
-                                                    "borderRadius": "12px",
-                                                    "padding": "16px"
-                                                },
-                                                children=[
-                                                    html.Div(
-                                                        style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "8px"},
-                                                        children=[
-                                                            html.Div(
-                                                                style={"display": "flex", "alignItems": "center", "gap": "10px"},
-                                                                children=[
-                                                                    warning_icon(),
-                                                                    html.Span("ENGINE-04", style={"color": "#ffd93d", "fontSize": "18px", "fontWeight": "700"})
-                                                                ]
-                                                            ),
-                                                            html.Span("WARNING", style={"background": "rgba(255,217,61,0.2)", "color": "#ffd93d", "border": "1px solid #ffd93d", "borderRadius": "8px", "padding": "4px 10px", "fontSize": "10px", "fontWeight": "700"})
-                                                        ]
-                                                    ),
-                                                    html.Div(
-                                                        style={"marginBottom": "4px"},
-                                                        children=[html.Span("RUL = 45 cycles", style={"color": "white", "fontSize": "16px"})]
-                                                    ),
-                                                    html.Div(
-                                                        children=[html.Span("Schedule Maintenance", style={"color": "rgba(255,255,255,0.7)", "fontSize": "14px"})]
-                                                    )
-                                                ]
-                                            ),
-                                            html.Div(
-                                                style={
-                                                    "background": "rgba(255,77,77,0.08)",
-                                                    "border": "2px solid #ff4d4d",
-                                                    "borderRadius": "12px",
-                                                    "padding": "16px"
-                                                },
-                                                children=[
-                                                    html.Div(
-                                                        style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "8px"},
-                                                        children=[
-                                                            html.Div(
-                                                                style={"display": "flex", "alignItems": "center", "gap": "10px"},
-                                                                children=[
-                                                                    critical_icon(),
-                                                                    html.Span("ENGINE-09", style={"color": "#ff4d4d", "fontSize": "18px", "fontWeight": "700"})
-                                                                ]
-                                                            ),
-                                                            html.Span("CRITICAL", style={"background": "rgba(255,77,77,0.2)", "color": "#ff4d4d", "border": "1px solid #ff4d4d", "borderRadius": "8px", "padding": "4px 10px", "fontSize": "10px", "fontWeight": "700"})
-                                                        ]
-                                                    ),
-                                                    html.Div(
-                                                        style={"marginBottom": "4px"},
-                                                        children=[html.Span("RUL = 20 cycles", style={"color": "white", "fontSize": "16px"})]
-                                                    ),
-                                                    html.Div(
-                                                        children=[html.Span("Immediate Maintenance", style={"color": "rgba(255,255,255,0.7)", "fontSize": "14px"})]
-                                                    )
-                                                ]
-                                            )
+                                        children=[maintenance_alert_card(a) for a in maintenance_alerts] if maintenance_alerts else [
+                                            html.Div("No active maintenance alerts.",
+                                                     style={"color": "rgba(255,255,255,0.5)", "fontSize": "14px", "textAlign": "center", "padding": "20px 0"})
                                         ]
                                     )
                                 ]
@@ -467,6 +435,7 @@ def create_dashboard_layout(supabase):
                         ]
                     )
                 ]
-            )
+            ),
+            dcc.Store(id="engine-data-store", data=engine_data),
         ]
     )
