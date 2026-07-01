@@ -249,7 +249,7 @@ def create_login_layout():
                                         id="username-input",
                                         type="text",
                                         placeholder="operator_1",
-                                        value="operator_1",
+                                        value="admin_ds",
                                         style={
                                             "flex": "1", "background": "transparent",
                                             "border": "none", "outline": "none",
@@ -284,7 +284,7 @@ def create_login_layout():
                                         id="password-input",
                                         type="password",
                                         placeholder="••••••••••••",
-                                        value="password123",
+                                        value="Admin@1234",
                                         style={
                                             "flex": "1", "background": "transparent",
                                             "border": "none", "outline": "none",

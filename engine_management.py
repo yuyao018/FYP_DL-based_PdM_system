@@ -322,17 +322,21 @@ def build_engine_management_body(engines=None):
 #  PAGE LAYOUT ENTRY POINT
 # ─────────────────────────────────────────────
 
-def create_engine_management_layout(supabase=None):
+def create_engine_management_layout(supabase=None, org_id=None):
     engines = []
-    
+
     if not supabase:
         print("[WARN] Supabase not connected - no engine data available")
     else:
         try:
-            resp = supabase.table("engines") \
-                .select("id, engine_id, model_type, condition_status, current_cycle, created_at") \
-                .order("engine_id") \
-                .execute()
+            query = supabase.table("engines") \
+                .select("id, engine_id, model_type, condition_status, current_cycle, created_at")
+
+            # Filter to this organization only
+            if org_id:
+                query = query.eq("organization_id", org_id)
+
+            resp = query.order("engine_id").execute()
             
             if resp.data:
                 for e in resp.data:

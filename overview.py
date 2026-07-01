@@ -268,7 +268,7 @@ def build_sidebar(active_page="overview", engine_db_id=None):
         style={
             "width": "210px",
             "flexShrink": "0",
-            "minHeight": "100vh",
+            "height": "100%",
             "background": "#0d1e3a",
             "borderRight": "1px solid rgba(74,158,255,0.15)",
             "display": "flex",

@@ -10,6 +10,8 @@ from user_management import create_user_management_layout, register_user_managem
 from add_user import create_add_user_layout, register_add_user_callbacks
 from model_upload import create_model_upload_layout, register_model_upload_callbacks
 from alert_thresholds import create_alert_thresholds_layout, register_alert_thresholds_callbacks
+from engine_management import create_engine_management_layout, register_engine_management_callbacks
+from add_engine import create_add_engine_layout, register_add_engine_callbacks
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -45,11 +47,13 @@ register_user_management_callbacks(app, supabase=supabase)
 register_add_user_callbacks(app, supabase=supabase)
 register_model_upload_callbacks(app, supabase=supabase)
 register_alert_thresholds_callbacks(app, supabase=supabase)
+register_engine_management_callbacks(app, supabase=supabase)
+register_add_engine_callbacks(app, supabase=supabase)
 
 # Main app layout with routing
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
-    dcc.Store(id='sidebar-state', data=True),
+    dcc.Store(id='sidebar-state', data=True),  # True = open by default
     dcc.Store(id='session-store', data=None, storage_type='session'),
     html.Div(id='page-content')
 ])
@@ -58,39 +62,36 @@ app.layout = html.Div([
 @app.callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
+    State("session-store", "data"),
 )
-def display_page(pathname):
+def display_page(pathname, session):
     if not pathname or pathname == "/":
         return create_login_layout()
+
+    # Extract org_id from session (empty string if not logged in)
+    org_id = (session or {}).get("organization_id", "") or None
 
     # ── Engine-specific pages ──
     if pathname.startswith("/overview/"):
         engine_db_id = pathname.split("/")[-1]
-        try:
-            return create_overview_layout(supabase, engine_db_id=int(engine_db_id))
-        except ValueError:
-            return create_login_layout()
+        return create_overview_layout(supabase, engine_db_id=engine_db_id)
 
     if pathname.startswith("/sensor-trends/"):
         engine_db_id = pathname.split("/")[-1]
-        try:
-            return create_sensor_trends_layout(supabase, engine_db_id=int(engine_db_id))
-        except ValueError:
-            return create_sensor_trends_layout(supabase)
+        return create_sensor_trends_layout(supabase, engine_db_id=engine_db_id)
 
     if pathname.startswith("/alert-log/"):
         engine_db_id = pathname.split("/")[-1]
-        try:
-            return create_alert_log_layout(supabase, engine_db_id=int(engine_db_id))
-        except ValueError:
-            return create_alert_log_layout(supabase)
+        return create_alert_log_layout(supabase, engine_db_id=engine_db_id)
 
     # ── Exact routes ──
     routes = {
-        "/dashboard":         lambda: create_dashboard_layout(supabase),
+        "/dashboard":         lambda: create_dashboard_layout(supabase, org_id=org_id),
         "/overview":          lambda: create_overview_layout(supabase),
         "/sensor-trends":     lambda: create_sensor_trends_layout(supabase),
         "/alert-log":         lambda: create_alert_log_layout(supabase),
+        "/engine-management": lambda: create_engine_management_layout(supabase, org_id=org_id),
+        "/add-engine":        lambda: create_add_engine_layout(supabase, org_id=org_id),
         "/user-management":   lambda: create_user_management_layout(supabase),
         "/add-user":          lambda: create_add_user_layout(supabase),
         "/model-upload":      lambda: create_model_upload_layout(supabase),
@@ -125,7 +126,7 @@ def toggle_sidebar(n, is_open):
 
     base = {
         "flexShrink": "0",
-        "minHeight": "80vh",
+        "minHeight": "100vh",
         "background": "#0d1e3a",
         "borderRight": "1px solid rgba(74,158,255,0.15)",
         "display": "flex",
@@ -172,15 +173,16 @@ def handle_login(n_clicks, username, password):
 
         user = resp.data[0]
 
-        # Step 2: Fetch user id from public.users by username
+        # Step 2: Fetch user profile + organization_id from public.users
         user_resp = supabase.table("users") \
-            .select("id, username, first_name, last_name, role") \
+            .select("id, username, first_name, last_name, role, organization_id") \
             .eq("username", username) \
             .single() \
             .execute()
 
         user_profile = user_resp.data or {}
         user_id = str(user_profile.get("id", ""))
+        organization_id = str(user_profile.get("organization_id", "") or "")
 
         # Step 3: Update last_login_at
         supabase.table("users") \
@@ -190,14 +192,15 @@ def handle_login(n_clicks, username, password):
 
         # Step 4: Build session data
         session_data = {
-            "user_id":    user_id,
-            "username":   user_profile.get("username", username),
-            "first_name": user_profile.get("first_name", ""),
-            "last_name":  user_profile.get("last_name", ""),
-            "role":       user_profile.get("role", "operator"),
+            "user_id":         user_id,
+            "username":        user_profile.get("username", username),
+            "first_name":      user_profile.get("first_name", ""),
+            "last_name":       user_profile.get("last_name", ""),
+            "role":            user_profile.get("role", "operator"),
+            "organization_id": organization_id,
         }
 
-        print(f"[OK] Login: {username} | user_id: {user_id}")
+        print(f"[OK] Login: {username} | user_id: {user_id} | org_id: {organization_id}")
         return "/dashboard", html.Span("Login successful!",
                                        style={"color": "#4aff9e", "fontSize": "13px"}), session_data
 
@@ -214,7 +217,7 @@ def handle_login(n_clicks, username, password):
     prevent_initial_call=True,
 )
 def handle_logout(n_clicks):
-    if not n_clicks or n_clicks == 0:    # ← guard: only act on real clicks
+    if not n_clicks or n_clicks == 0:
         raise dash.exceptions.PreventUpdate
     if supabase:
         try:
@@ -222,7 +225,8 @@ def handle_logout(n_clicks):
             print("[OK] User signed out")
         except Exception:
             pass
-    return "/"
+    # Clear session and redirect to login
+    return "/", None
 
 # Role toggle callback
 @app.callback(

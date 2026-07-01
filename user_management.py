@@ -29,6 +29,17 @@ def icon_users():
       <path d="M21 20c0-2.8-1.6-5-4-5.7"/>
     </svg>''')
 
+def icon_engine():
+    return _svg_img('''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="50" cy="50" r="48" fill="none" stroke="#a8d4ff" stroke-width="1.5"/>
+        <circle cx="50" cy="50" r="18" fill="none" stroke="#a8d4ff" stroke-width="2"/>
+        <rect x="47" y="4" width="6" height="12" rx="2" fill="none" stroke="#a8d4ff" stroke-width="1.8" transform="rotate(0 50 50)"/>
+        <rect x="47" y="4" width="6" height="12" rx="2" fill="none" stroke="#a8d4ff" stroke-width="1.8" transform="rotate(90 50 50)"/>
+        <rect x="47" y="4" width="6" height="12" rx="2" fill="none" stroke="#a8d4ff" stroke-width="1.8" transform="rotate(180 50 50)"/>
+        <rect x="47" y="4" width="6" height="12" rx="2" fill="none" stroke="#a8d4ff" stroke-width="1.8" transform="rotate(270 50 50)"/>
+        <circle cx="50" cy="50" r="4" fill="#a8d4ff"/>
+    </svg>''', size="22px")
+
 def icon_upload():
     return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
          stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -107,6 +118,7 @@ def build_admin_sidebar(active_page="users"):
                     "color": "rgba(168,212,255,0.5)", "fontSize": "10px", "fontWeight": "700",
                     "letterSpacing": "1.5px", "padding": "0 6px", "marginBottom": "10px",
                 }),
+                nav_link(icon_engine,    "Engine Management", "engines",   "/engine-management"),
                 nav_link(icon_users,     "User Management",  "users",     "/user-management"),
                 nav_link(icon_upload,    "Model Upload",     "model",     "/model-upload"),
                 nav_link(icon_threshold, "Alert Thresholds", "threshold", "/alert-thresholds"),

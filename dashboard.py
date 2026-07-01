@@ -78,26 +78,44 @@ def logout_icon():
     return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}', style={'width': '28px', 'height': '28px'})
 
 
-def create_dashboard_layout(supabase):
+def create_dashboard_layout(supabase, org_id=None):
     engine_data = []
     maintenance_alerts = []
+    total_count = 0
+    healthy_count = 0
+    warning_count = 0
+    critical_count = 0
+    alert_count = 0
 
     try:
         if supabase:
-            response = supabase.table("engines").select("*", count="exact").execute()
-            total_count = response.count
+            # ── Base query builder: always filter by org_id ──
+            def eng_query():
+                q = supabase.table("engines").select("*", count="exact")
+                if org_id:
+                    q = q.eq("organization_id", org_id)
+                return q
 
-            healthy_res = supabase.table("engines").select("*", count="exact").eq("condition_status", "healthy").execute()
-            healthy_count = healthy_res.count or 0
+            response     = eng_query().execute()
+            total_count  = response.count or 0
 
-            warning_res = supabase.table("engines").select("*", count="exact").eq("condition_status", "warning").execute()
-            warning_count = warning_res.count or 0
+            healthy_count  = (eng_query().eq("condition_status", "healthy").execute().count or 0)
+            warning_count  = (eng_query().eq("condition_status", "warning").execute().count or 0)
+            critical_count = (eng_query().eq("condition_status", "critical").execute().count or 0)
 
-            critical_res = supabase.table("engines").select("*", count="exact").eq("condition_status", "critical").execute()
-            critical_count = critical_res.count or 0
+            # Always build engine_ids list from the fetched response
+            engine_ids = [e.get("id") for e in (response.data or []) if e.get("id")]
 
-            alert_res = supabase.table("alert_logs").select("*", count="exact").execute()
-            alert_count = alert_res.count
+            # Alert count scoped to org engines
+            if org_id and engine_ids:
+                alert_count = (
+                    supabase.table("alert_logs")
+                    .select("*", count="exact")
+                    .in_("engine_id", engine_ids)
+                    .execute().count or 0
+                )
+            else:
+                alert_count = supabase.table("alert_logs").select("*", count="exact").execute().count or 0
 
             print(f"[DEBUG] Raw rows: {response.data}")
             for engine in (response.data or []):
@@ -120,14 +138,19 @@ def create_dashboard_layout(supabase):
 
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 
-            # ── Fetch maintenance alerts from alert_logs, joined to engines ──
-            alerts_resp = supabase.table("alert_logs") \
+            # ── Fetch maintenance alerts scoped to this org's engines ──
+            alert_query = supabase.table("alert_logs") \
                 .select("*") \
                 .in_("severity", ["warning", "critical"]) \
                 .eq("status", "open") \
                 .order("triggered_at", desc=True) \
-                .limit(10) \
-                .execute()
+                .limit(10)
+
+            # If org_id present, only fetch alerts for this org's engines
+            if org_id and engine_ids:
+                alert_query = alert_query.in_("engine_id", engine_ids)
+
+            alerts_resp = alert_query.execute()
 
             for alert in (alerts_resp.data or []):
                 alert_engine_id = alert.get("engine_id")   # this is engines.id (PK), per your FK

@@ -443,7 +443,7 @@ def build_add_engine_body():
 #  PAGE LAYOUT ENTRY POINT
 # ─────────────────────────────────────────────
 
-def create_add_engine_layout(supabase=None):
+def create_add_engine_layout(supabase=None, org_id=None):
     return html.Div(
         style={
             "minHeight": "100vh",
@@ -453,6 +453,8 @@ def create_add_engine_layout(supabase=None):
         },
         children=[
             dcc.Location(id="url-add-engine", refresh=False),
+            # Store org_id so the create callback can access it
+            dcc.Store(id="add-engine-org-store", data=org_id),
 
             html.Div(style={"position": "sticky", "top": "0", "zIndex": "200"},
                      children=[build_topbar()]),
@@ -488,10 +490,11 @@ def register_add_engine_callbacks(app, supabase=None):
         State("new-engine-manufacturer", "value"),
         State("new-engine-location", "value"),
         State("new-engine-notes", "value"),
+        State("add-engine-org-store", "data"),
         prevent_initial_call=True,
     )
     def create_engine(n_clicks, engine_id, model_type, current_cycle, status,
-                     manufacturer, location, notes):
+                     manufacturer, location, notes, org_id):
 
         if not engine_id or not model_type:
             return html.Span("Please fill in required fields (Engine ID and Model Type).",
@@ -513,28 +516,33 @@ def register_add_engine_callbacks(app, supabase=None):
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         try:
-            # Check if engine_id already exists
-            check_resp = supabase.table("engines") \
+            # Check uniqueness within the same organization
+            check_q = supabase.table("engines") \
                 .select("engine_id") \
-                .eq("engine_id", engine_id) \
-                .execute()
-            
+                .eq("engine_id", engine_id)
+            if org_id:
+                check_q = check_q.eq("organization_id", org_id)
+            check_resp = check_q.execute()
+
             if check_resp.data:
-                return html.Span(f"Engine ID {engine_id} already exists.",
+                return html.Span(f"Engine ID {engine_id} already exists in your organization.",
                                 style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
-            # Insert new engine
-            supabase.table("engines").insert({
-                "engine_id": engine_id,
-                "model_type": model_type,
-                "current_cycle": current_cycle,
+            # Build insert payload
+            payload = {
+                "engine_id":        engine_id,
+                "model_type":       model_type,
+                "current_cycle":    current_cycle,
                 "condition_status": status or "healthy",
-                # "manufacturer": manufacturer or None,
-                # "location": location or None,
-                # "notes": notes or None,
-                "created_at": "now()",
-            }).execute()
+                "created_at":       "now()",
+            }
+            # Attach org if available
+            if org_id:
+                payload["organization_id"] = org_id
 
+            supabase.table("engines").insert(payload).execute()
+
+            print(f"[OK] Engine {engine_id} created for org {org_id}")
             return (
                 html.Span("Engine registered successfully!",
                          style={"color": "#4aff9e", "fontSize": "13px"}),
