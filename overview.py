@@ -223,7 +223,7 @@ def build_shap_chart():
 #  SIDEBAR
 # ─────────────────────────────────────────────
 
-def build_sidebar(active_page="overview"):
+def build_sidebar(active_page="overview", engine_db_id=None):
     nav_item_base = {
         "display": "flex",
         "alignItems": "center",
@@ -256,6 +256,12 @@ def build_sidebar(active_page="overview"):
                 html.Div(style=style, children=[icon_fn(), html.Span(label)])
             ]
         )
+
+    # Build navigation links with engine_db_id if available
+    overview_href = f"/overview/{engine_db_id}" if engine_db_id else "/dashboard"
+    sensor_href = f"/sensor-trends/{engine_db_id}" if engine_db_id else "/sensor-trends"
+    explainability_href = f"/explainability/{engine_db_id}" if engine_db_id else "/explainability"
+    alert_href = f"/alert-log/{engine_db_id}" if engine_db_id else "/alert-log"
 
     return html.Div(
         id="sidebar",
@@ -318,10 +324,10 @@ def build_sidebar(active_page="overview"):
                             "whiteSpace": "nowrap",
                         }
                     ),
-                    nav_link(icon_overview, "Overview",        "overview",     "/overview"),
-                    nav_link(icon_sensor,   "Sensor Trends",   "sensor",       "/sensor-trends"),
-                    nav_link(icon_shap,     "Explainability AI","explainability","/explainability"),
-                    nav_link(icon_alert,    "Alert Log",       "alert",        "/alert-log"),
+                    nav_link(icon_overview, "Overview",        "overview",     overview_href),
+                    nav_link(icon_sensor,   "Sensor Trends",   "sensor",       sensor_href),
+                    nav_link(icon_shap,     "Explainability AI","explainability",explainability_href),
+                    nav_link(icon_alert,    "Alert Log",       "alert",        alert_href),
                 ]
             ),
 
@@ -365,7 +371,7 @@ def build_sidebar(active_page="overview"):
                                 }
                             ),
                             html.Div(
-                                "Administrator",
+                                "Admin",
                                 style={
                                     "color": "rgba(168,212,255,0.6)",
                                     "fontSize": "11px",
@@ -896,7 +902,7 @@ def create_overview_layout(supabase, engine_db_id=None):
                 },
                 children=[
                     # Sidebar
-                    build_sidebar(active_page="overview"),
+                    build_sidebar(active_page="overview", engine_db_id=engine_db_id),
 
                     # Scrollable content
                     html.Div(
