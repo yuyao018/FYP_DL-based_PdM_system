@@ -495,13 +495,12 @@ def register_add_engine_callbacks(app, supabase=None):
     )
     def create_engine(n_clicks, engine_id, model_type, current_cycle, status,
                      manufacturer, location, notes, org_id):
-
         if not engine_id or not model_type:
             return html.Span("Please fill in required fields (Engine ID and Model Type).",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         try:
-            engine_id = int(engine_id)
+            engine_id     = int(engine_id)
             current_cycle = int(current_cycle or 0)
         except ValueError:
             return html.Span("Engine ID and Current Cycle must be valid numbers.",
@@ -516,19 +515,45 @@ def register_add_engine_callbacks(app, supabase=None):
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         try:
-            # Check uniqueness within the same organization
+            # ── 1. Check uniqueness within the same organization ──
             check_q = supabase.table("engines") \
                 .select("engine_id") \
                 .eq("engine_id", engine_id)
             if org_id:
                 check_q = check_q.eq("organization_id", org_id)
-            check_resp = check_q.execute()
-
-            if check_resp.data:
+            if check_q.execute().data:
                 return html.Span(f"Engine ID {engine_id} already exists in your organization.",
                                 style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
-            # Build insert payload
+            # ── 2. Fetch organization name for folder naming ──
+            org_name = "unknown_org"
+            if org_id:
+                org_resp = supabase.table("organizations") \
+                    .select("name") \
+                    .eq("id", org_id) \
+                    .single() \
+                    .execute()
+                if org_resp.data:
+                    # Sanitize org name for use as folder name
+                    raw_name = org_resp.data.get("name", "unknown_org")
+                    org_name = raw_name.strip().lower() \
+                        .replace(" ", "_") \
+                        .replace("/", "_") \
+                        .replace("\\", "_")
+
+            # ── 3. Create folder structure: data/[org_name]_[org_id]/ ──
+            from data_utils import create_engine_data_file, get_org_folder
+
+            file_path   = create_engine_data_file(
+                org_name=org_name,
+                org_id=org_id or "local",
+                engine_id=engine_id,
+                model_type=model_type,
+            )
+            folder_name = get_org_folder(org_name, org_id or "local")
+            engine_file = f"engine_{str(engine_id).zfill(3)}.json"
+
+            # ── 4. Insert engine into database (path derived from org_name + org_id, no extra column) ──
             payload = {
                 "engine_id":        engine_id,
                 "model_type":       model_type,
@@ -536,16 +561,17 @@ def register_add_engine_callbacks(app, supabase=None):
                 "condition_status": status or "healthy",
                 "created_at":       "now()",
             }
-            # Attach org if available
             if org_id:
                 payload["organization_id"] = org_id
 
             supabase.table("engines").insert(payload).execute()
 
-            print(f"[OK] Engine {engine_id} created for org {org_id}")
+            print(f"[OK] Engine {engine_id} registered | file: {file_path}")
             return (
-                html.Span("Engine registered successfully!",
-                         style={"color": "#4aff9e", "fontSize": "13px"}),
+                html.Span(
+                    f"Engine registered! Paste sensor data into: data/{folder_name}/{engine_file}",
+                    style={"color": "#4aff9e", "fontSize": "13px"}
+                ),
                 "/engine-management"
             )
 
