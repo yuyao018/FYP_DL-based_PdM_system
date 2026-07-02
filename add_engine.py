@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
+import os
 
 # ─────────────────────────────────────────────
 #  SVG ICON HELPERS
@@ -564,7 +565,33 @@ def register_add_engine_callbacks(app, supabase=None):
             if org_id:
                 payload["organization_id"] = org_id
 
-            supabase.table("engines").insert(payload).execute()
+            result = supabase.table("engines").insert(payload).execute()
+
+            # Get the new engine's UUID (returned by Supabase)
+            new_engine_db_id = None
+            if result.data:
+                new_engine_db_id = str(result.data[0].get("id", ""))
+
+            # ── Start background simulation if JSON data file already has cycles ──
+            if new_engine_db_id and os.path.exists(file_path):
+                try:
+                    import json as _json
+                    with open(file_path) as _f:
+                        _d = _json.load(_f)
+                    has_cycles = (
+                        (isinstance(_d, list) and len(_d) > 0) or
+                        (isinstance(_d, dict) and len(_d.get("cycles", [])) > 0)
+                    )
+                    if has_cycles:
+                        from engine_simulation_manager import start_engine_simulation
+                        start_engine_simulation(
+                            engine_db_id=new_engine_db_id,
+                            json_path=file_path,
+                            model_type=model_type,
+                            supabase=supabase,
+                        )
+                except Exception as _sim_err:
+                    print(f"[WARN] Could not start simulation for engine {engine_id}: {_sim_err}")
 
             print(f"[OK] Engine {engine_id} registered | file: {file_path}")
             return (

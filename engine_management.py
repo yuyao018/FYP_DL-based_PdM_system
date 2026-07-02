@@ -329,16 +329,50 @@ def create_engine_management_layout(supabase=None, org_id=None):
         print("[WARN] Supabase not connected - no engine data available")
     else:
         try:
+            # ── Fetch alert thresholds ──
+            warn_thresh = 62
+            crit_thresh = 30
+            max_life    = 125
+            try:
+                t_resp = supabase.table("alert_thresholds") \
+                    .select("warning_threshold, critical_threshold, max_rul_cap") \
+                    .order("updated_at", desc=True) \
+                    .limit(1).execute()
+                if t_resp.data:
+                    warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
+                    crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
+                    max_life    = int(t_resp.data[0].get("max_rul_cap", max_life))
+            except Exception:
+                pass
+
             query = supabase.table("engines") \
                 .select("id, engine_id, model_type, condition_status, current_cycle, created_at")
 
-            # Filter to this organization only
             if org_id:
                 query = query.eq("organization_id", org_id)
 
             resp = query.order("engine_id").execute()
-            
+
             if resp.data:
+                engine_ids = [e.get("id") for e in resp.data if e.get("id")]
+
+                # ── Batch-fetch latest predicted_rul per engine ──
+                latest_rul_map = {}
+                if engine_ids:
+                    try:
+                        pred_resp = supabase.table("rul_predictions") \
+                            .select("engine_id, predicted_rul") \
+                            .in_("engine_id", engine_ids) \
+                            .order("predicted_at", desc=True) \
+                            .execute()
+                        for row in (pred_resp.data or []):
+                            eid = row.get("engine_id")
+                            if eid and eid not in latest_rul_map \
+                                    and row.get("predicted_rul") is not None:
+                                latest_rul_map[eid] = float(row["predicted_rul"])
+                    except Exception:
+                        pass
+
                 for e in resp.data:
                     created_at = e.get("created_at")
                     if created_at:
@@ -351,19 +385,33 @@ def create_engine_management_layout(supabase=None, org_id=None):
                     else:
                         created_at = "—"
 
+                    db_id = str(e.get("id"))
+
+                    # Derive status from latest prediction + thresholds
+                    if db_id in latest_rul_map:
+                        rul = latest_rul_map[db_id]
+                        if rul <= crit_thresh:
+                            condition_status = "critical"
+                        elif rul <= warn_thresh:
+                            condition_status = "warning"
+                        else:
+                            condition_status = "healthy"
+                    else:
+                        condition_status = (e.get("condition_status") or "healthy").lower()
+
                     engines.append({
-                        "id": str(e.get("id")),
-                        "engine_id": e.get("engine_id", 0),
-                        "model_type": e.get("model_type", "—"),
-                        "condition_status": (e.get("condition_status") or "healthy").lower(),
-                        "current_cycle": e.get("current_cycle", 0),
-                        "created_at": created_at,
+                        "id":               db_id,
+                        "engine_id":        e.get("engine_id", 0),
+                        "model_type":       e.get("model_type", "—"),
+                        "condition_status": condition_status,
+                        "current_cycle":    e.get("current_cycle", 0),
+                        "created_at":       created_at,
                     })
-                    
+
                 print(f"[OK] Loaded {len(engines)} engines from database")
             else:
                 print("[INFO] No engines found in database")
-                
+
         except Exception as e:
             import traceback
             print(f"[ERROR] engine management fetch: {traceback.format_exc()}")
@@ -436,9 +484,20 @@ def register_engine_management_callbacks(app, supabase=None):
         # Remove from Supabase if connected
         if supabase:
             try:
+                supabase.table("rul_predictions").delete().eq("engine_id", engine_id).execute()
+            except Exception as e:
+                print(f"[ERROR] remove rul_predictions for engine {engine_id}: {e}")
+            try:
                 supabase.table("engines").delete().eq("id", engine_id).execute()
             except Exception as e:
                 print(f"[ERROR] remove engine: {e}")
+
+        # Stop the simulation thread if running
+        try:
+            from engine_simulation_manager import stop_engine_simulation
+            stop_engine_simulation(engine_id)
+        except Exception:
+            pass
 
         updated = [e for e in engines_data if e["id"] != engine_id]
         rows = [engine_table_row(e, i) for i, e in enumerate(updated)]

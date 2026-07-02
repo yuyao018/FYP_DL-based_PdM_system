@@ -89,6 +89,22 @@ def create_dashboard_layout(supabase, org_id=None):
 
     try:
         if supabase:
+            # ── Fetch alert thresholds ──
+            warn_thresh = 62
+            crit_thresh = 30
+            max_life    = 125
+            try:
+                t_resp = supabase.table("alert_thresholds") \
+                    .select("warning_threshold, critical_threshold, max_rul_cap") \
+                    .order("updated_at", desc=True) \
+                    .limit(1).execute()
+                if t_resp.data:
+                    warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
+                    crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
+                    max_life    = int(t_resp.data[0].get("max_rul_cap", max_life))
+            except Exception:
+                pass
+
             # ── Base query builder: always filter by org_id ──
             def eng_query():
                 q = supabase.table("engines").select("*", count="exact")
@@ -103,7 +119,6 @@ def create_dashboard_layout(supabase, org_id=None):
             warning_count  = (eng_query().eq("condition_status", "warning").execute().count or 0)
             critical_count = (eng_query().eq("condition_status", "critical").execute().count or 0)
 
-            # Always build engine_ids list from the fetched response
             engine_ids = [e.get("id") for e in (response.data or []) if e.get("id")]
 
             # Alert count scoped to org engines
@@ -117,23 +132,52 @@ def create_dashboard_layout(supabase, org_id=None):
             else:
                 alert_count = supabase.table("alert_logs").select("*", count="exact").execute().count or 0
 
+            # ── Batch-fetch latest predicted_rul per engine from rul_predictions ──
+            latest_rul_map = {}   # engine_db_id → predicted_rul float
+            if engine_ids:
+                try:
+                    # Fetch all predictions for these engines ordered newest first,
+                    # then keep only the first (latest) row per engine
+                    pred_resp = supabase.table("rul_predictions") \
+                        .select("engine_id, predicted_rul") \
+                        .in_("engine_id", engine_ids) \
+                        .order("predicted_at", desc=True) \
+                        .execute()
+                    for row in (pred_resp.data or []):
+                        eid = row.get("engine_id")
+                        if eid and eid not in latest_rul_map and row.get("predicted_rul") is not None:
+                            latest_rul_map[eid] = float(row["predicted_rul"])
+                except Exception:
+                    pass
+
             print(f"[DEBUG] Raw rows: {response.data}")
             for engine in (response.data or []):
-                raw_status = (engine.get("condition_status") or "healthy").lower().strip()
-                if raw_status not in ("healthy", "warning", "critical"):
+                db_id = engine.get("id")
+
+                # Use predicted_rul from rul_predictions; fall back to cycle-based estimate
+                if db_id in latest_rul_map:
+                    rul = latest_rul_map[db_id]
+                else:
+                    current_cycle = engine.get("current_cycle") or 0
+                    rul = max(0.0, float(max_life - current_cycle))
+
+                # Status derived from thresholds
+                if rul <= crit_thresh:
+                    raw_status = "critical"
+                elif rul <= warn_thresh:
+                    raw_status = "warning"
+                else:
                     raw_status = "healthy"
 
-                current_cycle = engine.get("current_cycle") or 0
-                max_life = 100
-                rul = max(0, max_life - current_cycle)
-                degradation = max(0, min(100, int((rul / max_life) * 100)))
+                # Degradation: how close to 0 relative to max_life
+                degradation = max(0, min(100, round((1 - rul / max_life) * 100)))
 
                 engine_data.append({
-                    "db_id":       engine.get("id"),
+                    "db_id":       db_id,
                     "id":          str(engine.get("engine_id", "?")).zfill(2),
                     "status":      raw_status,
                     "degradation": degradation,
-                    "rul":         rul,
+                    "rul":         int(round(rul)),
                 })
 
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
@@ -165,12 +209,15 @@ def create_dashboard_layout(supabase, org_id=None):
                     .execute()
                 eng = eng_resp.data or {}
 
-                eng_db_id = eng.get("id")                       # engines.id → used for /overview/{id} link
-                eng_display_id = str(eng.get("engine_id", "?")).zfill(2)  # engines.engine_id → display label
-                current_cycle = eng.get("current_cycle") or 0
+                eng_db_id = eng.get("id")
+                eng_display_id = str(eng.get("engine_id", "?")).zfill(2)
 
-                max_life = 100
-                rul = max(0, max_life - current_cycle)
+                # Use predicted_rul if available, else cycle-based fallback
+                if eng_db_id in latest_rul_map:
+                    rul = int(round(latest_rul_map[eng_db_id]))
+                else:
+                    current_cycle = eng.get("current_cycle") or 0
+                    rul = max(0, int(max_life - current_cycle))
 
                 severity = (alert.get("severity") or "warning").lower()
 

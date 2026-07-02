@@ -3,7 +3,7 @@ from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
-from overview import create_overview_layout
+from overview import create_overview_layout, register_overview_callbacks
 from sensor_trends import create_sensor_trends_layout, register_sensor_callbacks
 from alert_log import create_alert_log_layout, register_alert_log_callbacks
 from user_management import create_user_management_layout, register_user_management_callbacks
@@ -49,6 +49,11 @@ register_model_upload_callbacks(app, supabase=supabase)
 register_alert_thresholds_callbacks(app, supabase=supabase)
 register_engine_management_callbacks(app, supabase=supabase)
 register_add_engine_callbacks(app, supabase=supabase)
+register_overview_callbacks(app, supabase=supabase)
+
+# Resume simulations for any engines that already have data on disk
+from engine_simulation_manager import resume_all_simulations
+resume_all_simulations(supabase)
 
 # Main app layout with routing
 app.layout = html.Div([

@@ -1,5 +1,5 @@
 import dash
-from dash import dcc, html, Input, Output, callback
+from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import base64
@@ -88,58 +88,83 @@ def icon_logout():
 #  RUL LINE CHART
 # ─────────────────────────────────────────────
 
-def build_rul_chart(rul_value: int = 120, total_cycles: int = 142):
+def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
+                    warn_thresh: int = 62, crit_thresh: int = 30):
     """
-    Actual RUL counts down from ~125 to rul_value over total_cycles.
-    Predicted line slightly deviates then converges at the endpoint.
+    Plot actual RUL and predicted RUL over cycles from real rul_predictions data.
+    Falls back to a flat placeholder when no data is available yet.
     """
-    x = np.linspace(0, total_cycles, total_cycles + 1)
-    start = 125
-    actual = np.linspace(start, rul_value, len(x))
-    noise = np.random.RandomState(42).normal(0, 1.2, len(x))
-    predicted = actual + noise
-    predicted[-1] = rul_value  # converge at end
-
-    warn_thresh = 62
-    crit_thresh = 30
-
     fig = go.Figure()
 
-    # Actual line
-    fig.add_trace(go.Scatter(
-        x=x, y=actual,
-        mode="lines",
-        name="Actual",
-        line=dict(color="#4a9eff", width=2),
-    ))
+    has_actual    = actual_ruls    and any(v is not None for v in actual_ruls)
+    has_predicted = predicted_ruls and any(v is not None for v in predicted_ruls)
 
-    # Predicted line (dashed)
-    fig.add_trace(go.Scatter(
-        x=x, y=predicted,
-        mode="lines",
-        name="Predicted",
-        line=dict(color="#ffffff", width=1.5, dash="dash"),
-    ))
+    if not cycles or (not has_actual and not has_predicted):
+        # ── Placeholder when simulation hasn't produced data yet ──
+        fig.add_annotation(
+            text=f"Warming up — predictions start after cycle {WINDOW_SIZE}",
+            x=0.5, y=0.5, xref="paper", yref="paper",
+            showarrow=False,
+            font=dict(color="rgba(168,212,255,0.5)", size=13),
+        )
+        y_max = warn_thresh + 10
+    else:
+        x = cycles
 
-    # Endpoint marker
-    fig.add_trace(go.Scatter(
-        x=[total_cycles], y=[rul_value],
-        mode="markers",
-        showlegend=False,
-        marker=dict(color="#f5a623", size=9, symbol="circle"),
-    ))
+        if has_actual:
+            fig.add_trace(go.Scatter(
+                x=x, y=actual_ruls,
+                mode="lines",
+                name="Actual RUL",
+                line=dict(color="#4a9eff", width=2),
+                connectgaps=True,
+            ))
 
-    # Warning threshold line
-    fig.add_shape(type="line", x0=0, x1=total_cycles, y0=warn_thresh, y1=warn_thresh,
-                  line=dict(color="#ffd93d", width=1, dash="dot"))
-    fig.add_annotation(x=total_cycles, y=warn_thresh, text="warn",
-                       font=dict(color="#ffd93d", size=10), showarrow=False, xanchor="left", xshift=4)
+        if has_predicted:
+            fig.add_trace(go.Scatter(
+                x=x, y=predicted_ruls,
+                mode="lines",
+                name="Predicted RUL",
+                line=dict(color="#4a9eff", width=2),
+                connectgaps=True,
+            ))
 
-    # Critical threshold line
-    fig.add_shape(type="line", x0=0, x1=total_cycles, y0=crit_thresh, y1=crit_thresh,
-                  line=dict(color="#ff4d4d", width=1, dash="dot"))
-    fig.add_annotation(x=total_cycles, y=crit_thresh, text="crit",
-                       font=dict(color="#ff4d4d", size=10), showarrow=False, xanchor="left", xshift=4)
+            # Endpoint marker on the latest prediction
+            latest_pred = next((v for v in reversed(predicted_ruls) if v is not None), None)
+            latest_cyc  = next((c for c, v in zip(reversed(x), reversed(predicted_ruls)) if v is not None), None)
+            if latest_pred is not None:
+                fig.add_trace(go.Scatter(
+                    x=[latest_cyc], y=[latest_pred],
+                    mode="markers",
+                    showlegend=False,
+                    marker=dict(color="#f5a623", size=9, symbol="circle"),
+                ))
+
+        x_max = max(x) if x else 1
+
+        # Invisible anchor at x=0 so the axis always starts flush at 0
+        fig.add_trace(go.Scatter(
+            x=[0], y=[None],
+            mode="markers", marker=dict(opacity=0),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+        # Dynamic y-axis: 10% headroom above the max value seen
+        all_vals = [v for v in (predicted_ruls or []) if v is not None]
+        y_max = max(max(all_vals) * 1.1, warn_thresh + 10) if all_vals else warn_thresh + 10
+
+        # Warning threshold
+        fig.add_shape(type="line", x0=0, x1=x_max, y0=warn_thresh, y1=warn_thresh,
+                      line=dict(color="#ffd93d", width=1, dash="dot"))
+        fig.add_annotation(x=x_max, y=warn_thresh, text="warn",
+                           font=dict(color="#ffd93d", size=10),
+                           showarrow=False, xanchor="left", xshift=4)
+        # Critical threshold
+        fig.add_shape(type="line", x0=0, x1=x_max, y0=crit_thresh, y1=crit_thresh,
+                      line=dict(color="#ff4d4d", width=1, dash="dot"))
+        fig.add_annotation(x=x_max, y=crit_thresh, text="crit",
+                           font=dict(color="#ff4d4d", size=10),
+                           showarrow=False, xanchor="left", xshift=4)
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
@@ -147,23 +172,25 @@ def build_rul_chart(rul_value: int = 120, total_cycles: int = 142):
         margin=dict(l=10, r=50, t=10, b=10),
         height=200,
         legend=dict(
-            orientation="h", x=0, y=1.15,
+            orientation="h", x=1, y=1.15, xanchor="right",
             font=dict(color="#a8d4ff", size=11),
             bgcolor="rgba(0,0,0,0)",
         ),
         xaxis=dict(
             showgrid=False,
             color="#a8d4ff",
-            tickfont=dict(size=10),
             zeroline=False,
+            showticklabels=False,
+            rangemode="tozero",     # x-axis always starts at 0
+            title=dict(text="", font=dict(color="#a8d4ff", size=11)),
         ),
         yaxis=dict(
             showgrid=True,
             gridcolor="rgba(74,158,255,0.1)",
-            color="#a8d4ff",
-            tickfont=dict(size=10),
+            color="#a8d4ff", tickfont=dict(size=10),
             zeroline=False,
-            range=[0, 135],
+            range=[0, y_max],
+            title=dict(text="RUL", font=dict(color="#a8d4ff", size=11)),
         ),
         hovermode="x unified",
     )
@@ -702,7 +729,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
             children=[
                 html.H2(f"ENGINE-{engine_id}",
                         style={"margin": "0", "color": "white", "fontSize": "22px", "fontWeight": "800"}),
-                status_badge(status),
+                html.Div(id="engine-status-badge", children=[status_badge(status)]),
             ]
         ),
 
@@ -715,7 +742,8 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
                     children=[
                         card_title("Predicted RUL"),
                         dcc.Graph(
-                            figure=build_rul_chart(rul_value=rul),
+                            id="rul-line-chart",
+                            figure=build_rul_chart(),
                             config={"displayModeBar": False},
                             style={"height": "200px"},
                         )
@@ -729,8 +757,9 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
                                  style={"color": "#a8d4ff", "fontSize": "13px", "fontWeight": "600",
                                         "textAlign": "center"}),
                         html.Div(style={"textAlign": "center"}, children=[
-                            html.Div(str(rul), style={"color": "#00c875", "fontSize": "58px",
-                                                       "fontWeight": "800", "lineHeight": "1"}),
+                        html.Div(id="rul-value-display", children=str(rul),
+                                     style={"color": "#00c875", "fontSize": "58px",
+                                            "fontWeight": "800", "lineHeight": "1"}),
                             html.Div("cycles", style={"color": "#a8d4ff", "fontSize": "14px", "marginTop": "4px"})
                         ]),
                         html.Div(
@@ -739,17 +768,21 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
                                    "justifyContent": "space-between", "alignItems": "center"},
                             children=[
                                 html.Span("Degradation", style={"color": "#a8d4ff", "fontSize": "12px"}),
-                                html.Span(f"{degradation}%", style={"color": degrade_color,
-                                                                      "fontWeight": "700", "fontSize": "14px"})
+                                html.Span(id="degradation-display", children=f"{degradation}%",
+                                          style={"color": degrade_color, "fontWeight": "700", "fontSize": "14px"})
                             ]
                         ),
-                        html.Div(degrade_label[0], style={
-                            "width": "100%", "textAlign": "center",
-                            "background": degrade_label[2],
-                            "border": f"1.5px solid {degrade_label[3]}",
-                            "borderRadius": "10px", "color": degrade_label[1],
-                            "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
-                        })
+                        html.Div(
+                            id="degrade-label-display",
+                            children=degrade_label[0],
+                            style={
+                                "width": "100%", "textAlign": "center",
+                                "background": degrade_label[2],
+                                "border": f"1.5px solid {degrade_label[3]}",
+                                "borderRadius": "10px", "color": degrade_label[1],
+                                "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
+                            }
+                        )
                     ]
                 )
             ]
@@ -855,6 +888,10 @@ def create_overview_layout(supabase, engine_db_id=None):
         },
         children=[
             dcc.Location(id="url-overview", refresh=False),
+            # Store the engine_db_id so the interval callback can use it
+            dcc.Store(id="overview-engine-id-store", data=engine_db_id),
+            # Poll every 5 seconds for new predictions
+            dcc.Interval(id="rul-poll-interval", interval=5_000, n_intervals=0),
 
             # ── Topbar: full width, always fixed at top ──
             html.Div(
@@ -923,6 +960,157 @@ def create_overview_layout(supabase, engine_db_id=None):
             )
         ]
     )
+
+
+# ─────────────────────────────────────────────
+#  CALLBACKS
+# ─────────────────────────────────────────────
+
+def register_overview_callbacks(app, supabase=None):
+    """
+    Register the live RUL chart polling callback.
+    Called once from app.py at startup.
+    """
+
+    @app.callback(
+        Output("rul-line-chart",       "figure"),
+        Output("rul-value-display",    "children"),
+        Output("rul-value-display",    "style"),
+        Output("degradation-display",  "children"),
+        Output("degradation-display",  "style"),
+        Output("degrade-label-display","children"),
+        Output("degrade-label-display","style"),
+        Output("engine-status-badge",  "children"),
+        Input("rul-poll-interval",     "n_intervals"),
+        State("overview-engine-id-store", "data"),
+        prevent_initial_call=False,
+    )
+    def refresh_rul_chart(n_intervals, engine_db_id):
+        MAX_LIFE = 130
+        WARN_THRESH = 62
+        CRIT_THRESH = 30
+
+        # ── Fetch thresholds from Supabase ──
+        if supabase:
+            try:
+                t_resp = supabase.table("alert_thresholds") \
+                    .select("warning_threshold, critical_threshold") \
+                    .order("updated_at", desc=True) \
+                    .limit(1) \
+                    .execute()
+                if t_resp.data:
+                    WARN_THRESH = int(t_resp.data[0].get("warning_threshold", WARN_THRESH))
+                    CRIT_THRESH = int(t_resp.data[0].get("critical_threshold", CRIT_THRESH))
+            except Exception:
+                pass  # fall back to defaults
+
+        cycles_list:    list = []
+        predicted_list: list = []
+        latest_pred_rul: float | None = None
+
+        if supabase and engine_db_id:
+            try:
+                resp = supabase.table("rul_predictions") \
+                    .select("cycle, predicted_rul") \
+                    .eq("engine_id", engine_db_id) \
+                    .order("cycle", desc=False) \
+                    .execute()
+
+                for row in (resp.data or []):
+                    cycles_list.append(row.get("cycle"))
+                    predicted_list.append(
+                        float(row["predicted_rul"]) if row.get("predicted_rul") is not None else None
+                    )
+
+                # Latest valid prediction for the RUL display
+                for v in reversed(predicted_list):
+                    if v is not None:
+                        latest_pred_rul = v
+                        break            except Exception:
+                import traceback
+                print(f"[ERROR] rul poll: {traceback.format_exc()}")
+
+        fig = build_rul_chart(
+            cycles=cycles_list,
+            predicted_ruls=predicted_list,
+            warn_thresh=WARN_THRESH,
+            crit_thresh=CRIT_THRESH,
+        )
+
+        # ── No predictions yet — show neutral waiting state ──
+        if latest_pred_rul is None:
+            no_pred_style = {"color": "rgba(168,212,255,0.5)", "fontSize": "40px",
+                             "fontWeight": "800", "lineHeight": "1"}
+            neutral_label_style = {
+                "width": "100%", "textAlign": "center",
+                "background": "rgba(74,158,255,0.06)",
+                "border": "1.5px solid rgba(74,158,255,0.2)",
+                "borderRadius": "10px", "color": "rgba(168,212,255,0.5)",
+                "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
+            }
+            return (
+                fig, "—", no_pred_style,
+                "—", {"color": "rgba(168,212,255,0.5)", "fontWeight": "700", "fontSize": "14px"},
+                "Awaiting predictions…", neutral_label_style,
+                [status_badge("healthy")],
+            )
+
+        rul_display = str(int(round(latest_pred_rul)))
+        degradation = max(0, min(100, round((1 - latest_pred_rul / MAX_LIFE) * 100)))
+
+        if latest_pred_rul > WARN_THRESH:
+            label_text  = "No Degradation Detected"
+            label_color = "#00c875"
+            label_bg    = "rgba(0,200,117,0.12)"
+            label_bdr   = "#00c875"
+        elif latest_pred_rul > CRIT_THRESH:
+            label_text  = "Moderate Degradation"
+            label_color = "#ffd93d"
+            label_bg    = "rgba(255,217,61,0.12)"
+            label_bdr   = "#ffd93d"
+        else:
+            label_text  = "Severe Degradation"
+            label_color = "#ff4d4d"
+            label_bg    = "rgba(255,77,77,0.12)"
+            label_bdr   = "#ff4d4d"
+
+        rul_number_style = {
+            "color": label_color,
+            "fontSize": "58px",
+            "fontWeight": "800",
+            "lineHeight": "1",
+        }
+        degrade_pct_style = {
+            "color": label_color,
+            "fontWeight": "700",
+            "fontSize": "14px",
+        }
+        label_style = {
+            "width": "100%", "textAlign": "center",
+            "background": label_bg,
+            "border": f"1.5px solid {label_bdr}",
+            "borderRadius": "10px", "color": label_color,
+            "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
+        }
+
+        # Derive status from thresholds
+        if latest_pred_rul <= CRIT_THRESH:
+            live_status = "critical"
+        elif latest_pred_rul <= WARN_THRESH:
+            live_status = "warning"
+        else:
+            live_status = "healthy"
+
+        return (
+            fig,
+            rul_display,
+            rul_number_style,
+            f"{degradation}%",
+            degrade_pct_style,
+            label_text,
+            label_style,
+            [status_badge(live_status)],
+        )
 
 
 # ─────────────────────────────────────────────
