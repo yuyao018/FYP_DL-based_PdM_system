@@ -7,3 +7,8 @@ __pycache__/
 
 # Dash cache
 *.pickle
+
+# Engine sensor data files — ignore org subfolders and their JSON files
+# but keep the data/ folder itself tracked via .gitkeep
+data/*/
+!data/.gitkeep
