@@ -11,32 +11,61 @@ import numpy as np
 
 SENSORS = {
     "TEMPERATURE": [
-        {"id": "T2",  "label": "T2",  "unit": "°R", "desc": "Fan inlet temperature",       "color": "#ff6b6b"},
-        {"id": "T24", "label": "T24", "unit": "°R", "desc": "LPC outlet temperature",      "color": "#f5a623"},
-        {"id": "T30", "label": "T30", "unit": "°R", "desc": "HPC outlet temperature",      "color": "#ff4d4d"},
-        {"id": "T50", "label": "T50", "unit": "°R", "desc": "LPT outlet temperature",      "color": "#ff8c69"},
+        {"id": "T2",      "label": "T2",      "unit": "°R",     "desc": "Fan inlet temperature",       "color": "#ff6b6b"},
+        {"id": "T24",     "label": "T24",     "unit": "°R",     "desc": "LPC outlet temperature",      "color": "#f5a623"},
+        {"id": "T30",     "label": "T30",     "unit": "°R",     "desc": "HPC outlet temperature",      "color": "#ff4d4d"},
+        {"id": "T50",     "label": "T50",     "unit": "°R",     "desc": "LPT outlet temperature",      "color": "#ff8c69"},
     ],
     "PRESSURE": [
-        {"id": "P2",  "label": "P2",  "unit": "psia", "desc": "Fan inlet pressure",        "color": "#4a9eff"},
-        {"id": "P15", "label": "P15", "unit": "psia", "desc": "Bypass duct pressure",      "color": "#00c8ff"},
-        {"id": "P30", "label": "P30", "unit": "psia", "desc": "HPC outlet pressure",       "color": "#7b61ff"},
+        {"id": "P2",      "label": "P2",      "unit": "psia",   "desc": "Fan inlet pressure",          "color": "#4a9eff"},
+        {"id": "P15",     "label": "P15",     "unit": "psia",   "desc": "Bypass duct pressure",        "color": "#00c8ff"},
+        {"id": "P30",     "label": "P30",     "unit": "psia",   "desc": "HPC outlet pressure",         "color": "#7b61ff"},
+        {"id": "Ps30",    "label": "Ps30",    "unit": "psia",   "desc": "HPC static pressure",         "color": "#a0f0c0"},
     ],
     "SPEED / FLOW": [
-        {"id": "Nf",  "label": "Nf",  "unit": "rpm", "desc": "Fan speed",                  "color": "#00c875"},
-        {"id": "Nc",  "label": "Nc",  "unit": "rpm", "desc": "Core speed",                 "color": "#00e5a0"},
-        {"id": "Ps30","label": "Ps30","unit": "psia", "desc": "HPC static pressure",       "color": "#a0f0c0"},
-        {"id": "phi", "label": "phi", "unit": "pps",  "desc": "Fuel-air ratio",            "color": "#ffd93d"},
-        {"id": "BPR", "label": "BPR", "unit": "—",   "desc": "Bypass ratio",               "color": "#ff9f43"},
-        {"id": "NRf", "label": "NRf", "unit": "rpm", "desc": "Corrected fan speed",        "color": "#c0d0ff"},
-        {"id": "NRc", "label": "NRc", "unit": "rpm", "desc": "Corrected core speed",       "color": "#90a8e0"},
+        {"id": "Nf",      "label": "Nf",      "unit": "rpm",    "desc": "Physical fan speed",          "color": "#00c875"},
+        {"id": "Nc",      "label": "Nc",      "unit": "rpm",    "desc": "Physical core speed",         "color": "#00e5a0"},
+        {"id": "phi",     "label": "phi",     "unit": "pps/psi","desc": "Fuel flow / Ps30 ratio",      "color": "#ffd93d"},
+        {"id": "NRf",     "label": "NRf",     "unit": "rpm",    "desc": "Corrected fan speed",         "color": "#c0d0ff"},
+        {"id": "NRc",     "label": "NRc",     "unit": "rpm",    "desc": "Corrected core speed",        "color": "#90a8e0"},
+        {"id": "BPR",     "label": "BPR",     "unit": "—",      "desc": "Bypass ratio",                "color": "#ff9f43"},
+        {"id": "htBleed", "label": "htBleed", "unit": "—",      "desc": "Bleed enthalpy",              "color": "#e879f9"},
+        {"id": "W31",     "label": "W31",     "unit": "lbm/s",  "desc": "HPT coolant bleed",           "color": "#34d399"},
+        {"id": "W32",     "label": "W32",     "unit": "lbm/s",  "desc": "LPT coolant bleed",           "color": "#6ee7b7"},
     ],
 }
 
-# Flat list for lookup
-ALL_SENSORS = {s["id"]: s for group in SENSORS.values() for s in group}
-
 # Default selected sensors (matching screenshot)
 DEFAULT_SELECTED = ["T30", "P30", "Nf", "phi"]
+
+# Flat lookup by sensor display ID
+ALL_SENSORS = {s["id"]: s for group in SENSORS.values() for s in group}
+
+# ─────────────────────────────────────────────
+#  SENSOR → JSON KEY MAPPING
+# ─────────────────────────────────────────────
+
+# Maps each display sensor ID to its key in the JSON row's "sensors" dict
+# Reference: CMAPSS S-number → symbol table
+SENSOR_JSON_KEY = {
+    "T2":      "s1",   # S1  → T2   — Fan inlet temperature
+    "T24":     "s2",   # S2  → T24  — LPC outlet temperature
+    "T30":     "s3",   # S3  → T30  — HPC outlet temperature
+    "T50":     "s4",   # S4  → T50  — LPT outlet temperature
+    "P2":      "s5",   # S5  → P2   — Fan inlet pressure
+    "P15":     "s6",   # S6  → P15  — Bypass duct pressure
+    "P30":     "s7",   # S7  → P30  — HPC outlet pressure
+    "Nf":      "s8",   # S8  → Nf   — Physical fan speed
+    "Nc":      "s9",   # S9  → Nc   — Physical core speed
+    "Ps30":    "s11",  # S11 → Ps30 — HPC static pressure
+    "phi":     "s12",  # S12 → phi  — Fuel flow / Ps30
+    "NRf":     "s13",  # S13 → NRf  — Corrected fan speed
+    "NRc":     "s14",  # S14 → NRc  — Corrected core speed
+    "BPR":     "s15",  # S15 → BPR  — Bypass ratio
+    "htBleed": "s17",  # S17 → htBleed — Bleed enthalpy
+    "W31":     "s20",  # S20 → W31  — HPT coolant bleed
+    "W32":     "s21",  # S21 → W32  — LPT coolant bleed
+}
 
 
 # ─────────────────────────────────────────────
@@ -180,43 +209,69 @@ def build_sidebar(active_page="sensor", engine_db_id=None):
 #  SENSOR CHART
 # ─────────────────────────────────────────────
 
-def build_sensor_chart(selected_ids, normalize=True, total_cycles=100):
-    """Generate multi-line sensor trend chart."""
+def build_sensor_chart(selected_ids, sensor_history=None, normalize=True):
+    """
+    Build multi-line sensor chart from real sensor history rows.
+    sensor_history: list of row dicts from engine_simulation_manager.get_sensor_history()
+    Falls back to an empty placeholder if no data yet.
+    """
     fig = go.Figure()
-    x = np.linspace(0, total_cycles, total_cycles + 1)
 
-    rng = np.random.RandomState(99)
+    if not sensor_history:
+        fig.add_annotation(
+            text="Sensor data will appear as simulation runs…",
+            x=0.5, y=0.5, xref="paper", yref="paper",
+            showarrow=False, font=dict(color="rgba(168,212,255,0.5)", size=13),
+        )
+        _apply_chart_layout(fig, normalize)
+        return fig
+
+    cycles = [r.get("cycle", i + 1) for i, r in enumerate(sensor_history)]
 
     for sid in selected_ids:
         if sid not in ALL_SENSORS:
             continue
+        json_key = SENSOR_JSON_KEY.get(sid)
+        if not json_key:
+            continue
+
         s = ALL_SENSORS[sid]
+        values = []
+        for row in sensor_history:
+            sensors_dict = row.get("sensors", {})
+            v = sensors_dict.get(json_key)
+            if v is None:
+                v = row.get(json_key)
+            values.append(float(v) if v is not None else None)
 
-        # Simulate degradation-aware signal per sensor
-        base = rng.uniform(0.2, 0.5)
-        trend = rng.uniform(-0.003, 0.005)
-        noise = rng.normal(0, 0.01, len(x))
-        raw = base + trend * x + noise
-        # Add a subtle inflection around cycle 60
-        inflection = 0.15 * np.exp(-((x - 60) ** 2) / 500) * rng.choice([-1, 1])
-        raw += inflection
+        if all(v is None for v in values):
+            continue
 
+        y = values
         if normalize:
-            mn, mx = raw.min(), raw.max()
-            y = (raw - mn) / (mx - mn + 1e-9)
-            y_axis_label = "Normalised Value"
-        else:
-            y = raw * rng.uniform(80, 400)   # scale to realistic units
-            y_axis_label = "Raw Value"
+            vals = [v for v in values if v is not None]
+            if vals:
+                mn, mx = min(vals), max(vals)
+                rng = mx - mn if mx != mn else 1.0
+                y = [(v - mn) / rng if v is not None else None for v in values]
 
         fig.add_trace(go.Scatter(
-            x=x, y=y,
+            x=cycles, y=y,
             mode="lines",
             name=s["label"],
             line=dict(color=s["color"], width=2),
-            hovertemplate=f"<b>{s['label']}</b><br>Cycle: %{{x}}<br>Value: %{{y:.3f}}<extra></extra>",
+            connectgaps=True,
+            hovertemplate=(
+                f"<b>{s['label']}</b><br>Cycle: %{{x}}<br>"
+                f"Value: %{{y:.3f}}<extra></extra>"
+            ),
         ))
 
+    _apply_chart_layout(fig, normalize, x_max=max(cycles) if cycles else 1, x_min=min(cycles) if cycles else 0)
+    return fig
+
+
+def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(10,20,45,0.6)",
@@ -231,26 +286,23 @@ def build_sensor_chart(selected_ids, normalize=True, total_cycles=100):
             title=dict(text="Operational Cycles", font=dict(color="#a8d4ff", size=11)),
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
             color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
-            range=[0, total_cycles],
+            range=[x_min if x_min is not None else 0, x_max] if x_max else None,
+            showticklabels=False,
         ),
         yaxis=dict(
-            title=dict(text="Normalised Value" if normalize else "Raw Value",
-                       font=dict(color="#a8d4ff", size=11)),
+            title=dict(
+                text="Normalised Value" if normalize else "Raw Value",
+                font=dict(color="#a8d4ff", size=11),
+            ),
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
             color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
         ),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#0d1e3a", font_color="white", bordercolor="rgba(74,158,255,0.4)"),
+        hoverlabel=dict(
+            bgcolor="#0d1e3a", font_color="white",
+            bordercolor="rgba(74,158,255,0.4)",
+        ),
     )
-
-    # Cycle label top-right
-    fig.add_annotation(
-        x=total_cycles, y=1.06, xref="x", yref="paper",
-        text=f"Cycle {total_cycles}", font=dict(color="#a8d4ff", size=10),
-        showarrow=False, xanchor="right",
-    )
-
-    return fig
 
 # ─────────────────────────────────────────────
 #  SENSOR CHECKLIST
@@ -435,7 +487,7 @@ def build_sensor_trends_body(engine_id="01", status="healthy"):
                     children=[
                         dcc.Graph(
                             id="sensor-chart",
-                            figure=build_sensor_chart(DEFAULT_SELECTED, normalize=True),
+                            figure=build_sensor_chart(DEFAULT_SELECTED, sensor_history=None, normalize=True),
                             config={"displayModeBar": False},
                             style={"flex": "1"},
                         ),
@@ -494,6 +546,8 @@ def create_sensor_trends_layout(supabase=None, engine_db_id=None):
         },
         children=[
             dcc.Location(id="url-sensor", refresh=False),
+            dcc.Store(id="sensor-engine-id-store", data=engine_db_id),
+            dcc.Interval(id="sensor-poll-interval", interval=3_000, n_intervals=0),
 
             # ── Fixed topbar ──
             html.Div(
@@ -598,14 +652,16 @@ def register_sensor_callbacks(app):
     def update_select_label(n_clicks):
         return "Deselect all" if n_clicks % 2 == 1 else "Select all"
 
-    # ── Update chart when sensors or toggle changes ──
+    # ── Update chart every 3 s from simulation ring buffer ──
     @app.callback(
         Output("sensor-chart", "figure"),
         Output("chart-legend", "children"),
+        Input("sensor-poll-interval", "n_intervals"),
         Input({"type": "sensor-check", "index": dash.ALL}, "value"),
         Input("normalize-toggle", "n_clicks"),
+        State("sensor-engine-id-store", "data"),
     )
-    def update_chart(check_values, n_clicks):
+    def update_chart(n_intervals, check_values, n_clicks, engine_db_id):
         is_norm = (n_clicks % 2 == 1)
 
         selected = [
@@ -616,7 +672,16 @@ def register_sensor_callbacks(app):
         if not selected:
             selected = [all_ids[0]]
 
-        fig = build_sensor_chart(selected, normalize=is_norm)
+        # Pull live sensor rows from the simulation ring buffer
+        sensor_history = None
+        if engine_db_id:
+            try:
+                from engine_simulation_manager import get_sensor_history
+                sensor_history = get_sensor_history(engine_db_id) or None
+            except Exception:
+                pass
+
+        fig = build_sensor_chart(selected, sensor_history=sensor_history, normalize=is_norm)
 
         legend = [
             html.Div(

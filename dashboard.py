@@ -115,9 +115,9 @@ def create_dashboard_layout(supabase, org_id=None):
             response     = eng_query().execute()
             total_count  = response.count or 0
 
-            healthy_count  = (eng_query().eq("condition_status", "healthy").execute().count or 0)
-            warning_count  = (eng_query().eq("condition_status", "warning").execute().count or 0)
-            critical_count = (eng_query().eq("condition_status", "critical").execute().count or 0)
+            # warning_count / critical_count are derived below from engine_data
+            # after applying the fetched thresholds, so the cards and summary
+            # always use the same threshold values.
 
             engine_ids = [e.get("id") for e in (response.data or []) if e.get("id")]
 
@@ -179,6 +179,11 @@ def create_dashboard_layout(supabase, org_id=None):
                     "degradation": degradation,
                     "rul":         int(round(rul)),
                 })
+
+            # ── Derive summary counts from engine_data (uses fetched thresholds) ──
+            healthy_count  = sum(1 for e in engine_data if e["status"] == "healthy")
+            warning_count  = sum(1 for e in engine_data if e["status"] == "warning")
+            critical_count = sum(1 for e in engine_data if e["status"] == "critical")
 
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 

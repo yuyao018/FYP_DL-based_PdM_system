@@ -55,6 +55,10 @@ register_overview_callbacks(app, supabase=supabase)
 from engine_simulation_manager import resume_all_simulations
 resume_all_simulations(supabase)
 
+# Start email notification manager (daily report + threshold alerts)
+from email_notifications import start_notification_manager
+start_notification_manager(supabase)
+
 # Main app layout with routing
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
