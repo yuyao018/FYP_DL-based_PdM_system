@@ -2,7 +2,13 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
+import os
 from datetime import datetime
+
+# Shared model storage directory
+SHARED_MODELS_DIR = os.path.join(os.path.dirname(__file__), "data", "shared_models")
+
+MODEL_TYPES = ["FD001", "FD002", "FD003", "FD004"]
 
 # ─────────────────────────────────────────────
 #  SVG ICON HELPERS
@@ -447,19 +453,59 @@ def build_version_history(history=None):
 #  MAIN PAGE BODY
 # ─────────────────────────────────────────────
 
-def build_model_upload_body(active_model=None, history=None):
+def build_model_type_selector(selected="FD001"):
+    """Inline dropdown model type selector pushed to the far right of the header row."""
+    return html.Div(
+        style={"marginLeft": "auto", "display": "flex", "alignItems": "center", "gap": "8px"},
+        children=[
+            html.Span("MODEL TYPE", style={
+                "color": "rgba(168,212,255,0.55)", "fontSize": "10px",
+                "fontWeight": "700", "letterSpacing": "1px", "whiteSpace": "nowrap",
+            }),
+            dcc.Dropdown(
+                id="model-type-dropdown",
+                options=[{"label": mt, "value": mt} for mt in MODEL_TYPES],
+                value=selected,
+                clearable=False,
+                className="model-type-dropdown",
+                style={
+                    "width": "120px",
+                    "fontSize": "13px",
+                    "fontWeight": "700",
+                    # Dash injects these inline — override them here
+                    "backgroundColor": "rgba(10,20,45,0.8)",
+                    "color": "white",
+                    "border": "1.5px solid rgba(74,158,255,0.4)",
+                    "borderRadius": "8px",
+                },
+            ),
+        ]
+    )
+
+
+def build_model_upload_body(active_model=None, history=None, selected_type="FD001"):
     return [
         html.Div(style={"marginBottom": "8px"}, children=[
-            html.H2("MODEL UPLOAD", style={"margin": "0", "color": "white",
-                                            "fontSize": "22px", "fontWeight": "800"}),
+            html.Div(
+                style={
+                    "display": "flex", "alignItems": "center",
+                    "justifyContent": "space-between", "flexWrap": "nowrap",
+                },
+                children=[
+                    html.H2("MODEL UPLOAD", style={"margin": "0", "color": "white",
+                                                    "fontSize": "22px", "fontWeight": "800"}),
+                    build_model_type_selector(selected=selected_type),
+                ]
+            ),
             html.Div("Replace the active .h5 model file used for RUL inference",
                      style={"color": "rgba(168,212,255,0.6)", "fontSize": "13px", "marginTop": "4px"}),
         ]),
+        dcc.Store(id="selected-model-type", data=selected_type),
         html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.15)", "margin": "16px 0 20px"}),
 
-        build_active_model_panel(active_model),
+        html.Div(id="active-model-panel-container", children=[build_active_model_panel(active_model)]),
         build_upload_panel(),
-        build_version_history(history),
+        html.Div(id="version-history-container", children=[build_version_history(history)]),
     ]
 
 
@@ -470,44 +516,12 @@ def build_model_upload_body(active_model=None, history=None):
 def create_model_upload_layout(supabase=None):
     active_model = None
     history = None
+    default_type = "FD001"
 
     try:
         if supabase:
-            # Fetch model versions with uploaded_by user information
-            resp = supabase.table("model_versions") \
-                .select("*, uploaded_by_user:user_profiles!uploaded_by(username)") \
-                .order("uploaded_at", desc=True) \
-                .execute()
-            if resp.data:
-                history = []
-                for i, m in enumerate(resp.data):
-                    uploaded_at = m.get("uploaded_at")
-                    if uploaded_at:
-                        try:
-                            uploaded_at = datetime.fromisoformat(
-                                uploaded_at.replace("Z", "+00:00")
-                            ).strftime("%Y/%m/%d")
-                        except Exception:
-                            uploaded_at = str(uploaded_at)[:10]
-                    
-                    # Extract username from the joined table
-                    uploaded_by_username = "—"
-                    if m.get("uploaded_by_user") and isinstance(m["uploaded_by_user"], dict):
-                        uploaded_by_username = m["uploaded_by_user"].get("username", "—")
-                    
-                    history.append({
-                        "filename": m.get("filename", "—"),
-                        "uploaded": uploaded_at or "—",
-                        "uploaded_by": uploaded_by_username,
-                        "status": m.get("status", "archived"),
-                    })
-                active_entry = next((h for h in history if h["status"].lower() == "active"), None)
-                if active_entry:
-                    active_model = {
-                        "filename": active_entry["filename"],
-                        "uploaded": active_entry["uploaded"],
-                        "uploaded_by": active_entry["uploaded_by"],
-                    }
+            # Use the shared helper so logic is consistent
+            active_model, history = _fetch_history_for_type(supabase, default_type)
     except Exception as e:
         import traceback
         print(f"[ERROR] model upload fetch: {traceback.format_exc()}")
@@ -528,7 +542,11 @@ def create_model_upload_layout(supabase=None):
                     build_admin_sidebar(active_page="model"),
                     html.Div(
                         style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
-                        children=build_model_upload_body(active_model=active_model, history=history),
+                        children=build_model_upload_body(
+                            active_model=active_model,
+                            history=history,
+                            selected_type=default_type,
+                        ),
                     )
                 ]
             )
@@ -540,9 +558,97 @@ def create_model_upload_layout(supabase=None):
 #  CALLBACKS
 # ─────────────────────────────────────────────
 
+def _fetch_history_for_type(supabase, model_type):
+    """Helper: fetch version history + active model for a given model_type.
+
+    Strategy:
+    1. Fetch model_versions filtered by model_type, ordered newest first.
+    2. Collect all distinct uploaded_by UUIDs and look them up in the users table.
+    3. Build the history list and derive active_model from the 'active' row.
+    """
+    active_model = None
+    history = []
+    try:
+        # ── Step 1: fetch model versions ──
+        resp = supabase.table("model_versions") \
+            .select("id, filename, uploaded_at, uploaded_by, status, model_type") \
+            .eq("model_type", model_type) \
+            .order("uploaded_at", desc=True) \
+            .execute()
+
+        rows = resp.data or []
+        if not rows:
+            return active_model, history
+
+        # ── Step 2: batch-fetch usernames for all unique UUIDs ──
+        uuids = list({r["uploaded_by"] for r in rows if r.get("uploaded_by")})
+        username_map = {}
+        if uuids:
+            u_resp = supabase.table("users") \
+                .select("id, username") \
+                .in_("id", uuids) \
+                .execute()
+            for u in (u_resp.data or []):
+                username_map[u["id"]] = u.get("username", "—")
+
+        # ── Step 3: build history list ──
+        for m in rows:
+            uploaded_at = m.get("uploaded_at")
+            if uploaded_at:
+                try:
+                    uploaded_at = datetime.fromisoformat(
+                        uploaded_at.replace("Z", "+00:00")
+                    ).strftime("%Y/%m/%d %H:%M")
+                except Exception:
+                    uploaded_at = str(uploaded_at)[:16]
+
+            uploaded_by_username = username_map.get(m.get("uploaded_by"), "—")
+
+            history.append({
+                "filename":    m.get("filename", "—"),
+                "uploaded":    uploaded_at or "—",
+                "uploaded_by": uploaded_by_username,
+                "status":      m.get("status", "archived"),
+                "model_type":  m.get("model_type", model_type),
+            })
+
+        active_entry = next((h for h in history if h["status"].lower() == "active"), None)
+        if active_entry:
+            active_model = {
+                "filename":    active_entry["filename"],
+                "uploaded":    active_entry["uploaded"],
+                "uploaded_by": active_entry["uploaded_by"],
+            }
+
+    except Exception:
+        import traceback
+        print(f"[ERROR] _fetch_history_for_type: {traceback.format_exc()}")
+
+    return active_model, history
+
+
 def register_model_upload_callbacks(app, supabase=None):
 
-    # Handle file drop / browse
+    # ── Model type dropdown: refresh active model panel + version history ──
+    @app.callback(
+        Output("selected-model-type", "data"),
+        Output("active-model-panel-container", "children"),
+        Output("version-history-container", "children"),
+        Input("model-type-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def switch_model_type(selected):
+        if not selected:
+            raise dash.exceptions.PreventUpdate
+
+        if supabase:
+            active_model, history = _fetch_history_for_type(supabase, selected)
+        else:
+            active_model, history = None, []
+
+        return selected, [build_active_model_panel(active_model)], [build_version_history(history)]
+
+    # ── Handle file drop / browse ──
     @app.callback(
         Output("staged-file-container", "children"),
         Output("staged-file-data", "data"),
@@ -570,7 +676,6 @@ def register_model_upload_callbacks(app, supabase=None):
                  "padding": "10px 24px", "fontSize": "13px", "fontWeight": "600", "cursor": "not-allowed"},
             )
 
-        # Estimate size from base64 content
         header, b64data = contents.split(",", 1)
         size_mb = round(len(base64.b64decode(b64data)) / (1024 * 1024), 1)
 
@@ -594,7 +699,7 @@ def register_model_upload_callbacks(app, supabase=None):
             cancel_active_style,
         )
 
-    # Cancel upload — clear staged file
+    # ── Cancel upload — clear staged file ──
     @app.callback(
         Output("staged-file-container", "children", allow_duplicate=True),
         Output("staged-file-data", "data", allow_duplicate=True),
@@ -608,7 +713,7 @@ def register_model_upload_callbacks(app, supabase=None):
             raise dash.exceptions.PreventUpdate
         return [], None, None, ""
 
-    # Deploy model
+    # ── Deploy model ──
     @app.callback(
         Output("model-upload-status", "children"),
         Output("version-history-body", "children"),
@@ -616,9 +721,10 @@ def register_model_upload_callbacks(app, supabase=None):
         State("staged-file-data", "data"),
         State("version-notes-input", "value"),
         State("session-store", "data"),
+        State("selected-model-type", "data"),
         prevent_initial_call=True,
     )
-    def deploy_model(n_clicks, staged_file, notes, session_data):
+    def deploy_model(n_clicks, staged_file, notes, session_data, model_type):
         if not n_clicks or not staged_file:
             raise dash.exceptions.PreventUpdate
 
@@ -628,7 +734,6 @@ def register_model_upload_callbacks(app, supabase=None):
                 dash.no_update
             )
 
-        # Get user_id from session
         user_id = None
         if session_data:
             user_id = session_data.get("user_id")
@@ -639,59 +744,51 @@ def register_model_upload_callbacks(app, supabase=None):
                 dash.no_update
             )
 
+        selected_type = model_type or "FD001"
+
         try:
-            # Mark previous active model as archived
+            # ── Save .h5 file to data/shared_models/<model_type>/ ──
+            type_dir = os.path.join(SHARED_MODELS_DIR, selected_type)
+            os.makedirs(type_dir, exist_ok=True)
+            _, b64data = staged_file["contents"].split(",", 1)
+            file_bytes = base64.b64decode(b64data)
+            save_path = os.path.join(type_dir, staged_file["filename"])
+            with open(save_path, "wb") as f:
+                f.write(file_bytes)
+
+            # ── Mark previous active model for this type as archived ──
             supabase.table("model_versions") \
                 .update({"status": "archived"}) \
                 .eq("status", "active") \
+                .eq("model_type", selected_type) \
                 .execute()
 
-            # Insert new model version as active with user_id
+            # ── Insert new model version as active ──
             supabase.table("model_versions").insert({
                 "uploaded_by": user_id,
                 "filename": staged_file["filename"],
                 "version_notes": notes or None,
                 "status": "active",
+                "model_type": selected_type,
             }).execute()
 
-            # Re-fetch history with user information
-            resp = supabase.table("model_versions") \
-                .select("*, uploaded_by_user:user_profiles!uploaded_by(username)") \
-                .order("uploaded_at", desc=True) \
-                .execute()
-
-            history = []
-            for m in (resp.data or []):
-                uploaded_at = m.get("uploaded_at")
-                if uploaded_at:
-                    try:
-                        uploaded_at = datetime.fromisoformat(
-                            uploaded_at.replace("Z", "+00:00")
-                        ).strftime("%Y/%m/%d")
-                    except Exception:
-                        uploaded_at = str(uploaded_at)[:10]
-                
-                # Extract username from the joined table
-                uploaded_by_username = "—"
-                if m.get("uploaded_by_user") and isinstance(m["uploaded_by_user"], dict):
-                    uploaded_by_username = m["uploaded_by_user"].get("username", "—")
-                
-                history.append({
-                    "filename": m.get("filename", "—"),
-                    "uploaded": uploaded_at or "—",
-                    "uploaded_by": uploaded_by_username,
-                    "status": m.get("status", "archived"),
-                })
-
-            rows = [history_row(h, is_last=(i == len(history) - 1)) for i, h in enumerate(history)] if history else [
+            # ── Re-fetch history for this type using shared helper ──
+            _, history = _fetch_history_for_type(supabase, selected_type)
+            rows = [
+                history_row(h, is_last=(i == len(history) - 1))
+                for i, h in enumerate(history)
+            ] if history else [
                 html.Div("No version history available", style={
-                    "color": "rgba(168,212,255,0.5)", "fontSize": "13px", 
+                    "color": "rgba(168,212,255,0.5)", "fontSize": "13px",
                     "padding": "20px", "textAlign": "center"
                 })
             ]
 
             return (
-                html.Span("Model deployed successfully!", style={"color": "#4aff9e", "fontSize": "13px"}),
+                html.Span(
+                    f"Model deployed successfully to {selected_type}!",
+                    style={"color": "#4aff9e", "fontSize": "13px"}
+                ),
                 rows
             )
 
