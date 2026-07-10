@@ -12,6 +12,7 @@ from model_upload import create_model_upload_layout, register_model_upload_callb
 from alert_thresholds import create_alert_thresholds_layout, register_alert_thresholds_callbacks
 from engine_management import create_engine_management_layout, register_engine_management_callbacks
 from add_engine import create_add_engine_layout, register_add_engine_callbacks
+from degradation_analysis import create_degradation_analysis_layout, register_degradation_analysis_callbacks
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -42,14 +43,15 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
 register_sensor_callbacks(app)
-register_alert_log_callbacks(app)
+register_alert_log_callbacks(app, supabase=supabase)
 register_user_management_callbacks(app, supabase=supabase)
 register_add_user_callbacks(app, supabase=supabase)
 register_model_upload_callbacks(app, supabase=supabase)
 register_alert_thresholds_callbacks(app, supabase=supabase)
-register_engine_management_callbacks(app, supabase=supabase)
+register_engine_management_callbacks(app, supabase=supabase_admin)
 register_add_engine_callbacks(app, supabase=supabase)
 register_overview_callbacks(app, supabase=supabase)
+register_degradation_analysis_callbacks(app, supabase=supabase)
 
 # Resume simulations for any engines that already have data on disk
 from engine_simulation_manager import resume_all_simulations
@@ -93,12 +95,17 @@ def display_page(pathname, session):
         engine_db_id = pathname.split("/")[-1]
         return create_alert_log_layout(supabase, engine_db_id=engine_db_id)
 
+    if pathname.startswith("/degradation-analysis/"):
+        engine_db_id = pathname.split("/")[-1]
+        return create_degradation_analysis_layout(supabase, engine_db_id=engine_db_id)
+
     # ── Exact routes ──
     routes = {
         "/dashboard":         lambda: create_dashboard_layout(supabase, org_id=org_id),
         "/overview":          lambda: create_overview_layout(supabase),
         "/sensor-trends":     lambda: create_sensor_trends_layout(supabase),
         "/alert-log":         lambda: create_alert_log_layout(supabase),
+        "/degradation-analysis": lambda: create_degradation_analysis_layout(supabase),
         "/engine-management": lambda: create_engine_management_layout(supabase, org_id=org_id),
         "/add-engine":        lambda: create_add_engine_layout(supabase, org_id=org_id),
         "/user-management":   lambda: create_user_management_layout(supabase),

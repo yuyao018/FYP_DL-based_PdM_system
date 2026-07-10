@@ -85,11 +85,37 @@ def icon_logout():
 
 
 # ─────────────────────────────────────────────
+#  3D HOLOGRAPHIC JET ENGINE MODEL
+# ─────────────────────────────────────────────
+
+def build_engine_3d_model(status="healthy", degradation_type=None):
+    """
+    Returns an html.Iframe pointing to the static engine_3d_viewer.html in assets/.
+    Passes status and degradation_type as URL params for conditional blinking.
+    """
+    params = f"?status={status}"
+    if degradation_type:
+        params += f"&degradation={degradation_type.replace(' ', '+')}"
+    return html.Iframe(
+        src=f"/assets/engine_3d_viewer.html{params}",
+        id="engine-3d-iframe",
+        style={
+            "width": "100%",
+            "height": "270px",
+            "border": "none",
+            "background": "transparent",
+            "display": "block",
+        },
+    )
+
+
+# ─────────────────────────────────────────────
 #  RUL LINE CHART
 # ─────────────────────────────────────────────
 
 def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
-                    warn_thresh: int = 62, crit_thresh: int = 30):
+                    warn_thresh: int = 62, crit_thresh: int = 30,
+                    window_size: int = 45):
     """
     Plot actual RUL and predicted RUL over cycles from real rul_predictions data.
     Falls back to a flat placeholder when no data is available yet.
@@ -99,15 +125,18 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
     has_actual    = actual_ruls    and any(v is not None for v in actual_ruls)
     has_predicted = predicted_ruls and any(v is not None for v in predicted_ruls)
 
+    x_min = window_size   # predictions never start before the window fills
+    x_max = None
+    y_max = warn_thresh + 10
+
     if not cycles or (not has_actual and not has_predicted):
         # ── Placeholder when simulation hasn't produced data yet ──
         fig.add_annotation(
-            text=f"Warming up — predictions start after cycle {WINDOW_SIZE}",
+            text=f"Warming up \u2014 predictions start after cycle {window_size}",
             x=0.5, y=0.5, xref="paper", yref="paper",
             showarrow=False,
             font=dict(color="rgba(168,212,255,0.5)", size=13),
         )
-        y_max = warn_thresh + 10
     else:
         x = cycles
 
@@ -141,26 +170,20 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
                 ))
 
         x_max = max(x) if x else 1
-
-        # Invisible anchor at x=0 so the axis always starts flush at 0
-        fig.add_trace(go.Scatter(
-            x=[0], y=[None],
-            mode="markers", marker=dict(opacity=0),
-            showlegend=False, hoverinfo="skip",
-        ))
+        x_min = min(x) if x else 45
 
         # Dynamic y-axis: 10% headroom above the max value seen
         all_vals = [v for v in (predicted_ruls or []) if v is not None]
         y_max = max(max(all_vals) * 1.1, warn_thresh + 10) if all_vals else warn_thresh + 10
 
         # Warning threshold
-        fig.add_shape(type="line", x0=0, x1=x_max, y0=warn_thresh, y1=warn_thresh,
+        fig.add_shape(type="line", x0=x_min, x1=x_max, y0=warn_thresh, y1=warn_thresh,
                       line=dict(color="#ffd93d", width=1, dash="dot"))
         fig.add_annotation(x=x_max, y=warn_thresh, text="warn",
                            font=dict(color="#ffd93d", size=10),
                            showarrow=False, xanchor="left", xshift=4)
         # Critical threshold
-        fig.add_shape(type="line", x0=0, x1=x_max, y0=crit_thresh, y1=crit_thresh,
+        fig.add_shape(type="line", x0=x_min, x1=x_max, y0=crit_thresh, y1=crit_thresh,
                       line=dict(color="#ff4d4d", width=1, dash="dot"))
         fig.add_annotation(x=x_max, y=crit_thresh, text="crit",
                            font=dict(color="#ff4d4d", size=10),
@@ -181,7 +204,7 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
             color="#a8d4ff",
             zeroline=False,
             showticklabels=False,
-            rangemode="tozero",     # x-axis always starts at 0
+            range=[x_min, x_max] if x_max is not None else None,
             title=dict(text="", font=dict(color="#a8d4ff", size=11)),
         ),
         yaxis=dict(
@@ -193,6 +216,11 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
             title=dict(text="RUL", font=dict(color="#a8d4ff", size=11)),
         ),
         hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="#0d1e3a",
+            bordercolor="rgba(74,158,255,0.4)",
+            font=dict(color="white", size=12),
+        ),
     )
     return fig
 
@@ -201,9 +229,34 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
 #  TOP DRIVERS (SHAP) BAR CHART
 # ─────────────────────────────────────────────
 
-def build_shap_chart():
-    sensors = ["T30", "phi", "P30", "Nf", "W31", "BPR"]
-    values = [-0.42, -0.33, -0.28, 0.20, 0.14, 0.09]
+def build_shap_chart(shap_data=None):
+    """
+    Render the Top Drivers (feature importance) bar chart.
+    shap_data: list of {"sensor": str, "score": float} sorted by |score| desc,
+               or None/[] to show a placeholder.
+    Shows the top 6 features by absolute contribution.
+    """
+    # Fall back to placeholder if no data yet
+    if not shap_data:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Feature importance will appear once predictions start",
+            x=0.5, y=0.5, xref="paper", yref="paper",
+            showarrow=False, font=dict(color="rgba(168,212,255,0.5)", size=12),
+        )
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=10, r=40, t=10, b=10), height=220,
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+        )
+        return fig
+
+    # Take top 6 by absolute score — highest impact first.
+    # With autorange="reversed" on the y-axis, the first item renders at the top.
+    top6 = sorted(shap_data, key=lambda x: abs(x["score"]), reverse=True)[:6]
+
+    sensors = [d["sensor"] for d in top6]
+    values  = [d["score"]  for d in top6]
 
     colors = [
         "#ff6b6b" if v < -0.3 else
@@ -219,14 +272,15 @@ def build_shap_chart():
         orientation="h",
         marker_color=colors,
         text=[f"{v:+.2f}" for v in values],
-        textposition="outside",
-        textfont=dict(color="#a8d4ff", size=11),
+        textposition="inside",
+        insidetextanchor="end",
+        textfont=dict(color="white", size=10),
     ))
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=40, t=10, b=10),
+        margin=dict(l=10, r=10, t=10, b=10),
         height=220,
         xaxis=dict(
             showgrid=True,
@@ -241,6 +295,11 @@ def build_shap_chart():
             color="#a8d4ff",
             tickfont=dict(size=12, color="white"),
             autorange="reversed",
+        ),
+        hoverlabel=dict(
+            bgcolor="#0d1e3a",
+            bordercolor="rgba(74,158,255,0.4)",
+            font=dict(color="white", size=12),
         ),
     )
     return fig
@@ -287,7 +346,7 @@ def build_sidebar(active_page="overview", engine_db_id=None):
     # Build navigation links with engine_db_id if available
     overview_href = f"/overview/{engine_db_id}" if engine_db_id else "/dashboard"
     sensor_href = f"/sensor-trends/{engine_db_id}" if engine_db_id else "/sensor-trends"
-    explainability_href = f"/explainability/{engine_db_id}" if engine_db_id else "/explainability"
+    degradation_analysis_href = f"/degradation-analysis/{engine_db_id}" if engine_db_id else "/degradation-analysis"
     alert_href = f"/alert-log/{engine_db_id}" if engine_db_id else "/alert-log"
 
     return html.Div(
@@ -295,7 +354,11 @@ def build_sidebar(active_page="overview", engine_db_id=None):
         style={
             "width": "210px",
             "flexShrink": "0",
-            "height": "100%",
+            "height": "100vh",
+            "maxHeight": "100vh",
+            "position": "sticky",
+            "top": "0",
+            "alignSelf": "flex-start",
             "background": "#0d1e3a",
             "borderRight": "1px solid rgba(74,158,255,0.15)",
             "display": "flex",
@@ -353,7 +416,7 @@ def build_sidebar(active_page="overview", engine_db_id=None):
                     ),
                     nav_link(icon_overview, "Overview",        "overview",     overview_href),
                     nav_link(icon_sensor,   "Sensor Trends",   "sensor",       sensor_href),
-                    nav_link(icon_shap,     "Explainability AI","explainability",explainability_href),
+                    nav_link(icon_shap,     "Degradation Analysis","degradation_analysis",degradation_analysis_href),
                     nav_link(icon_alert,    "Alert Log",       "alert",        alert_href),
                 ]
             ),
@@ -700,27 +763,23 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
         ]
     )
 
-def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=80):
+def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=None, degradation_type=None, engine_db_id=None):
     """Returns just the scrollable inner content children (a list)."""
+    # Default display values when no prediction data available
+    rul_display = str(int(rul)) if rul is not None else "\u2014"
+    deg_display = f"{degradation}%" if degradation is not None else "\u2014"
+    degradation = degradation if degradation is not None else 100
+
     degrade_color = (
         "#00c875" if degradation >= 70 else
         "#ffd93d" if degradation >= 40 else
         "#ff4d4d"
     )
-    if degradation >= 70:
-        degrade_label = ("No Degradation Detected", "#00c875", "rgba(0,200,117,0.12)", "#00c875")
-    elif degradation >= 40:
-        degrade_label = ("Moderate Degradation", "#ffd93d", "rgba(255,217,61,0.12)", "#ffd93d")
+    # Degradation type label — always blue, just shows the fault mode
+    if degradation_type:
+        degrade_label = (degradation_type, "#4a9eff", "rgba(74,158,255,0.12)", "#4a9eff")
     else:
-        degrade_label = ("Severe Degradation", "#ff4d4d", "rgba(255,77,77,0.12)", "#ff4d4d")
-
-    sensor_list = [
-        ("T30", "HPC outlet temperature"),
-        ("P30", "HPC outlet pressure"),
-        ("Nf",  "Fan speed"),
-        ("phi", "Fuel-air ratio"),
-        ("W31", "HPT coolant bleed"),
-    ]
+        degrade_label = ("No Degradation Detected", "#4a9eff", "rgba(74,158,255,0.12)", "#4a9eff")
 
     return [
         # Engine title row
@@ -733,12 +792,58 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
             ]
         ),
 
-        # Row 1: RUL Chart + RUL Panel
+        # Row 1: 3D Engine Model + RUL Chart + RUL Panel
         html.Div(
             style={"display": "flex", "gap": "20px", "marginBottom": "20px"},
             children=[
+                # ── 3D Holographic Engine Model Card ──
                 card(
-                    style_extra={"flex": "3"},
+                    style_extra={
+                        "flex": "4",
+                        "display": "flex",
+                        "flexDirection": "column",
+                        "background": "linear-gradient(160deg, #0e1e36 0%, #101e36 60%, #0b1a30 100%)",
+                        "border": "1px solid rgba(0,200,255,0.20)",
+                        "boxShadow": "0 0 24px rgba(0,200,255,0.08), inset 0 0 40px rgba(0,200,255,0.03)",
+                        "position": "relative",
+                        "overflow": "hidden",
+                    },
+                    children=[
+                        # Holographic scanline overlay (CSS via inline style)
+                        html.Div(style={
+                            "position": "absolute", "top": "0", "left": "0",
+                            "width": "100%", "height": "100%",
+                            "background": "repeating-linear-gradient("
+                                "0deg, rgba(0,200,255,0.025) 0px, "
+                                "rgba(0,200,255,0.025) 1px, transparent 1px, transparent 4px)",
+                            "pointerEvents": "none", "zIndex": "1",
+                        }),
+                        html.Div(
+                            style={"position": "relative", "zIndex": "2"},
+                            children=[
+                                html.Div(
+                                    style={"display": "flex", "alignItems": "center",
+                                           "justifyContent": "space-between", "marginBottom": "4px"},
+                                    children=[
+                                        card_title("3D ENGINE MODEL"),
+                                        html.Div(
+                                            "CMAPSS TURBOFAN",
+                                            style={
+                                                "fontSize": "9px", "color": "rgba(0,200,255,0.6)",
+                                                "letterSpacing": "1.5px", "fontWeight": "700",
+                                                "fontFamily": "Courier New, monospace",
+                                            }
+                                        ),
+                                    ]
+                                ),
+                                # Three.js WebGL holographic engine (html.Iframe)
+                                build_engine_3d_model(status=status, degradation_type=degradation_type),
+                            ]
+                        ),
+                    ]
+                ),
+                card(
+                    style_extra={"flex": "2"},
                     children=[
                         card_title("Predicted RUL"),
                         dcc.Graph(
@@ -757,8 +862,8 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
                                  style={"color": "#a8d4ff", "fontSize": "13px", "fontWeight": "600",
                                         "textAlign": "center"}),
                         html.Div(style={"textAlign": "center"}, children=[
-                        html.Div(id="rul-value-display", children=str(rul),
-                                     style={"color": "#00c875", "fontSize": "58px",
+                        html.Div(id="rul-value-display", children=rul_display,
+                                     style={"color": "rgba(168,212,255,0.4)", "fontSize": "58px",
                                             "fontWeight": "800", "lineHeight": "1"}),
                             html.Div("cycles", style={"color": "#a8d4ff", "fontSize": "14px", "marginTop": "4px"})
                         ]),
@@ -768,58 +873,134 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
                                    "justifyContent": "space-between", "alignItems": "center"},
                             children=[
                                 html.Span("Degradation", style={"color": "#a8d4ff", "fontSize": "12px"}),
-                                html.Span(id="degradation-display", children=f"{degradation}%",
-                                          style={"color": degrade_color, "fontWeight": "700", "fontSize": "14px"})
+                                html.Span(id="degradation-display", children=deg_display,
+                                          style={"color": "rgba(168,212,255,0.4)", "fontWeight": "700", "fontSize": "14px"})
                             ]
                         ),
                         html.Div(
                             id="degrade-label-display",
-                            children=degrade_label[0],
+                            children="Loading\u2026",
                             style={
                                 "width": "100%", "textAlign": "center",
-                                "background": degrade_label[2],
-                                "border": f"1.5px solid {degrade_label[3]}",
-                                "borderRadius": "10px", "color": degrade_label[1],
+                                "background": "rgba(74,158,255,0.06)",
+                                "border": "1.5px solid rgba(74,158,255,0.2)",
+                                "borderRadius": "10px", "color": "rgba(168,212,255,0.4)",
                                 "fontSize": "12px", "fontWeight": "700", "padding": "8px 0",
                             }
-                        )
+                        ),
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "justifyContent": "center",
+                                   "gap": "6px", "marginTop": "6px"},
+                            children=[
+                                html.Span("Confidence:", style={
+                                    "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
+                                }),
+                                html.Span(id="overview-confidence-score", children="—", style={
+                                    "color": "#4a9eff", "fontSize": "12px", "fontWeight": "700",
+                                }),
+                            ]
+                        ),
                     ]
                 )
             ]
         ),
 
-        # Row 2: Sensor Trends + Top Drivers
+        # Row 2: Sensor Trends (3 mini charts) + Top Drivers
         html.Div(
             style={"display": "flex", "gap": "20px"},
             children=[
                 card(
-                    style_extra={"flex": "1"},
+                    style_extra={"flex": "3"},
                     children=[
-                        card_title("Sensor Trends"),
+                        # Header with "more information" link
                         html.Div(
-                            style={"display": "flex", "flexDirection": "column"},
+                            style={"display": "flex", "alignItems": "center",
+                                   "justifyContent": "space-between", "marginBottom": "10px"},
                             children=[
-                                html.Div(
-                                    style={"display": "flex", "alignItems": "center",
-                                           "justifyContent": "space-between", "padding": "10px 0",
-                                           "borderBottom": "1px solid rgba(74,158,255,0.1)",
-                                           "cursor": "pointer"},
+                                card_title("Sensor Trends"),
+                                html.A(
+                                    style={"display": "flex", "alignItems": "center", "gap": "4px",
+                                           "color": "#4a9eff", "fontSize": "11px", "fontWeight": "600",
+                                           "textDecoration": "none", "cursor": "pointer",
+                                           "opacity": "0.8"},
+                                    href="/sensor-trends",
                                     children=[
-                                        html.Span(f"{code} ({label})",
-                                                  style={"color": "#a8d4ff", "fontSize": "13px"}),
-                                        html.Span("→", style={"color": "rgba(74,158,255,0.5)", "fontSize": "14px"}),
+                                        html.Span("more information"),
+                                        html.Span("\u2192", style={"fontSize": "14px"}),
                                     ]
-                                )
-                                for code, label in sensor_list
+                                ),
                             ]
-                        )
+                        ),
+                        # 3 mini charts in a row
+                        html.Div(
+                            style={"display": "flex", "gap": "12px", "marginBottom": "8px"},
+                            children=[
+                                html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                                    html.Div("Upward Trending (Rolling Mean)",
+                                             style={"color": "#a8d4ff", "fontSize": "10px",
+                                                    "fontWeight": "600", "marginBottom": "4px",
+                                                    "letterSpacing": "0.3px"}),
+                                    dcc.Graph(
+                                        id="sensor-mini-up",
+                                        config={"displayModeBar": False},
+                                        style={"height": "160px"},
+                                    ),
+                                ]),
+                                html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                                    html.Div("Downward Trending (Rolling Mean)",
+                                             style={"color": "#a8d4ff", "fontSize": "10px",
+                                                    "fontWeight": "600", "marginBottom": "4px",
+                                                    "letterSpacing": "0.3px"}),
+                                    dcc.Graph(
+                                        id="sensor-mini-down",
+                                        config={"displayModeBar": False},
+                                        style={"height": "160px"},
+                                    ),
+                                ]),
+                                html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                                    html.Div("All Sensors (Standardized)",
+                                             style={"color": "#a8d4ff", "fontSize": "10px",
+                                                    "fontWeight": "600", "marginBottom": "4px",
+                                                    "letterSpacing": "0.3px"}),
+                                    dcc.Graph(
+                                        id="sensor-mini-all",
+                                        config={"displayModeBar": False},
+                                        style={"height": "160px"},
+                                    ),
+                                ]),
+                            ]
+                        ),
+                        # Shared legend
+                        html.Div(
+                            id="sensor-mini-legend",
+                            style={"display": "flex", "flexWrap": "wrap", "gap": "8px 14px",
+                                   "justifyContent": "center", "paddingTop": "4px"},
+                        ),
                     ]
                 ),
                 card(
                     style_extra={"flex": "1"},
                     children=[
-                        card_title("Top Drivers"),
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center",
+                                   "justifyContent": "space-between", "marginBottom": "10px"},
+                            children=[
+                                card_title("Top Drivers"),
+                                html.A(
+                                    style={"display": "flex", "alignItems": "center", "gap": "4px",
+                                           "color": "#4a9eff", "fontSize": "11px", "fontWeight": "600",
+                                           "textDecoration": "none", "cursor": "pointer",
+                                           "opacity": "0.8"},
+                                    href=f"/degradation-analysis/{engine_db_id}" if engine_db_id else "/degradation-analysis",
+                                    children=[
+                                        html.Span("more information"),
+                                        html.Span("\u2192", style={"fontSize": "14px"}),
+                                    ]
+                                ),
+                            ]
+                        ),
                         dcc.Graph(
+                            id="shap-chart",
                             figure=build_shap_chart(),
                             config={"displayModeBar": False},
                             style={"height": "220px"},
@@ -837,10 +1018,11 @@ def build_overview_body(engine_id="01", status="healthy", rul=120, degradation=8
 
 def create_overview_layout(supabase, engine_db_id=None):
     # Defaults
-    engine_id   = "01"
-    status      = "healthy"
-    rul         = 120
-    degradation = 80
+    engine_id        = "01"
+    status           = "healthy"
+    rul              = None
+    degradation      = None
+    degradation_type = None
 
     try:
         if supabase and engine_db_id is not None:
@@ -866,9 +1048,12 @@ def create_overview_layout(supabase, engine_db_id=None):
             if status not in ("healthy", "warning", "critical"):
                 status = "healthy"
 
-            rul         = float(pred.get("predicted_rul", 120))
-            max_life    = 130
-            degradation = max(0, min(100, int((rul / max_life) * 100)))
+            degradation_type = engine.get("degradation_type") or None
+
+            if pred.get("predicted_rul") is not None:
+                rul         = float(pred["predicted_rul"])
+                max_life    = 130
+                degradation = max(0, min(100, int((rul / max_life) * 100)))
 
             print(f"[DEBUG] Overview engine={engine}, pred={pred}")
 
@@ -952,8 +1137,10 @@ def create_overview_layout(supabase, engine_db_id=None):
                         children=build_overview_body(
                             engine_id=engine_id,
                             status=status,
-                            rul=int(rul),
-                            degradation=degradation,
+                            rul=None,
+                            degradation=None,
+                            degradation_type=degradation_type,
+                            engine_db_id=engine_db_id,
                         )
                     )
                 ]
@@ -981,14 +1168,34 @@ def register_overview_callbacks(app, supabase=None):
         Output("degrade-label-display","children"),
         Output("degrade-label-display","style"),
         Output("engine-status-badge",  "children"),
+        Output("shap-chart",           "figure"),
+        Output("overview-confidence-score", "children"),
         Input("rul-poll-interval",     "n_intervals"),
         State("overview-engine-id-store", "data"),
         prevent_initial_call=False,
     )
     def refresh_rul_chart(n_intervals, engine_db_id):
+        import json as _json
+        from engine_simulation_manager import WINDOW_SIZES
+        from degradation_analysis import compute_confidence_score
         MAX_LIFE = 130
         WARN_THRESH = 62
         CRIT_THRESH = 30
+        _window_size = 45  # default
+
+        # ── Fetch engine model_type to determine window size ──
+        if supabase and engine_db_id:
+            try:
+                _mt_resp = supabase.table("engines") \
+                    .select("model_type") \
+                    .eq("id", engine_db_id) \
+                    .single() \
+                    .execute()
+                if _mt_resp.data:
+                    _mt = _mt_resp.data.get("model_type", "FD001")
+                    _window_size = WINDOW_SIZES.get(_mt, 45)
+            except Exception:
+                pass
 
         # ── Fetch thresholds from Supabase ──
         if supabase:
@@ -1007,26 +1214,46 @@ def register_overview_callbacks(app, supabase=None):
         cycles_list:    list = []
         predicted_list: list = []
         latest_pred_rul: float | None = None
+        latest_shap: list = []
 
         if supabase and engine_db_id:
             try:
-                resp = supabase.table("rul_predictions") \
-                    .select("cycle, predicted_rul") \
-                    .eq("engine_id", engine_db_id) \
-                    .order("cycle", desc=False) \
-                    .execute()
+                # Retry up to 2 times on transient network errors (Windows socket issue)
+                _resp_data = None
+                for _attempt in range(3):
+                    try:
+                        resp = supabase.table("rul_predictions") \
+                            .select("cycle, predicted_rul, shap_values") \
+                            .eq("engine_id", engine_db_id) \
+                            .order("cycle", desc=False) \
+                            .execute()
+                        _resp_data = resp.data or []
+                        break
+                    except Exception as _net_err:
+                        if _attempt < 2:
+                            import time as _t
+                            _t.sleep(1)
+                        else:
+                            raise
 
-                for row in (resp.data or []):
+                for row in _resp_data:
                     cycles_list.append(row.get("cycle"))
                     predicted_list.append(
                         float(row["predicted_rul"]) if row.get("predicted_rul") is not None else None
                     )
 
-                # Latest valid prediction for the RUL display
-                for v in reversed(predicted_list):
-                    if v is not None:
-                        latest_pred_rul = v
-                        break            except Exception:
+                # Latest valid prediction + SHAP values
+                for row in reversed(resp.data or []):
+                    if row.get("predicted_rul") is not None:
+                        latest_pred_rul = float(row["predicted_rul"])
+                        raw_shap = row.get("shap_values")
+                        if raw_shap:
+                            try:
+                                latest_shap = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
+                            except Exception:
+                                latest_shap = []
+                        break
+            except Exception:
                 import traceback
                 print(f"[ERROR] rul poll: {traceback.format_exc()}")
 
@@ -1035,6 +1262,7 @@ def register_overview_callbacks(app, supabase=None):
             predicted_ruls=predicted_list,
             warn_thresh=WARN_THRESH,
             crit_thresh=CRIT_THRESH,
+            window_size=_window_size,
         )
 
         # ── No predictions yet — show neutral waiting state ──
@@ -1053,35 +1281,48 @@ def register_overview_callbacks(app, supabase=None):
                 "—", {"color": "rgba(168,212,255,0.5)", "fontWeight": "700", "fontSize": "14px"},
                 "Awaiting predictions…", neutral_label_style,
                 [status_badge("healthy")],
+                build_shap_chart(),
+                "—",
             )
 
         rul_display = str(int(round(latest_pred_rul)))
         degradation = max(0, min(100, round((1 - latest_pred_rul / MAX_LIFE) * 100)))
 
+        # Fetch degradation_type from engine for live display
+        _deg_type = None
+        if supabase and engine_db_id:
+            try:
+                _dt_resp = supabase.table("engines") \
+                    .select("degradation_type") \
+                    .eq("id", engine_db_id) \
+                    .single() \
+                    .execute()
+                if _dt_resp.data:
+                    _deg_type = _dt_resp.data.get("degradation_type")
+            except Exception:
+                pass
+
+        label_text  = _deg_type if _deg_type else "No Degradation Detected"
+        label_color = "#4a9eff"
+        label_bg    = "rgba(74,158,255,0.12)"
+        label_bdr   = "#4a9eff"
+
+        # Color for RUL number and degradation % based on thresholds
         if latest_pred_rul > WARN_THRESH:
-            label_text  = "No Degradation Detected"
-            label_color = "#00c875"
-            label_bg    = "rgba(0,200,117,0.12)"
-            label_bdr   = "#00c875"
+            rul_color = "#00c875"
         elif latest_pred_rul > CRIT_THRESH:
-            label_text  = "Moderate Degradation"
-            label_color = "#ffd93d"
-            label_bg    = "rgba(255,217,61,0.12)"
-            label_bdr   = "#ffd93d"
+            rul_color = "#ffd93d"
         else:
-            label_text  = "Severe Degradation"
-            label_color = "#ff4d4d"
-            label_bg    = "rgba(255,77,77,0.12)"
-            label_bdr   = "#ff4d4d"
+            rul_color = "#ff4d4d"
 
         rul_number_style = {
-            "color": label_color,
+            "color": rul_color,
             "fontSize": "58px",
             "fontWeight": "800",
             "lineHeight": "1",
         }
         degrade_pct_style = {
-            "color": label_color,
+            "color": rul_color,
             "fontWeight": "700",
             "fontSize": "14px",
         }
@@ -1101,6 +1342,10 @@ def register_overview_callbacks(app, supabase=None):
         else:
             live_status = "healthy"
 
+        # Compute confidence score for display
+        _confidence = compute_confidence_score(_deg_type, latest_shap) if latest_shap and _deg_type else None
+        _confidence_display = f"{_confidence:.0%}" if _confidence is not None else "—"
+
         return (
             fig,
             rul_display,
@@ -1110,7 +1355,232 @@ def register_overview_callbacks(app, supabase=None):
             label_text,
             label_style,
             [status_badge(live_status)],
+            build_shap_chart(latest_shap),
+            _confidence_display,
         )
+
+    # ── Sensor mini-charts callback ──
+    # All 14 informative CMAPSS sensors (the ones with actual variance)
+    _ALL_SENSORS_MINI = ["T24", "T30", "T50", "Nf", "Ps30", "htBleed", "NRf",
+                         "P30", "phi", "NRc", "BPR", "W31", "W32", "Nc"]
+
+    # Sensor JSON key mapping (same as sensor_trends.py)
+    _SENSOR_KEY = {
+        "T2": "s1", "T24": "s2", "T30": "s3", "T50": "s4",
+        "P2": "s5", "P15": "s6", "P30": "s7", "Nf": "s8",
+        "Nc": "s9", "Ps30": "s11", "phi": "s12", "NRf": "s13",
+        "NRc": "s14", "BPR": "s15", "htBleed": "s17", "W31": "s20", "W32": "s21",
+    }
+    _SENSOR_COLORS = {
+        "T24": "#f5a623", "T30": "#ff4d4d", "T50": "#ff8c69",
+        "Nf": "#00c875", "Ps30": "#a0f0c0", "NRf": "#c0d0ff",
+        "BPR": "#ff9f43", "htBleed": "#e879f9",
+        "P30": "#7b61ff", "Nc": "#00e5a0", "phi": "#ffd93d",
+        "NRc": "#90a8e0", "W31": "#34d399", "W32": "#6ee7b7",
+    }
+
+    def _mini_chart_layout():
+        return dict(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=30, r=8, t=5, b=28),
+            height=160,
+            showlegend=False,
+            xaxis=dict(
+                showgrid=False, zeroline=False,
+                color="#a8d4ff", tickfont=dict(size=9),
+                title=dict(text="Cycles", font=dict(size=9, color="#5a8ab5")),
+            ),
+            yaxis=dict(
+                showgrid=True, gridcolor="rgba(74,158,255,0.08)",
+                zeroline=False, color="#a8d4ff", tickfont=dict(size=9),
+                title=dict(text="Std. Value", font=dict(size=8, color="#5a8ab5")),
+            ),
+            hovermode="closest",
+            hoverlabel=dict(
+                bgcolor="#0d1e3a", bordercolor="rgba(74,158,255,0.4)",
+                font=dict(color="white", size=10),
+                namelength=10,
+            ),
+        )
+
+    def _extract_sensor_data(history, cluster_info=None):
+        """
+        Extract, standardize, smooth all sensors.
+        For FD002/FD004: applies per-cluster normalization using KMeans centroids.
+        Returns {sid: (cycles, smoothed, slope)}.
+        """
+        _RW = 10
+        result = {}
+
+        # If cluster normalization available, pre-normalize all rows
+        # cluster_info = (centroids, cluster_means, cluster_stds) from model h5
+        normalized_rows = None
+        if cluster_info and cluster_info[0] is not None:
+            centroids, cl_means, cl_stds = cluster_info
+            # Build per-sensor normalized arrays using cluster assignment
+            # OS columns are: operational_setting_1, operational_setting_2, operational_setting_3
+            os_keys = ["operational_setting_1", "operational_setting_2", "operational_setting_3"]
+            sensor_keys_ordered = ["s2", "s3", "s4", "s7", "s8", "s9", "s11",
+                                   "s12", "s13", "s14", "s15", "s17", "s20", "s21"]
+            # Map sensor_key index in cluster_means (first 14 are sensors, last 3 are OS)
+            normalized_rows = []
+            for row in history:
+                sensors = row.get("sensors", row)
+                # Get OS values for cluster assignment
+                os_vals = []
+                for ok in os_keys:
+                    v = row.get(ok, sensors.get(ok, 0.0))
+                    os_vals.append(float(v) if v is not None else 0.0)
+                os_arr = np.array(os_vals, dtype=np.float32)
+                # Assign to nearest centroid
+                dists = np.linalg.norm(centroids - os_arr, axis=1)
+                cid = int(np.argmin(dists))
+                # Normalize this row's sensors using cluster scaler
+                c_mean = cl_means[cid]  # (17,) — first 14 are sensors, last 3 OS
+                c_std = cl_stds[cid].copy()
+                c_std[c_std == 0] = 1.0
+                norm_row = {}
+                for idx, sk in enumerate(sensor_keys_ordered):
+                    raw_val = sensors.get(sk)
+                    if raw_val is not None:
+                        norm_row[sk] = (float(raw_val) - c_mean[idx]) / c_std[idx]
+                    else:
+                        norm_row[sk] = None
+                normalized_rows.append(norm_row)
+
+        for sid in _ALL_SENSORS_MINI:
+            json_key = _SENSOR_KEY.get(sid)
+            if not json_key:
+                continue
+            vals = []
+            if normalized_rows:
+                # Use cluster-normalized values
+                for norm_row in normalized_rows:
+                    v = norm_row.get(json_key)
+                    vals.append(v)
+            else:
+                # Fallback: raw values with global z-score
+                for row in history:
+                    sensors = row.get("sensors", row)
+                    v = sensors.get(json_key)
+                    vals.append(float(v) if v is not None else None)
+
+            if not any(v is not None for v in vals):
+                continue
+            arr = np.array([v if v is not None else np.nan for v in vals], dtype=float)
+
+            # If not using cluster normalization, apply global z-score
+            if not normalized_rows:
+                mean = np.nanmean(arr)
+                std = np.nanstd(arr)
+                if std > 0:
+                    arr = (arr - mean) / std
+                else:
+                    arr = arr - mean
+
+            smoothed = np.convolve(
+                np.nan_to_num(arr, nan=0.0),
+                np.ones(_RW) / _RW,
+                mode="valid"
+            )
+            cycles = list(range(_RW, _RW + len(smoothed)))
+            x = np.arange(len(smoothed), dtype=float)
+            slope = np.polyfit(x, smoothed, 1)[0] if len(x) > 1 else 0.0
+            result[sid] = (cycles, smoothed.tolist(), slope)
+        return result
+
+    def _build_mini_fig(sensor_data, sensor_ids):
+        """Build a mini chart from pre-computed sensor data for given IDs."""
+        fig = go.Figure()
+        if not sensor_data or not sensor_ids:
+            fig.add_annotation(
+                text="Awaiting data\u2026", x=0.5, y=0.5,
+                xref="paper", yref="paper", showarrow=False,
+                font=dict(color="rgba(168,212,255,0.5)", size=11),
+            )
+            fig.update_layout(**_mini_chart_layout())
+            return fig
+        for sid in sensor_ids:
+            if sid not in sensor_data:
+                continue
+            cycles, smoothed, _ = sensor_data[sid]
+            fig.add_trace(go.Scatter(
+                x=cycles, y=smoothed,
+                mode="lines", name=sid,
+                line=dict(color=_SENSOR_COLORS.get(sid, "#4a9eff"), width=1.2),
+                connectgaps=True,
+            ))
+        fig.update_layout(**_mini_chart_layout())
+        return fig
+
+    @app.callback(
+        Output("sensor-mini-up", "figure"),
+        Output("sensor-mini-down", "figure"),
+        Output("sensor-mini-all", "figure"),
+        Output("sensor-mini-legend", "children"),
+        Input("rul-poll-interval", "n_intervals"),
+        State("overview-engine-id-store", "data"),
+        prevent_initial_call=False,
+    )
+    def update_sensor_mini_charts(n_intervals, engine_db_id):
+        history = []
+        cluster_info = None
+        if engine_db_id:
+            try:
+                from engine_simulation_manager import get_sensor_history, _CLUSTER_CACHE
+                history = get_sensor_history(engine_db_id) or []
+                # Get model_type for this engine to check if cluster normalization applies
+                if supabase:
+                    _eng_resp = supabase.table("engines") \
+                        .select("model_type") \
+                        .eq("id", engine_db_id) \
+                        .single() \
+                        .execute()
+                    if _eng_resp.data:
+                        _mt = _eng_resp.data.get("model_type", "FD001")
+                        cluster_info = _CLUSTER_CACHE.get(_mt, (None, None, None))
+                        # Only use if all 3 parts are present
+                        if cluster_info and cluster_info[0] is None:
+                            cluster_info = None
+            except Exception:
+                pass
+
+        if not history:
+            empty = go.Figure()
+            empty.add_annotation(
+                text="Awaiting data\u2026", x=0.5, y=0.5,
+                xref="paper", yref="paper", showarrow=False,
+                font=dict(color="rgba(168,212,255,0.5)", size=11),
+            )
+            empty.update_layout(**_mini_chart_layout())
+            return empty, empty, empty, []
+
+        # Extract and dynamically classify by slope direction
+        sensor_data = _extract_sensor_data(history, cluster_info=cluster_info)
+        up_ids   = [sid for sid, (_, _, slope) in sensor_data.items() if slope > 0]
+        down_ids = [sid for sid, (_, _, slope) in sensor_data.items() if slope <= 0]
+        all_ids  = list(sensor_data.keys())
+
+        fig_up   = _build_mini_fig(sensor_data, up_ids)
+        fig_down = _build_mini_fig(sensor_data, down_ids)
+        fig_all  = _build_mini_fig(sensor_data, all_ids)
+
+        # Shared legend
+        legend_items = []
+        for sid in all_ids:
+            legend_items.append(
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "gap": "4px"},
+                    children=[
+                        html.Div(style={"width": "14px", "height": "2px",
+                                        "background": _SENSOR_COLORS.get(sid, "#4a9eff"),
+                                        "borderRadius": "1px"}),
+                        html.Span(sid, style={"color": "#a8d4ff", "fontSize": "9px"}),
+                    ]
+                )
+            )
+        return fig_up, fig_down, fig_all, legend_items
 
 
 # ─────────────────────────────────────────────

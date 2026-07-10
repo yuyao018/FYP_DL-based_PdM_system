@@ -1,0 +1,1021 @@
+"""
+Degradation Analysis page — SHAP beeswarm, LLM explanation, SHAP trend over cycles.
+
+Replaces the former "Explainability AI" page.  Provides:
+  • Header: engine selector, detected degradation type, confidence score
+  • Row 1 col 1: SHAP beeswarm-style horizontal bar chart (feature impact on RUL)
+  • Row 1 col 2: LLM-generated natural language explanation (Gemini Flash)
+  • Row 2: SHAP value trend line chart for top sensors over cycles
+"""
+
+import dash
+from dash import dcc, html, Input, Output, State, callback_context, MATCH, ALL
+import dash_bootstrap_components as dbc
+import plotly.graph_objects as go
+import numpy as np
+import json as _json
+import os
+import base64
+import traceback
+from datetime import datetime
+
+# ─────────────────────────────────────────────
+#  SVG ICON HELPERS (shared with other pages)
+# ─────────────────────────────────────────────
+
+def _svg_img(svg_str, size="22px"):
+    b64 = base64.b64encode(svg_str.strip().encode("utf-8")).decode("utf-8")
+    return html.Img(src=f"data:image/svg+xml;base64,{b64}",
+                    style={"width": size, "height": size, "flexShrink": "0"})
+
+def icon_dashboard():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+      <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+    </svg>''')
+
+def icon_overview():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/>
+    </svg>''')
+
+def icon_sensor():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3 17 7 11 11 14 15 8 21 8"/>
+      <line x1="3" y1="21" x2="21" y2="21"/>
+    </svg>''')
+
+def icon_shap():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12
+               M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
+    </svg>''')
+
+def icon_alert():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#4a9eff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+    </svg>''')
+
+def icon_sidebar():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/>
+      <line x1="9" y1="3" x2="9" y2="21"/>
+    </svg>''', size="26px")
+
+def icon_logout():
+    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
+         stroke="#ff4d4d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+      <polyline points="16 17 21 12 16 7"/>
+      <line x1="21" y1="12" x2="9" y2="12"/>
+    </svg>''', size="22px")
+
+
+# ─────────────────────────────────────────────
+#  SIDEBAR
+# ─────────────────────────────────────────────
+
+def build_sidebar(active_page="degradation_analysis", engine_db_id=None):
+    nav_item_base = {
+        "display": "flex", "alignItems": "center", "gap": "10px",
+        "padding": "10px 14px", "borderRadius": "10px", "cursor": "pointer",
+        "fontSize": "14px", "fontWeight": "500", "color": "#a8d4ff",
+        "marginBottom": "4px", "whiteSpace": "nowrap",
+    }
+
+    def nav_link(icon_fn, label, page_key, href="/"):
+        style = {**nav_item_base}
+        if active_page == page_key:
+            style.update({
+                "background": "rgba(74,158,255,0.18)", "color": "white",
+                "fontWeight": "700", "borderLeft": "3px solid #4a9eff", "paddingLeft": "11px",
+            })
+        return html.A(href=href, style={"textDecoration": "none"},
+                      children=[html.Div(style=style, children=[icon_fn(), html.Span(label)])])
+
+    overview_href = f"/overview/{engine_db_id}" if engine_db_id else "/dashboard"
+    sensor_href = f"/sensor-trends/{engine_db_id}" if engine_db_id else "/sensor-trends"
+    degradation_analysis_href = f"/degradation-analysis/{engine_db_id}" if engine_db_id else "/degradation-analysis"
+    alert_href = f"/alert-log/{engine_db_id}" if engine_db_id else "/alert-log"
+
+    return html.Div(
+        id="sidebar",
+        style={
+            "width": "210px", "flexShrink": "0", "height": "100%",
+            "background": "#0d1e3a", "borderRight": "1px solid rgba(74,158,255,0.15)",
+            "display": "flex", "flexDirection": "column",
+            "overflow": "hidden", "transition": "width 0.3s ease",
+        },
+        children=[
+            html.A(href="/dashboard", style={"textDecoration": "none"}, children=[
+                html.Div(style={
+                    "padding": "20px 20px 18px",
+                    "borderBottom": "1px solid rgba(74,158,255,0.12)",
+                    "display": "flex", "alignItems": "center", "gap": "10px", "cursor": "pointer",
+                }, children=[
+                    icon_dashboard(),
+                    html.Span("Dashboard", style={"color": "#a8d4ff", "fontWeight": "700",
+                                                   "fontSize": "15px", "whiteSpace": "nowrap"}),
+                ])
+            ]),
+            html.Div(style={"padding": "18px 12px 0"}, children=[
+                html.Div("NAVIGATION", style={
+                    "color": "rgba(168,212,255,0.5)", "fontSize": "10px", "fontWeight": "700",
+                    "letterSpacing": "1.5px", "padding": "0 6px", "marginBottom": "10px",
+                }),
+                nav_link(icon_overview, "Overview",              "overview",              overview_href),
+                nav_link(icon_sensor,   "Sensor Trends",         "sensor",                sensor_href),
+                nav_link(icon_shap,     "Degradation Analysis",  "degradation_analysis",  degradation_analysis_href),
+                nav_link(icon_alert,    "Alert Log",             "alert",                 alert_href),
+            ]),
+            html.Div(style={"flex": "1"}),
+            html.Div(style={
+                "padding": "16px 20px", "borderTop": "1px solid rgba(74,158,255,0.12)",
+                "display": "flex", "alignItems": "center", "justifyContent": "space-between",
+            }, children=[
+                html.Div(children=[
+                    html.Div("LOGGED IN AS", style={"color": "rgba(168,212,255,0.5)", "fontSize": "9px",
+                                                     "fontWeight": "700", "letterSpacing": "1.2px",
+                                                     "marginBottom": "2px"}),
+                    html.Div("admin_ds", style={"color": "white", "fontWeight": "700", "fontSize": "13px"}),
+                    html.Div("Admin", style={"color": "rgba(168,212,255,0.6)", "fontSize": "11px"}),
+                ]),
+                html.Div(id="logout-btn", n_clicks=0, style={"cursor": "pointer"},
+                         children=[icon_logout()])
+            ])
+        ]
+    )
+
+
+# ─────────────────────────────────────────────
+#  TOPBAR
+# ─────────────────────────────────────────────
+
+def build_topbar():
+    return html.Div(
+        style={
+            "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
+            "borderBottom": "1px solid rgba(74,158,255,0.18)",
+            "padding": "0 28px", "height": "60px", "minHeight": "60px",
+            "flexShrink": "0", "display": "flex", "alignItems": "center",
+            "justifyContent": "space-between", "zIndex": "200",
+        },
+        children=[
+            html.H1("ENGINE PROGNOSTIC MONITORING SYSTEM", style={
+                "margin": "0", "fontSize": "18px", "fontWeight": "700",
+                "color": "white", "letterSpacing": "1.2px",
+            }),
+            html.Div(id="sidebar-toggle", n_clicks=0, style={"cursor": "pointer"},
+                     children=[icon_sidebar()]),
+        ]
+    )
+
+
+# ─────────────────────────────────────────────
+#  CONFIDENCE SCORE COMPUTATION
+# ─────────────────────────────────────────────
+# NOTE — Open Item:
+# The fault-mode detector is rule-based (rolling slope + reversal detection
+# across s7, s9, s12, s14, BPR), not a classifier with native probability
+# output.  The confidence_score below is a *derived heuristic*:
+#
+#   confidence = proportion of fault-defining sensors whose slope direction
+#                and SHAP sign match the expected signature for that fault mode,
+#                weighted by how far each SHAP score deviates from zero.
+#
+# This is a V1 approximation.  Future work should consider:
+#   - Rolling-slope magnitude vs. threshold ratio (continuous signal)
+#   - Reversal timing consistency across correlated sensors
+#   - Ensemble voting across multiple cycle windows
+#
+# The function below operates on the SHAP data already computed per cycle
+# (available in rul_predictions.shap_values).  A more robust implementation
+# would also consume the raw sensor time-series slopes, which requires
+# fetching additional history and computing rolling regressions.  That is
+# flagged as a follow-on design task.
+
+# Expected SHAP sign patterns per fault mode (negative = drives RUL down)
+_HPC_EXPECTED_SIGNS = {
+    "T30": -1, "P30": -1, "phi": -1, "Ps30": -1, "htBleed": -1, "T24": -1,
+}
+_FAN_EXPECTED_SIGNS = {
+    "Nf": -1, "NRf": -1, "BPR": -1, "Nc": -1, "NRc": -1,
+}
+
+_HPC_SENSORS = set(_HPC_EXPECTED_SIGNS.keys())
+_FAN_SENSORS = set(_FAN_EXPECTED_SIGNS.keys())
+
+
+def compute_confidence_score(degradation_type: str | None, shap_data: list[dict]) -> float | None:
+    """
+    Derive a confidence score (0–1) for the detected fault mode from SHAP data.
+
+    Method: For each sensor in the expected fault signature, check whether its
+    SHAP sign matches expectation.  Weight each match by |shap_score| so that
+    stronger attributions contribute more.  Normalise by the maximum possible
+    weighted sum (if all sensors matched perfectly at their actual magnitudes).
+
+    Returns None if no degradation is detected or SHAP data is unavailable.
+    """
+    if not degradation_type or not shap_data:
+        return None
+
+    # Determine which expected-sign map(s) to use
+    if "HPC" in degradation_type and "Fan" in degradation_type:
+        expected = {**_HPC_EXPECTED_SIGNS, **_FAN_EXPECTED_SIGNS}
+    elif "HPC" in degradation_type:
+        expected = _HPC_EXPECTED_SIGNS
+    elif "Fan" in degradation_type:
+        expected = _FAN_EXPECTED_SIGNS
+    else:
+        return None
+
+    shap_map = {s["sensor"]: s["score"] for s in shap_data}
+
+    weighted_matches = 0.0
+    total_weight = 0.0
+
+    for sensor, expected_sign in expected.items():
+        score = shap_map.get(sensor, 0.0)
+        magnitude = abs(score)
+        total_weight += magnitude
+
+        # Sign match check
+        if magnitude > 0.01:  # ignore negligible scores
+            actual_sign = -1 if score < 0 else 1
+            if actual_sign == expected_sign:
+                weighted_matches += magnitude
+
+    if total_weight == 0:
+        return 0.0
+
+    confidence = weighted_matches / total_weight
+    # Clamp to [0, 1]
+    return round(min(1.0, max(0.0, confidence)), 3)
+
+
+# ─────────────────────────────────────────────
+#  SHAP BEESWARM CHART
+# ─────────────────────────────────────────────
+
+def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = None) -> go.Figure:
+    """
+    Build a SHAP beeswarm plot.
+
+    If shap_history is provided (list of SHAP snapshots across cycles), renders
+    a true beeswarm: one dot per cycle per sensor, jittered vertically, colored
+    by score magnitude (red = drives RUL down, blue/green = drives RUL up).
+
+    If only shap_data (single latest snapshot) is available, falls back to a
+    strip plot using just that one point per sensor (less informative but still
+    shows relative impact).
+    """
+    if not shap_data and not shap_history:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            annotations=[dict(text="No SHAP data available", xref="paper", yref="paper",
+                              x=0.5, y=0.5, showarrow=False,
+                              font=dict(color="rgba(168,212,255,0.5)", size=14))]
+        )
+        return fig
+
+    # Determine sensor order by mean |score| (top impact at top of chart)
+    sensor_scores_agg = {}
+    source = shap_history if shap_history else [shap_data]
+    for snapshot in source:
+        if not snapshot:
+            continue
+        for entry in snapshot:
+            sensor_scores_agg.setdefault(entry["sensor"], []).append(entry["score"])
+
+    # Sort sensors so highest mean |impact| is at the top (y-axis reversed)
+    sensor_order = sorted(
+        sensor_scores_agg.keys(),
+        key=lambda s: np.mean(np.abs(sensor_scores_agg[s])),
+        reverse=True,
+    )
+    sensor_to_y = {s: i for i, s in enumerate(sensor_order)}
+
+    # Collect all points
+    x_vals = []
+    y_vals = []
+    colors = []
+
+    for snapshot in source:
+        if not snapshot:
+            continue
+        for entry in snapshot:
+            sensor = entry["sensor"]
+            score = entry["score"]
+            if sensor not in sensor_to_y:
+                continue
+            x_vals.append(score)
+            # Add jitter to y position to spread dots (beeswarm effect)
+            jitter = np.random.uniform(-0.25, 0.25)
+            y_vals.append(sensor_to_y[sensor] + jitter)
+            colors.append(score)
+
+    # Color scale: red for negative (drives RUL down), green for positive
+    fig = go.Figure(go.Scatter(
+        x=x_vals,
+        y=y_vals,
+        mode="markers",
+        marker=dict(
+            size=6,
+            color=colors,
+            colorscale=[[0, "#ff4d4d"], [0.5, "#ffd93d"], [1, "#00c875"]],
+            cmin=min(colors) if colors else -1,
+            cmax=max(colors) if colors else 1,
+            opacity=0.75,
+            line=dict(width=0),
+            colorbar=dict(
+                title=dict(text="SHAP Score", font=dict(color="rgba(168,212,255,0.7)", size=10)),
+                tickfont=dict(color="rgba(168,212,255,0.6)", size=9),
+                thickness=12, len=0.6,
+                bgcolor="rgba(0,0,0,0)",
+                borderwidth=0,
+            ),
+        ),
+        hovertemplate="<b>%{customdata}</b><br>Score: %{x:.4f}<extra></extra>",
+        customdata=[sensor_order[int(round(y))] if 0 <= int(round(y)) < len(sensor_order) else ""
+                    for y in y_vals],
+    ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=80, r=60, t=35, b=40),
+        height=380,
+        xaxis=dict(
+            title="SHAP Value (Impact on RUL Prediction)",
+            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
+            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
+            gridcolor="rgba(74,158,255,0.08)",
+            zeroline=True, zerolinecolor="rgba(74,158,255,0.3)", zerolinewidth=1,
+        ),
+        yaxis=dict(
+            tickmode="array",
+            tickvals=list(range(len(sensor_order))),
+            ticktext=sensor_order,
+            tickfont=dict(color="rgba(168,212,255,0.8)", size=11),
+            gridcolor="rgba(74,158,255,0.05)",
+            range=[len(sensor_order) - 0.5, -0.5],  # top sensor at top
+        ),
+        title=dict(
+            text="Feature Impact on Predicted RUL (Beeswarm)",
+            font=dict(color="white", size=13),
+            x=0.01, y=0.98,
+        ),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────
+#  SHAP TREND LINE CHART
+# ─────────────────────────────────────────────
+
+def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int = 5) -> go.Figure:
+    """
+    Line chart showing SHAP values over cycles for the top N contributing sensors.
+    shap_history: list of shap_data per cycle (same order as cycles list).
+    """
+    if not shap_history or not cycles:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            annotations=[dict(text="Insufficient data for SHAP trend", xref="paper", yref="paper",
+                              x=0.5, y=0.5, showarrow=False,
+                              font=dict(color="rgba(168,212,255,0.5)", size=14))]
+        )
+        return fig
+
+    # Identify top N sensors by average |score| across history
+    sensor_scores = {}
+    for snapshot in shap_history:
+        if not snapshot:
+            continue
+        for entry in snapshot:
+            name = entry["sensor"]
+            sensor_scores.setdefault(name, []).append(abs(entry["score"]))
+
+    avg_scores = {s: np.mean(vals) for s, vals in sensor_scores.items()}
+    top_sensors = sorted(avg_scores.keys(), key=lambda s: avg_scores[s], reverse=True)[:top_n]
+
+    # Build time-series per sensor
+    color_palette = ["#4a9eff", "#ff4d4d", "#ffd93d", "#00c875", "#7b61ff",
+                     "#ff9f43", "#a8d4ff", "#ff6b6b", "#54e0c7", "#c084fc"]
+
+    fig = go.Figure()
+    for idx, sensor in enumerate(top_sensors):
+        y_values = []
+        for snapshot in shap_history:
+            val = 0.0
+            if snapshot:
+                for entry in snapshot:
+                    if entry["sensor"] == sensor:
+                        val = entry["score"]
+                        break
+            y_values.append(val)
+
+        fig.add_trace(go.Scatter(
+            x=cycles, y=y_values,
+            mode="lines+markers",
+            name=sensor,
+            line=dict(color=color_palette[idx % len(color_palette)], width=2),
+            marker=dict(size=4),
+            hovertemplate=f"<b>{sensor}</b><br>Cycle: %{{x}}<br>Score: %{{y:.4f}}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=50, r=20, t=40, b=50),
+        height=320,
+        legend=dict(
+            font=dict(color="rgba(168,212,255,0.8)", size=11),
+            bgcolor="rgba(0,0,0,0)",
+            orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+        ),
+        xaxis=dict(
+            title="Cycle",
+            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
+            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
+            gridcolor="rgba(74,158,255,0.1)",
+        ),
+        yaxis=dict(
+            title="SHAP Attribution Score",
+            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
+            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
+            gridcolor="rgba(74,158,255,0.1)",
+            zeroline=True, zerolinecolor="rgba(74,158,255,0.2)", zerolinewidth=1,
+        ),
+        title=dict(
+            text="SHAP Value Trend Over Cycles (Top Sensors)",
+            font=dict(color="white", size=13),
+            x=0.01, y=0.98,
+        ),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────
+#  LLM EXPLANATION (Gemini Flash)
+# ─────────────────────────────────────────────
+
+def _build_llm_prompt(degradation_type: str, confidence: float,
+                      top_features: list[dict], sensor_trends: dict | None = None) -> str:
+    """
+    Construct a tightly-scoped prompt for Gemini Flash.
+    Includes domain knowledge so the LLM can explain *why* sensor patterns
+    indicate specific degradation, rather than just restating the inputs.
+    """
+    # Sensor domain knowledge for contextual explanation
+    sensor_context = {
+        "T24": "LPC outlet temperature — rises indicate compressor inefficiency",
+        "T30": "HPC outlet temperature — elevated values suggest compressor degradation or fouling",
+        "T50": "LPT outlet temperature — changes reflect turbine blade wear or thermal fatigue",
+        "P30": "HPC outlet pressure — drop indicates compressor blade erosion or tip clearance increase",
+        "Nf": "Fan speed — reduction suggests fan blade damage or increased aerodynamic drag",
+        "Nc": "Core speed — decline indicates HPC performance loss, possible blade erosion",
+        "Ps30": "HPC static pressure — deviation signals compressor stall margin reduction",
+        "phi": "Fuel-flow-to-Ps30 ratio — increase means the engine burns more fuel for same output (efficiency loss)",
+        "NRf": "Corrected fan speed — normalizes for ambient conditions; drop = true fan degradation",
+        "NRc": "Corrected core speed — normalizes for conditions; decline = true HPC degradation",
+        "BPR": "Bypass ratio — shift indicates fan vs core thrust balance changing",
+        "htBleed": "Bleed enthalpy — changes reflect thermal state of compressor bleed air",
+        "W31": "HPT coolant bleed flow — increase may indicate turbine thermal protection response",
+        "W32": "LPT coolant bleed flow — increase suggests downstream thermal stress",
+    }
+
+    features_detail = []
+    for f in top_features[:5]:
+        name = f["sensor"]
+        score = f["score"]
+        direction = "reducing RUL" if score < 0 else "slightly increasing RUL"
+        context = sensor_context.get(name, "sensor function unknown")
+        features_detail.append(f"  • {name} (score: {score:+.3f}, {direction}): {context}")
+
+    features_str = "\n".join(features_detail)
+
+    trend_str = ""
+    if sensor_trends:
+        trend_str = "\nSENSOR SLOPE DATA (recent rolling trend):\n" + "\n".join(
+            f"  • {s}: slope = {v:+.5f} per cycle" for s, v in sensor_trends.items()
+        )
+
+    prompt = (
+        f"You are an aircraft engine prognostics expert writing a degradation briefing "
+        f"for a maintenance engineer. Based on the analysis below, explain:\n"
+        f"1. What physical degradation mechanism the sensor pattern suggests\n"
+        f"2. Why these specific sensors are the strongest indicators\n"
+        f"3. What the engineer should inspect or monitor next\n\n"
+        f"ANALYSIS RESULTS:\n"
+        f"- Detected fault mode: {degradation_type}\n"
+        f"- Confidence score: {confidence:.1%}\n"
+        f"- Top contributing sensors (SHAP attribution — negative = drives predicted RUL down):\n"
+        f"{features_str}\n"
+        f"{trend_str}\n\n"
+        f"RULES:\n"
+        f"- You MUST mention the fault mode '{degradation_type}' and confidence '{confidence:.1%}' verbatim.\n"
+        f"- Explain the physical meaning: what is likely happening inside the engine.\n"
+        f"- Be specific to the sensors listed — don't give generic advice.\n"
+        f"- Suggest 1-2 concrete inspection actions relevant to the fault mode.\n"
+        f"- Keep it to 4-6 sentences. Professional tone, no hedging.\n"
+    )
+    return prompt
+
+
+def _validate_llm_output(text: str, degradation_type: str, confidence: float) -> bool:
+    """
+    Lightweight validation: confirm that the LLM output contains the
+    fault-mode label and confidence value that were passed in.
+    """
+    if not text:
+        return False
+    # Check fault mode label present (case-insensitive)
+    if degradation_type.lower() not in text.lower():
+        return False
+    # Check confidence value appears (allow ±1% formatting variance)
+    conf_pct = f"{confidence * 100:.0f}%"
+    conf_pct_1 = f"{confidence * 100:.1f}%"
+    conf_decimal = f"{confidence:.2f}"
+    if (conf_pct not in text and conf_pct_1 not in text
+            and conf_decimal not in text and f"{confidence:.1%}" not in text):
+        return False
+    return True
+
+
+def _fallback_explanation(degradation_type: str, confidence: float,
+                          top_features: list[dict]) -> str:
+    """Templated fallback when LLM output fails validation or API is unavailable."""
+    sensor_meanings = {
+        "T24": "LPC outlet temperature (compressor inefficiency)",
+        "T30": "HPC outlet temperature (compressor fouling/degradation)",
+        "T50": "LPT outlet temperature (turbine wear)",
+        "P30": "HPC outlet pressure (blade erosion)",
+        "Nf": "Fan speed (fan blade damage)",
+        "Nc": "Core speed (HPC performance loss)",
+        "Ps30": "HPC static pressure (stall margin reduction)",
+        "phi": "Fuel efficiency ratio (efficiency loss)",
+        "NRf": "Corrected fan speed (fan degradation)",
+        "NRc": "Corrected core speed (HPC degradation)",
+        "BPR": "Bypass ratio (thrust balance shift)",
+        "htBleed": "Bleed enthalpy (compressor thermal state)",
+        "W31": "HPT coolant bleed (turbine thermal stress)",
+        "W32": "LPT coolant bleed (downstream thermal stress)",
+    }
+
+    top3 = top_features[:3]
+    details = []
+    for f in top3:
+        meaning = sensor_meanings.get(f["sensor"], f["sensor"])
+        direction = "declining" if f["score"] < 0 else "elevated"
+        details.append(f"{f['sensor']} — {meaning}, {direction}")
+
+    details_str = "; ".join(details)
+
+    if "HPC" in degradation_type:
+        mechanism = (
+            "This pattern is consistent with high-pressure compressor blade erosion "
+            "or fouling, leading to reduced compression efficiency and increased fuel consumption. "
+            "Recommend borescope inspection of HPC stages and review of compressor wash history."
+        )
+    elif "Fan" in degradation_type:
+        mechanism = (
+            "This pattern suggests fan blade surface degradation or foreign object damage "
+            "reducing aerodynamic efficiency. "
+            "Recommend fan blade visual inspection and vibration signature analysis."
+        )
+    else:
+        mechanism = (
+            "Multiple degradation pathways are active simultaneously. "
+            "Recommend comprehensive inspection of both HPC and fan sections."
+        )
+
+    return (
+        f"Detected fault mode: {degradation_type} (confidence: {confidence:.1%}). "
+        f"Key indicators: {details_str}. {mechanism}"
+    )
+
+
+def generate_llm_explanation(degradation_type: str, confidence: float,
+                             top_features: list[dict],
+                             sensor_trends: dict | None = None) -> str:
+    """
+    Call Gemini Flash API to generate natural language explanation.
+    Falls back to a templated string if the API is unavailable or validation fails.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        return _fallback_explanation(degradation_type, confidence, top_features)
+
+    prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends)
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=300,
+            ),
+        )
+        text = response.text.strip() if response.text else ""
+
+        # Post-generation validation
+        if _validate_llm_output(text, degradation_type, confidence):
+            return text
+        else:
+            print(f"[DEGRAD] LLM output failed validation, using fallback.")
+            return _fallback_explanation(degradation_type, confidence, top_features)
+
+    except ImportError:
+        print("[DEGRAD] google-generativeai package not installed. Using fallback.")
+        return _fallback_explanation(degradation_type, confidence, top_features)
+    except Exception as e:
+        print(f"[DEGRAD] Gemini API error: {e}")
+        return _fallback_explanation(degradation_type, confidence, top_features)
+
+
+# ─────────────────────────────────────────────
+#  PAGE LAYOUT
+# ─────────────────────────────────────────────
+
+def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
+    """Build the full Degradation Analysis page layout."""
+
+    # ── Fetch engine metadata ──
+    engine_label = "No engine selected"
+    degradation_type = None
+    model_type = None
+    cached_explanation = None
+    cached_explanation_ts = None
+
+    if supabase and engine_db_id:
+        try:
+            resp = supabase.table("engines") \
+                .select("engine_id, degradation_type, model_type, llm_explanation, llm_explanation_updated_at") \
+                .eq("id", engine_db_id) \
+                .single() \
+                .execute()
+            if resp.data:
+                engine_label = f"Engine #{resp.data.get('engine_id', engine_db_id)}"
+                degradation_type = resp.data.get("degradation_type")
+                model_type = resp.data.get("model_type", "")
+                cached_explanation = resp.data.get("llm_explanation")
+                cached_explanation_ts = resp.data.get("llm_explanation_updated_at")
+        except Exception:
+            pass
+
+    # ── Header section ──
+    deg_type_display = degradation_type or "No degradation detected"
+    deg_color = "#ff4d4d" if degradation_type else "rgba(168,212,255,0.5)"
+
+    header = html.Div(
+        style={
+            "display": "flex", "alignItems": "center", "justifyContent": "space-between",
+            "padding": "20px 28px 0px 28px", "flexWrap": "wrap", "gap": "16px",
+        },
+        children=[
+            # Engine ID
+            html.Div(style={"display": "flex", "alignItems": "center", "gap": "12px"}, children=[
+                icon_shap(),
+                html.Div(children=[
+                    html.Div("DEGRADATION ANALYSIS", style={
+                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                        "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "2px",
+                    }),
+                    html.Span(engine_label, style={
+                        "color": "white", "fontSize": "18px", "fontWeight": "700",
+                    }),
+                ]),
+            ]),
+            # Degradation type badge
+            html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px"}, children=[
+                html.Div(children=[
+                    html.Div("DETECTED FAULT MODE", style={
+                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                        "fontWeight": "700", "letterSpacing": "1px", "marginBottom": "4px",
+                    }),
+                    html.Span(deg_type_display, style={
+                        "color": deg_color, "fontSize": "14px", "fontWeight": "700",
+                        "background": f"{deg_color}15", "border": f"1px solid {deg_color}40",
+                        "borderRadius": "6px", "padding": "4px 12px",
+                    }),
+                ]),
+                # Confidence score placeholder (populated by callback)
+                html.Div(id="da-confidence-container", children=[
+                    html.Div("CONFIDENCE", style={
+                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                        "fontWeight": "700", "letterSpacing": "1px", "marginBottom": "4px",
+                    }),
+                    html.Span("—", id="da-confidence-value", style={
+                        "color": "#4a9eff", "fontSize": "14px", "fontWeight": "700",
+                    }),
+                ]),
+            ]),
+        ]
+    )
+
+    # ── Row 1: SHAP beeswarm + LLM explanation ──
+    row1 = html.Div(
+        style={"display": "flex", "gap": "20px", "padding": "20px 28px", "flexWrap": "wrap"},
+        children=[
+            # Column 1: SHAP beeswarm chart
+            html.Div(
+                style={
+                    "flex": "1", "minWidth": "400px",
+                    "background": "rgba(13,32,69,0.5)",
+                    "border": "1px solid rgba(74,158,255,0.15)",
+                    "borderRadius": "12px", "padding": "16px",
+                },
+                children=[
+                    dcc.Graph(id="da-shap-beeswarm", config={"displayModeBar": False},
+                              figure=build_shap_beeswarm([])),
+                ]
+            ),
+            # Column 2: LLM explanation
+            html.Div(
+                style={
+                    "flex": "1", "minWidth": "350px",
+                    "background": "rgba(13,32,69,0.5)",
+                    "border": "1px solid rgba(74,158,255,0.15)",
+                    "borderRadius": "12px", "padding": "20px",
+                    "display": "flex", "flexDirection": "column",
+                },
+                children=[
+                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px",
+                                    "marginBottom": "14px", "justifyContent": "space-between"}, children=[
+                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px"}, children=[
+                            html.Div("AI EXPLANATION", style={
+                                "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
+                                "fontWeight": "700", "letterSpacing": "1px",
+                            }),
+                            html.Span("Gemini Flash", style={
+                                "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
+                                "background": "rgba(74,158,255,0.1)",
+                                "borderRadius": "4px", "padding": "2px 6px",
+                            }),
+                        ]),
+                        html.Button(
+                            "Generate Explanation",
+                            id="da-generate-btn",
+                            n_clicks=0,
+                            style={
+                                "background": "linear-gradient(135deg, #4a9eff, #7b61ff)",
+                                "border": "none", "color": "white", "fontSize": "11px",
+                                "fontWeight": "700", "padding": "6px 14px",
+                                "borderRadius": "6px", "cursor": "pointer",
+                                "letterSpacing": "0.5px",
+                            },
+                        ),
+                    ]),
+                    html.Div(
+                        id="da-llm-explanation",
+                        style={
+                            "color": "rgba(168,212,255,0.8)", "fontSize": "13px",
+                            "lineHeight": "1.7", "flex": "1",
+                        },
+                        children=[
+                            html.Div(cached_explanation, style={"marginBottom": "8px"})
+                            if cached_explanation else
+                            html.Div("Click 'Generate Explanation' to request an AI-powered analysis."),
+                            html.Div(
+                                f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
+                                if cached_explanation_ts else "",
+                                style={"color": "rgba(168,212,255,0.4)", "fontSize": "10px",
+                                       "marginTop": "8px"},
+                            ) if cached_explanation else None,
+                        ]
+                    ),
+                ]
+            ),
+        ]
+    )
+
+    # ── Row 2: SHAP trend chart ──
+    row2 = html.Div(
+        style={"padding": "0 28px 28px"},
+        children=[
+            html.Div(
+                style={
+                    "background": "rgba(13,32,69,0.5)",
+                    "border": "1px solid rgba(74,158,255,0.15)",
+                    "borderRadius": "12px", "padding": "16px",
+                },
+                children=[
+                    dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
+                              figure=build_shap_trend_chart([], [])),
+                ]
+            ),
+        ]
+    )
+
+    # ── Stores ──
+    stores = html.Div([
+        dcc.Store(id="da-engine-db-id", data=engine_db_id),
+        dcc.Store(id="da-degradation-type", data=degradation_type),
+        dcc.Store(id="da-model-type", data=model_type),
+        dcc.Interval(id="da-interval", interval=10_000, n_intervals=0),  # poll every 10s
+    ])
+
+    # ── Assemble full page ──
+    return html.Div(
+        style={"minHeight": "100vh", "background": "#0a1628", "display": "flex",
+               "flexDirection": "column"},
+        children=[
+            build_topbar(),
+            html.Div(style={"display": "flex", "flex": "1"}, children=[
+                build_sidebar(active_page="degradation_analysis", engine_db_id=engine_db_id),
+                html.Div(style={"flex": "1", "overflowY": "auto", "display": "flex",
+                                "flexDirection": "column"}, children=[
+                    header,
+                    row1,
+                    row2,
+                    stores,
+                ]),
+            ]),
+        ]
+    )
+
+
+# ─────────────────────────────────────────────
+#  CALLBACKS
+# ─────────────────────────────────────────────
+
+def register_degradation_analysis_callbacks(app, supabase=None):
+    """Register all callbacks for the Degradation Analysis page."""
+
+    @app.callback(
+        Output("da-shap-beeswarm", "figure"),
+        Output("da-shap-trend", "figure"),
+        Output("da-confidence-value", "children"),
+        Input("da-interval", "n_intervals"),
+        State("da-engine-db-id", "data"),
+        State("da-degradation-type", "data"),
+        State("da-model-type", "data"),
+        prevent_initial_call=False,
+    )
+    def update_charts(n_intervals, engine_db_id, degradation_type, model_type):
+        """
+        Poll callback: fetch SHAP history, compute confidence, update charts.
+        Does NOT call the LLM — that is triggered only by button click.
+        """
+        if not supabase or not engine_db_id:
+            return (
+                build_shap_beeswarm([]),
+                build_shap_trend_chart([], []),
+                "—",
+            )
+
+        # ── Fetch prediction + SHAP history ──
+        cycles_list = []
+        shap_history = []
+        latest_shap = []
+
+        try:
+            resp = supabase.table("rul_predictions") \
+                .select("cycle, predicted_rul, shap_values") \
+                .eq("engine_id", engine_db_id) \
+                .order("cycle", desc=False) \
+                .execute()
+
+            for row in (resp.data or []):
+                cycle = row.get("cycle")
+                raw_shap = row.get("shap_values")
+                parsed_shap = []
+                if raw_shap:
+                    try:
+                        parsed_shap = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
+                    except Exception:
+                        parsed_shap = []
+                cycles_list.append(cycle)
+                shap_history.append(parsed_shap)
+
+            # Latest valid SHAP snapshot
+            for snapshot in reversed(shap_history):
+                if snapshot:
+                    latest_shap = snapshot
+                    break
+
+        except Exception as e:
+            print(f"[DEGRAD] Error fetching SHAP data: {e}")
+            return (
+                build_shap_beeswarm([]),
+                build_shap_trend_chart([], []),
+                "—",
+            )
+
+        # ── Re-fetch degradation_type (may have updated since page load) ──
+        if supabase and engine_db_id:
+            try:
+                eng_resp = supabase.table("engines") \
+                    .select("degradation_type") \
+                    .eq("id", engine_db_id) \
+                    .single() \
+                    .execute()
+                if eng_resp.data:
+                    degradation_type = eng_resp.data.get("degradation_type") or degradation_type
+            except Exception:
+                pass
+
+        # ── Compute confidence ──
+        confidence = compute_confidence_score(degradation_type, latest_shap)
+        confidence_display = f"{confidence:.0%}" if confidence is not None else "—"
+
+        # ── Build charts ──
+        beeswarm_fig = build_shap_beeswarm(latest_shap, shap_history=shap_history)
+        trend_fig = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
+
+        return beeswarm_fig, trend_fig, confidence_display
+
+    @app.callback(
+        Output("da-llm-explanation", "children"),
+        Input("da-generate-btn", "n_clicks"),
+        State("da-engine-db-id", "data"),
+        State("da-degradation-type", "data"),
+        prevent_initial_call=True,
+    )
+    def generate_explanation_on_click(n_clicks, engine_db_id, degradation_type):
+        """
+        Triggered ONLY by the 'Generate Explanation' button click.
+        Calls Gemini Flash API once per click, then caches the result
+        in engines.llm_explanation to avoid repeat API calls.
+        """
+        if not n_clicks or not supabase or not engine_db_id:
+            raise dash.exceptions.PreventUpdate
+
+        # Fetch latest SHAP + degradation type
+        latest_shap = []
+        try:
+            resp = supabase.table("rul_predictions") \
+                .select("shap_values") \
+                .eq("engine_id", engine_db_id) \
+                .order("cycle", desc=True) \
+                .limit(1) \
+                .execute()
+            if resp.data:
+                raw_shap = resp.data[0].get("shap_values")
+                if raw_shap:
+                    latest_shap = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
+        except Exception as e:
+            return f"Error fetching SHAP data: {e}"
+
+        # Re-fetch degradation_type
+        try:
+            eng_resp = supabase.table("engines") \
+                .select("degradation_type") \
+                .eq("id", engine_db_id) \
+                .single() \
+                .execute()
+            if eng_resp.data:
+                degradation_type = eng_resp.data.get("degradation_type") or degradation_type
+        except Exception:
+            pass
+
+        if not degradation_type:
+            return (
+                "No degradation pattern has been detected for this engine. "
+                "The engine is operating within normal parameters."
+            )
+
+        if not latest_shap:
+            return "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles."
+
+        confidence = compute_confidence_score(degradation_type, latest_shap)
+        if confidence is None:
+            confidence = 0.0
+
+        explanation = generate_llm_explanation(
+            degradation_type=degradation_type,
+            confidence=confidence,
+            top_features=latest_shap[:5],
+            sensor_trends=None,  # TODO: compute rolling slopes from sensor data
+        )
+
+        # ── Cache to engines table ──
+        try:
+            supabase.table("engines") \
+                .update({
+                    "llm_explanation": explanation,
+                    "llm_explanation_updated_at": datetime.utcnow().isoformat(),
+                }) \
+                .eq("id", engine_db_id) \
+                .execute()
+        except Exception as e:
+            print(f"[DEGRAD] Failed to cache LLM explanation: {e}")
+
+        return explanation

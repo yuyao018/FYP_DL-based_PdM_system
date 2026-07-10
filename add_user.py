@@ -222,7 +222,7 @@ def build_topbar():
 ACCESS_PREVIEW = [
     ("Overview",             "overview"),
     ("Sensor Trends",        "sensor"),
-    ("Explainability AI",    "explainability"),
+    ("Degradation Analysis", "degradation_analysis"),
     ("Alert Log",            "alert_log"),
     ("Acknowledge Alerts",   "acknowledge"),
     ("Upload .h5 Model",     "model_upload"),
@@ -231,8 +231,8 @@ ACCESS_PREVIEW = [
 
 # Which features each role gets, by key
 ROLE_ACCESS = {
-    "user":  {"overview", "sensor", "explainability", "alert_log", "acknowledge"},
-    "admin": {"overview", "sensor", "explainability", "alert_log", "acknowledge",
+    "user":  {"overview", "sensor", "degradation_analysis", "alert_log", "acknowledge"},
+    "admin": {"overview", "sensor", "degradation_analysis", "alert_log", "acknowledge",
               "model_upload", "admin_panel"},
 }
 

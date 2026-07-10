@@ -191,7 +191,7 @@ def create_dashboard_layout(supabase, org_id=None):
             alert_query = supabase.table("alert_logs") \
                 .select("*") \
                 .in_("severity", ["warning", "critical"]) \
-                .eq("status", "open") \
+                .eq("status", "active") \
                 .order("triggered_at", desc=True) \
                 .limit(10)
 

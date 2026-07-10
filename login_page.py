@@ -148,7 +148,7 @@ def create_login_layout():
                     ),
                     feature_icon(
                         "M12 2 Q14 5 12 8 Q10 5 12 2 M6 6 Q9 8 8 11 Q5 9 6 6 M18 6 Q19 9 16 11 Q15 8 18 6 M12 22 Q10 19 12 16 Q14 19 12 22 M4 14 Q7 12 10 14 Q8 17 4 14 M20 14 Q16 17 14 14 Q17 12 20 14 M12 12 C12 12 12 12 12 12",
-                        "SHAP Explainability"
+                        "Degradation Analysis"
                     ),
                 ]
             ),

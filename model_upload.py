@@ -717,6 +717,7 @@ def register_model_upload_callbacks(app, supabase=None):
     @app.callback(
         Output("model-upload-status", "children"),
         Output("version-history-body", "children"),
+        Output("active-model-panel-container", "children", allow_duplicate=True),
         Input("deploy-model-btn", "n_clicks"),
         State("staged-file-data", "data"),
         State("version-notes-input", "value"),
@@ -731,7 +732,8 @@ def register_model_upload_callbacks(app, supabase=None):
         if not supabase:
             return (
                 html.Span("Supabase not connected.", style={"color": "#ff6b6b", "fontSize": "13px"}),
-                dash.no_update
+                dash.no_update,
+                dash.no_update,
             )
 
         user_id = None
@@ -741,7 +743,8 @@ def register_model_upload_callbacks(app, supabase=None):
         if not user_id:
             return (
                 html.Span("User not authenticated.", style={"color": "#ff6b6b", "fontSize": "13px"}),
-                dash.no_update
+                dash.no_update,
+                dash.no_update,
             )
 
         selected_type = model_type or "FD001"
@@ -752,9 +755,6 @@ def register_model_upload_callbacks(app, supabase=None):
             os.makedirs(type_dir, exist_ok=True)
             _, b64data = staged_file["contents"].split(",", 1)
             file_bytes = base64.b64decode(b64data)
-            save_path = os.path.join(type_dir, staged_file["filename"])
-            with open(save_path, "wb") as f:
-                f.write(file_bytes)
 
             # ── Mark previous active model for this type as archived ──
             supabase.table("model_versions") \
@@ -764,7 +764,7 @@ def register_model_upload_callbacks(app, supabase=None):
                 .execute()
 
             # ── Insert new model version as active ──
-            supabase.table("model_versions").insert({
+            insert_resp = supabase.table("model_versions").insert({
                 "uploaded_by": user_id,
                 "filename": staged_file["filename"],
                 "version_notes": notes or None,
@@ -772,8 +772,27 @@ def register_model_upload_callbacks(app, supabase=None):
                 "model_type": selected_type,
             }).execute()
 
-            # ── Re-fetch history for this type using shared helper ──
-            _, history = _fetch_history_for_type(supabase, selected_type)
+            # Get the new version's UUID
+            version_id = insert_resp.data[0]["id"] if insert_resp.data else None
+
+            # Save file as <version_id>.h5 to avoid overwrites
+            if version_id:
+                save_filename = f"{version_id}.h5"
+            else:
+                save_filename = staged_file["filename"]
+            save_path = os.path.join(type_dir, save_filename)
+            with open(save_path, "wb") as f:
+                f.write(file_bytes)
+
+            # Update the DB row with the actual stored filename
+            if version_id:
+                supabase.table("model_versions") \
+                    .update({"filename": save_filename}) \
+                    .eq("id", version_id) \
+                    .execute()
+
+            # ── Re-fetch active model + history for this type ──
+            active_model, history = _fetch_history_for_type(supabase, selected_type)
             rows = [
                 history_row(h, is_last=(i == len(history) - 1))
                 for i, h in enumerate(history)
@@ -784,12 +803,21 @@ def register_model_upload_callbacks(app, supabase=None):
                 })
             ]
 
+            # ── Auto-reload the model in running simulations ──
+            try:
+                from engine_simulation_manager import reload_model
+                reload_model(selected_type, supabase=supabase)
+                print(f"[MODEL] Auto-reloaded {selected_type} model for running simulations")
+            except Exception as _reload_err:
+                print(f"[MODEL][WARN] Failed to reload model: {_reload_err}")
+
             return (
                 html.Span(
                     f"Model deployed successfully to {selected_type}!",
                     style={"color": "#4aff9e", "fontSize": "13px"}
                 ),
-                rows
+                rows,
+                [build_active_model_panel(active_model)],
             )
 
         except Exception as e:
@@ -797,7 +825,8 @@ def register_model_upload_callbacks(app, supabase=None):
             print(f"[ERROR] deploy model: {traceback.format_exc()}")
             return (
                 html.Span(f"Failed to deploy: {str(e)}", style={"color": "#ff6b6b", "fontSize": "13px"}),
-                dash.no_update
+                dash.no_update,
+                dash.no_update,
             )
 
     @app.callback(

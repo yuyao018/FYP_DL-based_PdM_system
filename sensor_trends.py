@@ -153,7 +153,7 @@ def build_sidebar(active_page="sensor", engine_db_id=None):
     # Build navigation links with engine_db_id if available
     overview_href = f"/overview/{engine_db_id}" if engine_db_id else "/dashboard"
     sensor_href = f"/sensor-trends/{engine_db_id}" if engine_db_id else "/sensor-trends"
-    explainability_href = f"/explainability/{engine_db_id}" if engine_db_id else "/explainability"
+    degradation_analysis_href = f"/degradation-analysis/{engine_db_id}" if engine_db_id else "/degradation-analysis"
     alert_href = f"/alert-log/{engine_db_id}" if engine_db_id else "/alert-log"
 
     return html.Div(
@@ -183,7 +183,7 @@ def build_sidebar(active_page="sensor", engine_db_id=None):
                 }),
                 nav_link(icon_overview, "Overview",         "overview",      overview_href),
                 nav_link(icon_sensor,   "Sensor Trends",    "sensor",        sensor_href),
-                nav_link(icon_shap,     "Explainability AI","explainability",explainability_href),
+                nav_link(icon_shap,     "Degradation Analysis","degradation_analysis",degradation_analysis_href),
                 nav_link(icon_alert,    "Alert Log",        "alert",         alert_href),
             ]),
             html.Div(style={"flex": "1"}),

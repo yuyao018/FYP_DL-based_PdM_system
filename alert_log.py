@@ -4,7 +4,7 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import base64
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ─────────────────────────────────────────────
 #  SVG ICON HELPERS  (shared style with overview.py / sensor_trends.py)
@@ -91,7 +91,7 @@ def build_sidebar(active_page="alert", engine_db_id=None):
     # Build navigation links with engine_db_id if available
     overview_href = f"/overview/{engine_db_id}" if engine_db_id else "/dashboard"
     sensor_href = f"/sensor-trends/{engine_db_id}" if engine_db_id else "/sensor-trends"
-    explainability_href = f"/explainability/{engine_db_id}" if engine_db_id else "/explainability"
+    degradation_analysis_href = f"/degradation-analysis/{engine_db_id}" if engine_db_id else "/degradation-analysis"
     alert_href = f"/alert-log/{engine_db_id}" if engine_db_id else "/alert-log"
 
     return html.Div(
@@ -121,7 +121,7 @@ def build_sidebar(active_page="alert", engine_db_id=None):
                 }),
                 nav_link(icon_overview, "Overview",         "overview",      overview_href),
                 nav_link(icon_sensor,   "Sensor Trends",    "sensor",        sensor_href),
-                nav_link(icon_shap,     "Explainability AI","explainability",explainability_href),
+                nav_link(icon_shap,     "Degradation Analysis","degradation_analysis",degradation_analysis_href),
                 nav_link(icon_alert,    "Alert Log",        "alert",         alert_href),
             ]),
             html.Div(style={"flex": "1"}),
@@ -224,17 +224,19 @@ def summary_card(value, label, color="white", border=None):
 
 def severity_badge(severity):
     cfg = {
-        "critical": ("rgba(255,77,77,0.18)", "#ff4d4d", "#ff4d4d"),
-        "warning":  ("rgba(255,217,61,0.18)", "#ffd93d", "#ffd93d"),
-        "resolved": ("rgba(0,200,100,0.18)",  "#00c875", "#00c875"),
+        "critical": ("rgba(255,77,77,0.12)", "#ff4d4d", "#ff4d4d"),
+        "warning":  ("rgba(255,217,61,0.10)", "#ffd93d", "#ffd93d"),
+        "resolved": ("rgba(0,200,100,0.12)",  "#00c875", "#00c875"),
     }
     c = cfg.get(severity, cfg["warning"])
     return html.Span(
         severity.upper(),
         style={
-            "background": c[0], "color": c[1], "border": f"1px solid {c[2]}",
-            "borderRadius": "6px", "padding": "3px 10px",
+            "display": "inline-block",
+            "background": c[0], "color": c[1], "border": f"1.5px solid {c[2]}",
+            "borderRadius": "4px", "padding": "2px 8px",
             "fontSize": "10px", "fontWeight": "700", "letterSpacing": "0.5px",
+            "lineHeight": "1.4",
         }
     )
 
@@ -245,68 +247,107 @@ def severity_badge(severity):
 
 def alert_table_row(idx, alert, is_selected=False):
     ts = alert["timestamp"].strftime("%Y/%m/%d %H:%M")
-    return html.Div(
-        id={"type": "alert-row", "index": idx},
-        n_clicks=0,
-        style={
-            "display": "grid",
-            "gridTemplateColumns": "50px 1fr 110px 70px",
-            "alignItems": "center",
-            "padding": "14px 18px",
-            "cursor": "pointer",
-            "borderLeft": "3px solid #4a9eff" if is_selected else "3px solid transparent",
-            "background": "rgba(74,158,255,0.08)" if is_selected else "transparent",
-            "borderBottom": "1px solid rgba(74,158,255,0.08)",
-        },
-        children=[
-            html.Span(alert["alert_no"], style={"color": "white", "fontSize": "13px", "fontWeight": "600"}),
-            html.Span(ts, style={"color": "#a8d4ff", "fontSize": "13px"}),
-            severity_badge(alert["severity"]),
-            html.Span(str(alert["rul"]), style={"color": "white", "fontSize": "13px",
-                                                  "fontWeight": "700", "textAlign": "right"}),
-        ]
-    )
+    status = alert.get("status", "active")
+
+    # Action button based on status
+    _btn_style = {
+        "background": "linear-gradient(90deg, #1a6fd4 0%, #2a85f0 100%)",
+        "color": "white", "border": "none", "borderRadius": "4px",
+        "padding": "4px 10px", "fontSize": "10px", "fontWeight": "700",
+        "cursor": "pointer", "letterSpacing": "0.3px",
+        "boxShadow": "0 1px 4px rgba(42,133,240,0.3)",
+    }
+    if status == "active":
+        action_btn = html.Button("Acknowledge", id={"type": "ack-btn", "index": idx},
+                                  n_clicks=0, style=_btn_style)
+    elif status == "acknowledged":
+        action_btn = html.Button("Resolve", id={"type": "resolve-btn", "index": idx},
+                                  n_clicks=0, style=_btn_style)
+    else:
+        action_btn = html.Span("Resolved", style={"color": "#00c875", "fontSize": "10px", "fontWeight": "700"})
+
+    row_style = {
+        "display": "grid",
+        "gridTemplateColumns": "40px 1fr 80px 50px 90px",
+        "alignItems": "center",
+        "padding": "14px 18px",
+        "borderLeft": "3px solid #4a9eff" if is_selected else "3px solid transparent",
+        "background": "rgba(74,158,255,0.08)" if is_selected else "transparent",
+        "borderBottom": "1px solid rgba(74,158,255,0.08)",
+    }
+
+    return html.Div(style=row_style, children=[
+        # Clickable zone: everything except the action cell
+        html.Div(
+            id={"type": "alert-row", "index": idx}, n_clicks=0,
+            style={"display": "contents", "cursor": "pointer"},
+            children=[
+                html.Span(alert["alert_no"], style={"color": "white", "fontSize": "13px", "fontWeight": "600"}),
+                html.Span(ts, style={"color": "#a8d4ff", "fontSize": "13px"}),
+                html.Div(style={"textAlign": "center"}, children=[severity_badge(alert["severity"])]),
+                html.Span(str(alert["rul"]), style={"color": "white", "fontSize": "13px",
+                                                     "fontWeight": "700", "textAlign": "center"}),
+            ]
+        ),
+        # Action cell lives OUTSIDE the clickable div — no bubbling
+        html.Div(style={"display": "flex", "justifyContent": "center"}, children=[action_btn]),
+    ])
 
 
 # ─────────────────────────────────────────────
 #  RUL PROGRESSION SPARKLINE
 # ─────────────────────────────────────────────
 
-def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=60):
-    x = list(range(1, len(progression) + 1))
+def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=62):
+    """RUL progression chart. X-axis starts at cycle 45 (like overview.py)."""
+    x = list(range(45, 45 + len(progression)))
     y = progression
 
     fig = go.Figure()
 
+    # Single blue line, thin, no markers
     fig.add_trace(go.Scatter(
-        x=x, y=y, mode="lines+markers",
-        line=dict(color="#4a9eff", width=2),
-        marker=dict(
-            size=7,
-            color=["#ff4d4d" if v <= crit_thresh else "#ffd93d" if v <= warn_thresh else "#4a9eff" for v in y],
-        ),
-        hovertemplate="Cycle %{x}<br>RUL: %{y}<extra></extra>",
+        x=x, y=y, mode="lines",
+        line=dict(color="#4a9eff", width=1.5),
+        hovertemplate="Cycle %{x}<br>RUL: %{y:.1f}<extra></extra>",
     ))
 
-    fig.add_hline(y=warn_thresh, line=dict(color="#ffd93d", width=1, dash="dot"))
-    fig.add_hline(y=crit_thresh, line=dict(color="#ff4d4d", width=1, dash="dot"))
+    # Threshold lines
+    x_end = x[-1] if x else 50
+    x_start = x[0] if x else 45
+    fig.add_shape(type="line", x0=x_start, x1=x_end, y0=warn_thresh, y1=warn_thresh,
+                  line=dict(color="#ffd93d", width=1, dash="dot"))
+    fig.add_shape(type="line", x0=x_start, x1=x_end, y0=crit_thresh, y1=crit_thresh,
+                  line=dict(color="#ff4d4d", width=1, dash="dot"))
+
+    # Threshold value labels
+    fig.add_annotation(x=x_end, y=warn_thresh, text=f"  {warn_thresh}",
+                       showarrow=False, font=dict(color="#ffd93d", size=9), xanchor="left")
+    fig.add_annotation(x=x_end, y=crit_thresh, text=f"  {crit_thresh}",
+                       showarrow=False, font=dict(color="#ff4d4d", size=9), xanchor="left")
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=30, r=40, t=10, b=24),
-        height=140,
-        xaxis=dict(showgrid=False, color="rgba(168,212,255,0.5)", tickfont=dict(size=9),
-                   title=dict(text="cycle 1", font=dict(size=9, color="rgba(168,212,255,0.5)")),
-                   zeroline=False),
-        yaxis=dict(showgrid=False, color="rgba(168,212,255,0.5)", tickfont=dict(size=9), zeroline=False),
+        margin=dict(l=30, r=40, t=10, b=28),
+        height=160,
+        xaxis=dict(
+            showgrid=False, color="#a8d4ff", tickfont=dict(size=9),
+            zeroline=False,
+            range=[x_start, x_end] if len(x) > 1 else None,
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor="rgba(74,158,255,0.08)",
+            color="#a8d4ff", tickfont=dict(size=9), zeroline=False,
+            title=dict(text="RUL", font=dict(size=9, color="#a8d4ff")),
+        ),
         showlegend=False,
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="#0d1e3a", bordercolor="rgba(74,158,255,0.4)",
+            font=dict(color="white", size=11),
+        ),
     )
-
-    fig.add_annotation(x=x[-1], y=warn_thresh, text="60", showarrow=False,
-                       font=dict(color="#ffd93d", size=9), xanchor="left", xshift=6)
-    fig.add_annotation(x=x[-1], y=crit_thresh, text="30", showarrow=False,
-                       font=dict(color="#ff4d4d", size=9), xanchor="left", xshift=6)
 
     return fig
 
@@ -381,9 +422,13 @@ def alert_detail_panel(alert):
             },
             children=[
                 dcc.Graph(
-                    figure=build_rul_sparkline(alert["rul_progression"]),
+                    figure=build_rul_sparkline(
+                        alert["rul_progression"],
+                        crit_thresh=alert.get("crit_thresh", 30),
+                        warn_thresh=alert.get("warn_thresh", 62),
+                    ),
                     config={"displayModeBar": False},
-                    style={"height": "140px"},
+                    style={"height": "160px"},
                 )
             ]
         ),
@@ -444,9 +489,9 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
         alerts = _sample_alerts(engine_id)
 
     total = len(alerts)
-    active = sum(1 for a in alerts if a["severity"] == "critical")
-    acknowledged = sum(1 for a in alerts if a["severity"] == "warning")
-    resolved = sum(1 for a in alerts if a["severity"] == "resolved")
+    active = sum(1 for a in alerts if a.get("status") == "active")
+    acknowledged = sum(1 for a in alerts if a.get("status") == "acknowledged")
+    resolved = sum(1 for a in alerts if a.get("status") == "resolved")
 
     selected_idx = max(0, min(selected_idx, total - 1)) if total else 0
     selected_alert = alerts[selected_idx] if alerts else None
@@ -466,6 +511,7 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
 
         # ── Summary stats row ──
         html.Div(
+            id="alert-summary-row",
             style={
                 "display": "flex", "background": "transparent",
                 "border": "2px solid rgba(74,158,255,0.5)", "borderRadius": "0px",
@@ -493,11 +539,72 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
                         "display": "flex", "flexDirection": "column",
                     },
                     children=[
+                        # Filter bar: search + dropdown
+                        html.Div(
+                            style={
+                                "display": "flex", "alignItems": "center",
+                                "justifyContent": "space-between",
+                                "padding": "10px 18px",
+                                "borderBottom": "1px solid rgba(74,158,255,0.15)",
+                                "borderRadius": "10px",
+                                "gap": "12px",
+                            },
+                            children=[
+                                # Search bar (left)
+                                html.Div(
+                                    style={
+                                        "flex": "1", "display": "flex", "alignItems": "center",
+                                        "background": "rgba(10,20,45,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                        "borderRadius": "6px", "padding": "0 10px",
+                                    },
+                                    children=[
+                                        html.Span("\U0001F50D", style={"fontSize": "12px", "marginRight": "6px",
+                                                                        "opacity": "0.5"}),
+                                        dcc.Input(
+                                            id="alert-search-input",
+                                            type="text",
+                                            placeholder="Search alerts...",
+                                            debounce=True,
+                                            style={
+                                                "background": "transparent", "border": "none",
+                                                "color": "white", "fontSize": "12px",
+                                                "outline": "none", "width": "100%",
+                                                "padding": "6px 0",
+                                            },
+                                        ),
+                                    ]
+                                ),
+                                # Filter dropdown (right)
+                                html.Div(
+                                    style={
+                                        "width": "140px",
+                                        "border": "1px solid rgba(74,158,255,0.15)",
+                                        "borderRadius": "6px",
+                                    },
+                                    children=[
+                                        dcc.Dropdown(
+                                            id="alert-severity-filter",
+                                            options=[
+                                                {"label": "All Severity", "value": "all"},
+                                                {"label": "Warning", "value": "warning"},
+                                                {"label": "Critical", "value": "critical"},
+                                            ],
+                                            value="all",
+                                            clearable=False,
+                                            searchable=False,
+                                            className="dark-dropdown",
+                                            style={"backgroundColor": "transparent", "border": "none", "fontSize": "12px"},
+                                        )
+                                    ]
+                                ),
+                            ]
+                        ),
                         # Table header
                         html.Div(
                             style={
                                 "display": "grid",
-                                "gridTemplateColumns": "50px 1fr 100px 100px",
+                                "gridTemplateColumns": "40px 1fr 80px 50px 90px",
                                 "padding": "12px 18px",
                                 "borderBottom": "2px solid rgba(74,158,255,0.5)",
                             },
@@ -507,10 +614,14 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
                                 html.Span("TIMESTAMP", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
                                                                "fontWeight": "700", "letterSpacing": "0.5px"}),
                                 html.Span("SEVERITY", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
-                                                              "fontWeight": "700", "letterSpacing": "0.5px"}),
-                                html.Span("Predicted RUL", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
+                                                              "fontWeight": "700", "letterSpacing": "0.5px",
+                                                              "textAlign": "center"}),
+                                html.Span("RUL", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
                                                          "fontWeight": "700", "letterSpacing": "0.5px",
-                                                         "textAlign": "right"}),
+                                                         "textAlign": "center"}),
+                                html.Span("ACTION", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
+                                                            "fontWeight": "700", "letterSpacing": "0.5px",
+                                                            "textAlign": "center"}),
                             ]
                         ),
                         html.Div(
@@ -541,6 +652,7 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
             {**a, "timestamp": a["timestamp"].isoformat()} for a in alerts
         ]),
         dcc.Store(id="selected-alert-idx", data=selected_idx),
+        dcc.Store(id="alert-filter-store", data="all"),
     ]
 
 
@@ -554,8 +666,22 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
 
     try:
         if supabase:
+            # Fetch alert thresholds
+            warn_thresh, crit_thresh = 62, 30
+            try:
+                t_resp = supabase.table("alert_thresholds") \
+                    .select("warning_threshold, critical_threshold") \
+                    .order("updated_at", desc=True) \
+                    .limit(1) \
+                    .execute()
+                if t_resp.data:
+                    warn_thresh = int(t_resp.data[0].get("warning_threshold", 62))
+                    crit_thresh = int(t_resp.data[0].get("critical_threshold", 30))
+            except Exception:
+                pass
+
             # Build base query for alert_logs
-            query = supabase.table("alert_logs").select("id, engine_id, triggered_at")
+            query = supabase.table("alert_logs").select("id, engine_id, triggered_at, status, acknowledged_by, acknowledged_at, resolved_at, severity")
 
             if engine_db_id is not None:
                 query = query.eq("engine_id", engine_db_id)
@@ -592,11 +718,13 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
             for i, log in enumerate(logs):
                 eng = engines_lookup.get(log.get("engine_id"), {})
 
-                condition_status = (eng.get("condition_status") or "warning").lower().strip()
-                if condition_status not in ("healthy", "warning", "critical"):
-                    condition_status = "warning"
-                # "healthy" alerts shouldn't normally appear in a log, but guard anyway
-                severity = condition_status if condition_status != "healthy" else "warning"
+                # Use severity from alert_logs table directly (not engine status)
+                severity = (log.get("severity") or "warning").lower().strip()
+                if severity not in ("warning", "critical"):
+                    severity = "warning"
+
+                # Alert status from the table
+                alert_status = (log.get("status") or "active").lower().strip()
 
                 current_cycle = eng.get("current_cycle") or 0
                 fault_type = eng.get("degradation_type") or "Unknown"
@@ -607,14 +735,42 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                 except Exception:
                     timestamp = datetime.now()
 
+                # Fetch actual RUL predictions for this engine's progression chart
+                rul_progression = []
+                latest_rul = 0
+                alert_engine_id = log.get("engine_id")
+                try:
+                    pred_resp = supabase.table("rul_predictions") \
+                        .select("cycle, predicted_rul") \
+                        .eq("engine_id", alert_engine_id) \
+                        .order("cycle", desc=False) \
+                        .execute()
+                    print(f"[DEBUG] rul_predictions for engine {alert_engine_id}: {len(pred_resp.data or [])} rows")
+                    for pred_row in (pred_resp.data or []):
+                        if pred_row.get("predicted_rul") is not None:
+                            rul_progression.append(float(pred_row["predicted_rul"]))
+                    if rul_progression:
+                        latest_rul = int(round(rul_progression[-1]))
+                except Exception as _e:
+                    import traceback
+                    print(f"[DEBUG] Failed to fetch rul_predictions: {traceback.format_exc()}")
+
+                if not rul_progression:
+                    rul_progression = [current_cycle]
+                    latest_rul = current_cycle
+
                 alerts.append({
-                    "alert_no": str(log.get("id", i)).zfill(2),
+                    "alert_no": str(i + 1).zfill(2),
+                    "alert_id": log.get("id"),
                     "timestamp": timestamp,
                     "severity": severity,
-                    "rul": current_cycle,
+                    "status": alert_status,
+                    "rul": latest_rul,
                     "fault_type": fault_type,
-                    "shap": [],                      # not available from engines/alert_logs schema
-                    "rul_progression": [current_cycle],  # single point; no historical series available
+                    "shap": [],
+                    "rul_progression": rul_progression,
+                    "warn_thresh": warn_thresh,
+                    "crit_thresh": crit_thresh,
                 })
 
             print(f"[DEBUG] built alerts: {alerts}")
@@ -652,12 +808,12 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
 #  CALLBACKS
 # ─────────────────────────────────────────────
 
-def register_alert_log_callbacks(app):
+def register_alert_log_callbacks(app, supabase=None):
 
     @app.callback(
-        Output("alert-detail-container", "children"),
-        Output("alert-table-body", "children"),
-        Output("selected-alert-idx", "data"),
+        Output("alert-detail-container", "children", allow_duplicate=True),
+        Output("alert-table-body", "children", allow_duplicate=True),
+        Output("selected-alert-idx", "data", allow_duplicate=True),
         Input({"type": "alert-row", "index": dash.ALL}, "n_clicks"),
         State("alerts-data", "data"),
         State("selected-alert-idx", "data"),
@@ -670,7 +826,13 @@ def register_alert_log_callbacks(app):
 
         import json
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        idx = json.loads(trigger_id)["index"]
+        parsed = json.loads(trigger_id)
+
+        # Ignore if the trigger came from a button click bubbling up
+        if parsed.get("type") != "alert-row":
+            raise dash.exceptions.PreventUpdate
+
+        idx = parsed["index"]
 
         alerts = []
         for a in alerts_data:
@@ -683,6 +845,169 @@ def register_alert_log_callbacks(app):
         rows = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
 
         return detail, rows, idx
+
+    # ── Acknowledge button callback ──
+    @app.callback(
+        Output("alert-table-body", "children", allow_duplicate=True),
+        Output("alerts-data", "data", allow_duplicate=True),
+        Output("alert-detail-container", "children", allow_duplicate=True),
+        Output("alert-summary-row", "children", allow_duplicate=True),
+        Output("selected-alert-idx", "data", allow_duplicate=True),
+        Input({"type": "ack-btn", "index": dash.ALL}, "n_clicks"),
+        State("alerts-data", "data"),
+        State("session-store", "data"),
+        State("selected-alert-idx", "data"),
+        prevent_initial_call=True,
+    )
+    def acknowledge_alert(n_clicks_list, alerts_data, session, selected_idx):
+        ctx = dash.callback_context
+        if not ctx.triggered or not any(n_clicks_list):
+            raise dash.exceptions.PreventUpdate
+
+        import json as _json
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        idx = _json.loads(trigger_id)["index"]
+
+        user_id = session.get("user_id") if session else None
+        alert_id = alerts_data[idx].get("alert_id")
+
+        if supabase and alert_id:
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                update_data = {
+                    "status": "acknowledged",
+                    "acknowledged_at": now,
+                }
+                if user_id:
+                    update_data["acknowledged_by"] = user_id
+                supabase.table("alert_logs").update(update_data).eq("id", alert_id).execute()
+                print(f"[ALERT] Acknowledged alert {alert_id} by user {user_id}")
+            except Exception:
+                import traceback
+                print(f"[ALERT][ERROR] Failed to acknowledge:\n{traceback.format_exc()}")
+
+        # Update local data
+        alerts_data[idx]["status"] = "acknowledged"
+
+        alerts = []
+        for a in alerts_data:
+            a = dict(a)
+            a["timestamp"] = datetime.fromisoformat(a["timestamp"])
+            alerts.append(a)
+
+        rows = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
+        detail = alert_detail_panel(alerts[idx]) if idx < len(alerts) else []
+
+        # Rebuild summary
+        total = len(alerts)
+        active_count = sum(1 for a in alerts if a.get("status") == "active")
+        ack_count = sum(1 for a in alerts if a.get("status") == "acknowledged")
+        res_count = sum(1 for a in alerts if a.get("status") == "resolved")
+        summary = [
+            summary_card(total, "Total Alerts", "white"),
+            summary_card(active_count, "Active", "#ff4d4d"),
+            summary_card(ack_count, "Acknowledged", "#ffd93d"),
+            summary_card(res_count, "Resolved", "#00c875", border="last"),
+        ]
+        return rows, alerts_data, detail, summary, idx
+
+    # ── Resolve button callback ──
+    @app.callback(
+        Output("alert-table-body", "children", allow_duplicate=True),
+        Output("alerts-data", "data", allow_duplicate=True),
+        Output("alert-detail-container", "children", allow_duplicate=True),
+        Output("alert-summary-row", "children", allow_duplicate=True),
+        Output("selected-alert-idx", "data", allow_duplicate=True),
+        Input({"type": "resolve-btn", "index": dash.ALL}, "n_clicks"),
+        State("alerts-data", "data"),
+        State("session-store", "data"),
+        State("selected-alert-idx", "data"),
+        prevent_initial_call=True,
+    )
+    def resolve_alert(n_clicks_list, alerts_data, session, selected_idx):
+        ctx = dash.callback_context
+        if not ctx.triggered or not any(n_clicks_list):
+            raise dash.exceptions.PreventUpdate
+
+        import json as _json
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        idx = _json.loads(trigger_id)["index"]
+
+        alert_id = alerts_data[idx].get("alert_id")
+
+        if supabase and alert_id:
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                supabase.table("alert_logs").update({
+                    "status": "resolved",
+                    "resolved_at": now,
+                }).eq("id", alert_id).execute()
+                print(f"[ALERT] Resolved alert {alert_id}")
+            except Exception:
+                import traceback
+                print(f"[ALERT][ERROR] Failed to resolve:\n{traceback.format_exc()}")
+
+        # Update local data
+        alerts_data[idx]["status"] = "resolved"
+
+        alerts = []
+        for a in alerts_data:
+            a = dict(a)
+            a["timestamp"] = datetime.fromisoformat(a["timestamp"])
+            alerts.append(a)
+
+        rows = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
+        detail = alert_detail_panel(alerts[idx]) if idx < len(alerts) else []
+
+        # Rebuild summary
+        total = len(alerts)
+        active_count = sum(1 for a in alerts if a.get("status") == "active")
+        ack_count = sum(1 for a in alerts if a.get("status") == "acknowledged")
+        res_count = sum(1 for a in alerts if a.get("status") == "resolved")
+        summary = [
+            summary_card(total, "Total Alerts", "white"),
+            summary_card(active_count, "Active", "#ff4d4d"),
+            summary_card(ack_count, "Acknowledged", "#ffd93d"),
+            summary_card(res_count, "Resolved", "#00c875", border="last"),
+        ]
+        return rows, alerts_data, detail, summary, idx
+
+    # ── Filter by severity dropdown + search ──
+    @app.callback(
+        Output("alert-table-body", "children", allow_duplicate=True),
+        Input("alert-severity-filter", "value"),
+        Input("alert-search-input", "value"),
+        State("alerts-data", "data"),
+        State("selected-alert-idx", "data"),
+        prevent_initial_call=True,
+    )
+    def filter_alerts(severity_filter, search_text, alerts_data, selected_idx):
+        alerts = []
+        for a in alerts_data:
+            a = dict(a)
+            a["timestamp"] = datetime.fromisoformat(a["timestamp"])
+            alerts.append(a)
+
+        # Filter by severity
+        if severity_filter and severity_filter != "all":
+            alerts = [a for a in alerts if a.get("severity") == severity_filter]
+
+        # Filter by search text
+        if search_text:
+            search_lower = search_text.lower()
+            alerts = [a for a in alerts if (
+                search_lower in a.get("alert_no", "").lower() or
+                search_lower in a["timestamp"].strftime("%Y/%m/%d %H:%M").lower() or
+                search_lower in a.get("severity", "").lower() or
+                search_lower in str(a.get("rul", "")).lower()
+            )]
+
+        rows = [alert_table_row(i, a, is_selected=(i == selected_idx)) for i, a in enumerate(alerts)]
+        if not rows:
+            rows = [html.Div("No alerts matching filter.",
+                             style={"color": "rgba(168,212,255,0.5)", "textAlign": "center",
+                                    "padding": "30px 0", "fontSize": "13px"})]
+        return rows
 
     @app.callback(
         Output("sidebar", "style"),

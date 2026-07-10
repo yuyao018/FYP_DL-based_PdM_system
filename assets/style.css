@@ -71,183 +71,134 @@ input[type="number"] {
    DASH DROPDOWN DARK THEME STYLING
    ============================================ */
 
-/* Target all dropdown elements more aggressively */
-.dark-dropdown,
-.dark-dropdown *,
+/* ── Global dark dropdown overrides ── */
+/* These target Dash's react-select v5+ class names */
+
+/* The outer wrapper */
+.dark-dropdown .Select,
+.dark-dropdown > div,
+.dark-dropdown {
+    background: transparent !important;
+}
+
+/* Control (the visible box you click on) */
 .dark-dropdown .Select-control,
-.dark-dropdown .Select__control {
-    background: transparent !important;
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* Control (main dropdown button) */
-.Select-control,
-div[class*="Select-control"],
-.VirtualizedSelectFocusedOption {
+.dark-dropdown [class*="-control"] {
     background-color: transparent !important;
     background: transparent !important;
     border: none !important;
-    border-radius: 0 !important;
-    color: white !important;
     box-shadow: none !important;
+    cursor: pointer !important;
+    min-height: 36px !important;
 }
 
-/* Force white text in dropdown */
-.Select-value,
-.Select-value-label,
-.Select-placeholder,
-.Select-input > input {
+/* Force white text everywhere inside the control */
+.dark-dropdown .Select-value,
+.dark-dropdown .Select-value-label,
+.dark-dropdown .Select-placeholder,
+.dark-dropdown [class*="-singleValue"],
+.dark-dropdown [class*="-placeholder"],
+.dark-dropdown [class*="singleValue"],
+.dark-dropdown [class*="placeholder"] {
     color: white !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
 }
 
-/* Input inside control */
-.Select-input input,
-div[class*="Select-input"] input {
+/* Input text (when typing/searching) */
+.dark-dropdown .Select-input input,
+.dark-dropdown [class*="-input"] input,
+.dark-dropdown input {
     color: white !important;
     background: transparent !important;
 }
 
-/* Dropdown menu container */
-.Select-menu-outer,
-div[class*="Select-menu-outer"] {
-    background-color: #101e36 !important;
-    background: #101e36 !important;
-    border: 1px solid rgba(74,158,255,0.3) !important;
+/* Dropdown arrow / indicator */
+.dark-dropdown .Select-arrow-zone,
+.dark-dropdown [class*="-indicatorContainer"],
+.dark-dropdown [class*="indicatorContainer"] {
+    color: rgba(168,212,255,0.6) !important;
+}
+.dark-dropdown [class*="-indicatorContainer"] svg,
+.dark-dropdown .Select-arrow {
+    fill: rgba(168,212,255,0.6) !important;
+}
+/* Hide separator line between value and arrow */
+.dark-dropdown [class*="-indicatorSeparator"],
+.dark-dropdown [class*="indicatorSeparator"] {
+    display: none !important;
+}
+
+/* ── Menu (the dropdown panel that opens) ── */
+.dark-dropdown .Select-menu-outer,
+.dark-dropdown [class*="-menu"] {
+    background-color: #0d1e3a !important;
+    background: #0d1e3a !important;
+    border: 1.5px solid rgba(74,158,255,0.35) !important;
     border-radius: 8px !important;
     margin-top: 4px !important;
     z-index: 9999 !important;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important;
+    overflow: hidden !important;
 }
 
-.Select-menu,
-div[class*="Select-menu"] {
-    max-height: 250px !important;
-    background-color: #101e36 !important;
-    background: #101e36 !important;
+.dark-dropdown .Select-menu,
+.dark-dropdown [class*="-menuList"],
+.dark-dropdown [class*="menuList"] {
+    background-color: #0d1e3a !important;
+    background: #0d1e3a !important;
+    max-height: 240px !important;
+    padding: 4px 0 !important;
 }
 
-/* Dropdown options */
-.Select-option,
-div[class*="Select-option"] {
-    background-color: #101e36 !important;
-    background: #101e36 !important;
-    color: white !important;
-    padding: 10px 12px !important;
+/* ── Options (each item in the list) ── */
+.dark-dropdown .Select-option,
+.dark-dropdown [class*="-option"],
+.dark-dropdown [class*="option"] {
+    background-color: #0d1e3a !important;
+    background: #0d1e3a !important;
+    color: rgba(168,212,255,0.85) !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    padding: 10px 14px !important;
     cursor: pointer !important;
+    border-bottom: 1px solid rgba(74,158,255,0.08) !important;
+    transition: background 0.15s ease !important;
 }
 
-/* Dropdown option hover state */
-.Select-option:hover,
-.Select-option.is-focused,
-div[class*="Select-option"]:hover {
-    background-color: rgba(74,158,255,0.18) !important;
-    background: rgba(74,158,255,0.18) !important;
+/* Option hover */
+.dark-dropdown .Select-option:hover,
+.dark-dropdown .Select-option.is-focused,
+.dark-dropdown [class*="-option"]:hover,
+.dark-dropdown [class*="option--is-focused"] {
+    background-color: rgba(74,158,255,0.15) !important;
+    background: rgba(74,158,255,0.15) !important;
     color: white !important;
 }
 
-/* Dropdown option selected state */
-.Select-option.is-selected,
-div[class*="Select-option"][class*="selected"] {
+/* Option selected */
+.dark-dropdown .Select-option.is-selected,
+.dark-dropdown [class*="option--is-selected"] {
     background-color: rgba(74,158,255,0.25) !important;
     background: rgba(74,158,255,0.25) !important;
-    font-weight: 600 !important;
-    color: white !important;
+    color: #4af0ff !important;
+    font-weight: 700 !important;
 }
 
-/* Selected value label */
-.Select-value-label,
-div[class*="Select-value-label"],
-.Select-value,
-div[class*="Select-value"] {
-    color: white !important;
-    background: transparent !important;
+/* Remove last option border */
+.dark-dropdown .Select-option:last-child,
+.dark-dropdown [class*="-option"]:last-child {
+    border-bottom: none !important;
 }
 
-/* Placeholder text */
-.Select-placeholder,
-div[class*="Select-placeholder"] {
-    color: rgba(168,212,255,0.5) !important;
+/* Clear button */
+.dark-dropdown .Select-clear-zone,
+.dark-dropdown [class*="-clearIndicator"] {
+    color: rgba(168,212,255,0.4) !important;
 }
-
-/* Arrow icon area */
-.Select-arrow-zone,
-div[class*="Select-arrow-zone"] {
-    padding-right: 8px !important;
-}
-
-.Select-arrow,
-div[class*="Select-arrow"] {
-    border-color: rgba(168,212,255,0.5) transparent transparent !important;
-}
-
-/* Custom dropdown wrapper styling */
-.custom-dropdown .Select-control {
-    background: transparent !important;
-}
-
-/* Clear button (if clearable) */
-.Select-clear-zone,
-div[class*="Select-clear-zone"] {
-    color: rgba(168,212,255,0.5) !important;
-}
-
-.Select-clear-zone:hover,
-div[class*="Select-clear-zone"]:hover {
+.dark-dropdown .Select-clear-zone:hover,
+.dark-dropdown [class*="-clearIndicator"]:hover {
     color: #ff6b6b !important;
-}
-
-/* Modern Dash Dropdown (newer versions use different class names) */
-.dash-dropdown .Select__control,
-[class*="__control"] {
-    background-color: transparent !important;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-.dash-dropdown .Select__menu,
-[class*="__menu"] {
-    background-color: #101e36 !important;
-    background: #101e36 !important;
-    border: 1px solid rgba(74,158,255,0.3) !important;
-}
-
-.dash-dropdown .Select__option,
-[class*="__option"] {
-    background-color: #101e36 !important;
-    background: #101e36 !important;
-    color: white !important;
-}
-
-.dash-dropdown .Select__option:hover,
-.dash-dropdown .Select__option--is-focused,
-[class*="__option"]:hover,
-[class*="__option--is-focused"] {
-    background-color: rgba(74,158,255,0.18) !important;
-    background: rgba(74,158,255,0.18) !important;
-    color: white !important;
-}
-
-.dash-dropdown .Select__single-value,
-.dash-dropdown .Select__placeholder,
-[class*="__single-value"],
-[class*="__placeholder"] {
-    color: white !important;
-}
-
-/* Override any white backgrounds in dropdowns */
-div[class*="Select"] {
-    background: transparent !important;
-}
-
-div[class*="Select"][class*="menu"] {
-    background: #101e36 !important;
-}
-
-div[class*="Select"][class*="option"] {
-    background: #101e36 !important;
-    color: white !important;
 }
 
 /* ============================================
@@ -331,4 +282,39 @@ div[class*="Select"][class*="option"] {
 .model-type-dropdown .Select__input > input {
     color: white !important;
     background: transparent !important;
+}
+
+/* ============================================
+   CUSTOM SCROLLBAR — dark theme
+   ============================================ */
+
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(74, 158, 255, 0.35) rgba(10, 20, 45, 0.6);
+}
+
+/* Chrome, Edge, Safari */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(10, 20, 45, 0.6);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(74, 158, 255, 0.35);
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(74, 158, 255, 0.65);
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
 }

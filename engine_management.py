@@ -483,21 +483,62 @@ def register_engine_management_callbacks(app, supabase=None):
 
         # Remove from Supabase if connected
         if supabase:
+            # Delete in order: dependents first, then the engine itself
             try:
-                supabase.table("rul_predictions").delete().eq("engine_id", engine_id).execute()
+                resp = supabase.table("rul_predictions").delete().eq("engine_id", engine_id).execute()
+                print(f"[OK] Deleted rul_predictions for engine {engine_id}: {len(resp.data or [])} rows")
             except Exception as e:
                 print(f"[ERROR] remove rul_predictions for engine {engine_id}: {e}")
             try:
-                supabase.table("engines").delete().eq("id", engine_id).execute()
+                # Check what alert_logs exist for this engine
+                check = supabase.table("alert_logs").select("id").eq("engine_id", engine_id).execute()
+                print(f"[DEBUG] alert_logs to delete: {len(check.data or [])} rows for engine_id={engine_id}")
+                if check.data:
+                    resp = supabase.table("alert_logs").delete().eq("engine_id", engine_id).execute()
+                    print(f"[OK] Deleted alert_logs for engine {engine_id}: {len(resp.data or [])} rows")
+            except Exception as e:
+                print(f"[ERROR] remove alert_logs for engine {engine_id}: {e}")
+            try:
+                resp = supabase.table("engines").delete().eq("id", engine_id).execute()
+                print(f"[OK] Deleted engine {engine_id}")
             except Exception as e:
                 print(f"[ERROR] remove engine: {e}")
 
         # Stop the simulation thread if running
         try:
-            from engine_simulation_manager import stop_engine_simulation
+            from engine_simulation_manager import stop_engine_simulation, _SENSOR_BUFFER, _SENSOR_LOCK
             stop_engine_simulation(engine_id)
+            # Clear sensor buffer
+            with _SENSOR_LOCK:
+                _SENSOR_BUFFER.pop(engine_id, None)
         except Exception:
             pass
+
+        # Remove JSON data file from disk
+        try:
+            from data_utils import BASE_DATA_DIR
+            import os as _os
+            if _os.path.isdir(BASE_DATA_DIR):
+                for folder in _os.listdir(BASE_DATA_DIR):
+                    folder_path = _os.path.join(BASE_DATA_DIR, folder)
+                    if not _os.path.isdir(folder_path):
+                        continue
+                    # Look for engine_<db_id>.json (new format)
+                    target = _os.path.join(folder_path, f"engine_{engine_id}.json")
+                    if _os.path.exists(target):
+                        _os.remove(target)
+                        print(f"[OK] Removed data file: {target}")
+                        break
+                    # Fallback: old format engine_<num>.json
+                    eng_entry = next((e for e in engines_data if e["id"] == engine_id), None)
+                    if eng_entry:
+                        old_target = _os.path.join(folder_path, f"engine_{str(eng_entry.get('engine_id', 0)).zfill(3)}.json")
+                        if _os.path.exists(old_target):
+                            _os.remove(old_target)
+                            print(f"[OK] Removed data file (old format): {old_target}")
+                            break
+        except Exception as e:
+            print(f"[WARN] Could not remove data file for engine {engine_id}: {e}")
 
         updated = [e for e in engines_data if e["id"] != engine_id]
         rows = [engine_table_row(e, i) for i, e in enumerate(updated)]

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#101e36;overflow:hidden;font-family:"Courier New",monospace}
+  canvas{display:block;position:absolute;top:0;left:0}
+
+  #loading{
+    position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    color:rgba(168,212,255,0.5);font:600 11px "Segoe UI",sans-serif;
+    z-index:20;
+  }
+
+  /* Part list panel — sits on the right side of the card, overlaying the canvas */
+  #part-list{
+    position:absolute;
+    top:0; right:0;
+    height:100%;
+    width:120px;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    gap:6px;
+    padding:10px;
+    z-index:10;
+    background:linear-gradient(90deg, rgba(16,30,54,0) 0%, rgba(16,30,54,0.55) 30%);
+  }
+
+  .part-item{
+    color:#44ccff;
+    font:700 9px "Courier New",monospace;
+    letter-spacing:1.5px;
+    padding:5px 8px;
+    border-left:2px solid rgba(68,204,255,0.3);
+    cursor:pointer;
+    opacity:0.75;
+    transition:opacity 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    text-shadow:0 0 4px rgba(68,204,255,0.4);
+  }
+
+  .part-item:hover,
+  .part-item.active{
+    opacity:1;
+    border-left-color:#0090ff;
+    background:rgba(0,144,255,0.12);
+    color:#0090ff;
+    text-shadow:0 0 6px #0090ff, 0 0 14px rgba(0,144,255,0.6);
+  }
+</style>
+</head>
+<body>
+<div id="loading">Loading engine model...</div>
+<div id="part-list"></div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// Read status and degradation type from URL params
+const params = new URLSearchParams(window.location.search);
+const engineStatus = params.get('status') || 'healthy';
+const degradationType = (params.get('degradation') || '').toLowerCase();
+
+// Determine which parts should blink
+const blinkParts = new Set();
+if (engineStatus === 'warning' || engineStatus === 'critical') {
+  if (degradationType.includes('hpc')) blinkParts.add('HPC');
+  if (degradationType.includes('fan')) blinkParts.add('FAN');
+}
+const blinkColor = engineStatus === 'critical' ? 0xff3333 : 0xffaa00;
+const normalColor = 0x44ccff;
+
+const W = window.innerWidth || 420;
+const H = window.innerHeight || 270;
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(window.devicePixelRatio||1);
+renderer.setSize(W, H);
+renderer.setClearColor(0x101e36, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, W/H, 0.1, 1000);
+camera.position.set(0, 30, 120);
+camera.lookAt(0, 0, 0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;      // smooths out drag/zoom motion
+controls.dampingFactor = 0.08;
+controls.enableZoom = true;
+controls.minDistance = 30;          // how far in the user can zoom
+controls.maxDistance = 250;         // how far out the user can zoom
+controls.autoRotate = true;         // keeps spinning until user drags
+controls.autoRotateSpeed = 1.0;     // roughly matches your old 0.003/frame speed
+controls.enablePan = false;         // usually cleaner for a fixed model viewer
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x446688, 0.6));
+const dir = new THREE.DirectionalLight(0x88ccff, 0.8);
+dir.position.set(50, 100, 100);
+scene.add(dir);
+
+// Base + hover-blink colors
+const BASE_COLOR = new THREE.Color(0x44ccff);
+const BLINK_COLOR = new THREE.Color(0xEDFFF0);
+
+const PARTS_CONFIG = [
+  { name: "FAN",       file: "fan.STL",        edgeAngle: 20 },
+  { name: "LPC",       file: "LPC.STL",        edgeAngle: 25 },
+  { name: "HPC",       file: "HPC.STL",        edgeAngle: 25 },
+  { name: "COMBUSTOR", file: "combustion.STL", edgeAngle: 55 },  // aggressive filtering for very detailed parts, if not everything seems blur tgt
+  { name: "HPT",       file: "HPT.STL",        edgeAngle: 30 },
+  { name: "LPT",       file: "LPT.STL",        edgeAngle: 30 },
+  { name: "EXHAUST",   file: "exhaust.STL",    edgeAngle: 20 },
+];
+
+const loader = new STLLoader();
+const parts = {};
+let loadedCount = 0;
+
+const pivot = new THREE.Group();
+scene.add(pivot);
+
+const engineGroup = new THREE.Group();
+pivot.add(engineGroup);
+
+// Currently hovered part name, or null
+let hoveredPart = null;
+
+// Load all STL parts — paths relative to this HTML file location
+PARTS_CONFIG.forEach(cfg => {
+  const url = 'engine_model/' + cfg.file;
+  loader.load(url, (geometry) => {
+    geometry.computeVertexNormals();
+
+    // Subtle solid fill so parts read as 3D shapes, not just line noise
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: BASE_COLOR.clone(),
+      transparent: true,
+      opacity: 0.15,
+      blending: THREE.AdditiveBlending,
+    });
+    const fillMesh = new THREE.Mesh(geometry, fillMat);
+
+    const edges = new THREE.EdgesGeometry(geometry, cfg.edgeAngle);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: BASE_COLOR.clone(),
+      transparent: true,
+      opacity: 0.8,
+    });
+    const edgeLines = new THREE.LineSegments(edges, lineMat);
+
+    const partGroup = new THREE.Group();
+    partGroup.add(fillMesh);
+    partGroup.add(edgeLines);
+
+    engineGroup.add(partGroup);
+    parts[cfg.name] = { mesh: partGroup, fillMat, lineMat };
+    loadedCount++;
+    if (loadedCount === PARTS_CONFIG.length) onAllLoaded();
+  }, undefined, (err) => {
+    console.warn('Failed to load', cfg.file, err);
+    loadedCount++;
+    if (loadedCount === PARTS_CONFIG.length) onAllLoaded();
+  });
+});
+
+// Build the sidebar part list
+const listDiv = document.getElementById('part-list');
+PARTS_CONFIG.forEach(cfg => {
+  const el = document.createElement('div');
+  el.className = 'part-item';
+  el.textContent = cfg.name;
+  el.addEventListener('mouseenter', () => {
+    hoveredPart = cfg.name;
+    el.classList.add('active');
+  });
+  el.addEventListener('mouseleave', () => {
+    hoveredPart = null;
+    el.classList.remove('active');
+  });
+  listDiv.appendChild(el);
+});
+
+let spinning = false;
+
+const MODEL_OFFSET_X = -28;
+
+function onAllLoaded() {
+  document.getElementById('loading').style.display = 'none';
+  const box = new THREE.Box3().setFromObject(engineGroup);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const scale = 150 / maxDim;
+  engineGroup.scale.setScalar(scale);
+  engineGroup.position.sub(center.multiplyScalar(scale));
+  pivot.position.x = MODEL_OFFSET_X;
+  controls.target.set(MODEL_OFFSET_X, 0, 0);
+  controls.update();
+  spinning = true;
+}
+
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+
+  const t = clock.getElapsedTime();
+
+  // Pulse the hovered part between BASE_COLOR and BLINK_COLOR
+  // Also blink parts affected by degradation
+  const degradBlinkColor = new THREE.Color(blinkColor);
+  
+  Object.entries(parts).forEach(([name, part]) => {
+    const isHovered = name === hoveredPart;
+    const isDegraded = blinkParts.has(name);
+
+    if (isDegraded && !isHovered) {
+      // Degradation blink: slow pulse between normal and warning/critical color
+      const pulse = (Math.sin(t * 3) + 1) / 2; // slower pulse for degradation
+      const c = BASE_COLOR.clone().lerp(degradBlinkColor, 0.3 + pulse * 0.7);
+      part.lineMat.color.copy(c);
+      part.fillMat.color.copy(c);
+      part.fillMat.opacity = 0.1 + pulse * 0.2;
+      part.lineMat.opacity = 0.6 + pulse * 0.3;
+    } else if (isHovered) {
+      // Sine pulse between base and blink color, plus a slight opacity pulse
+      const pulse = (Math.sin(t * 6) + 1) / 2; // 0..1
+      const c = BASE_COLOR.clone().lerp(BLINK_COLOR, 0.4 + pulse * 0.6);
+      part.lineMat.color.copy(c);
+      part.fillMat.color.copy(c);
+      part.fillMat.opacity = 0.15 + pulse * 0.25;
+      part.lineMat.opacity = 0.8;
+    } else {
+      part.lineMat.color.lerp(BASE_COLOR, 0.15);
+      part.fillMat.color.lerp(BASE_COLOR, 0.15);
+      part.fillMat.opacity += (0.15 - part.fillMat.opacity) * 0.15;
+      part.lineMat.opacity = 0.8;
+    }
+  });
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  const nw = window.innerWidth||420, nh = window.innerHeight||270;
+  camera.aspect = nw/nh; camera.updateProjectionMatrix();
+  renderer.setSize(nw, nh);
+});
+</script>
+</body></html>

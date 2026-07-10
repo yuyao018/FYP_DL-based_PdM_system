@@ -40,8 +40,34 @@ import pandas as pd
 # ─────────────────────────────────────────────
 
 TICK_INTERVAL    = 3          # seconds between cycles
-WINDOW_SIZE      = 45         # rolling window fed to the model (cycles)
 RUL_CAP          = 100        # clamp predicted RUL — matches training rul_cap in model metadata
+
+# Per-dataset window sizes (must match training)
+WINDOW_SIZES = {
+    "FD001": 45,
+    "FD002": 35,
+    "FD003": 45,
+    "FD004": 50,
+}
+WINDOW_SIZE = 45  # default fallback
+
+# Per-dataset: whether to include operational setting columns as features
+# FD001/FD003: single operating condition → 14 sensors only
+# FD002/FD004: multiple operating conditions → 14 sensors + 3 OS = 17 features
+INCLUDE_OS = {
+    "FD001": False,
+    "FD002": True,
+    "FD003": False,
+    "FD004": True,
+}
+
+# Number of KMeans clusters for per-cluster normalization
+N_CLUSTERS = {
+    "FD001": 1,
+    "FD002": 6,
+    "FD003": 1,
+    "FD004": 6,
+}
 
 # Sensor columns the model was trained on (CMAPSS selected sensors)
 SENSOR_COLS = [
@@ -49,14 +75,13 @@ SENSOR_COLS = [
     "s11", "s12", "s13", "s14", "s15",
     "s17", "s20", "s21",
 ]
-# NOTE: INCLUDE_OS_COLS = False in training — op settings are NOT model features.
-# They are read from JSON but not fed to the model.
+# Operational setting columns (used for FD002/FD004)
 OP_COLS = [
     "operational_setting_1",
     "operational_setting_2",
     "operational_setting_3",
 ]
-FEATURE_COLS = SENSOR_COLS          # 14 sensor features only — matches training
+FEATURE_COLS = SENSOR_COLS          # 14 sensor features only (FD001/FD003)
 BASE_FEATURE_COLS = FEATURE_COLS    # alias used by _extract_raw_sensors
 
 # Path to shared model directory
@@ -245,17 +270,15 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
 
 _MODEL_CACHE:  dict = {}
 _SCALER_CACHE: dict = {}   # model_type → (mean: np.ndarray | None, std: np.ndarray | None)
+_CLUSTER_CACHE: dict = {}  # model_type → (centroids, cluster_means, cluster_stds) | (None, None, None)
 _MODEL_LOCK  = threading.Lock()
 
 
-def _load_model(model_type: str):
+def _load_model(model_type: str, supabase=None):
     """
     Load and cache the active model for the given model_type.
-    Scans data/shared_models/<model_type>/ for the most recently modified .h5.
-
-    The .h5 files are PyTorch state-dicts saved via h5py (not Keras models).
-    We reconstruct the TransformerBiGRU architecture from the metadata stored
-    in the file, then load the state-dict weights.
+    First checks the model_versions table for the active version's stored_filename.
+    Falls back to the most recently modified .h5 in the model directory.
     Returns None if no model file is found or loading fails.
     """
     with _MODEL_LOCK:
@@ -267,16 +290,40 @@ def _load_model(model_type: str):
             print(f"[SIM] No model directory for {model_type}: {model_dir}")
             return None
 
-        h5_files = sorted(
-            [f for f in os.listdir(model_dir) if f.endswith(".h5")],
-            key=lambda f: os.path.getmtime(os.path.join(model_dir, f)),
-            reverse=True,
-        )
-        if not h5_files:
-            print(f"[SIM] No .h5 model found in {model_dir}")
-            return None
+        # Try to find the active model file from database
+        model_path = None
+        if supabase:
+            try:
+                resp = supabase.table("model_versions") \
+                    .select("id, filename") \
+                    .eq("model_type", model_type) \
+                    .eq("status", "active") \
+                    .limit(1) \
+                    .execute()
+                if resp.data:
+                    row = resp.data[0]
+                    fname = row.get("filename")
+                    if fname:
+                        candidate = os.path.join(model_dir, fname)
+                        if os.path.exists(candidate):
+                            model_path = candidate
+                            print(f"[SIM] Using active model from DB: {fname}")
+            except Exception:
+                pass
 
-        model_path = os.path.join(model_dir, h5_files[0])
+        # Fallback: most recently modified .h5
+        if not model_path:
+            h5_files = sorted(
+                [f for f in os.listdir(model_dir) if f.endswith(".h5")],
+                key=lambda f: os.path.getmtime(os.path.join(model_dir, f)),
+                reverse=True,
+            )
+            if not h5_files:
+                print(f"[SIM] No .h5 model found in {model_dir}")
+                return None
+            model_path = os.path.join(model_dir, h5_files[0])
+            print(f"[SIM] Using most recent model file: {h5_files[0]}")
+
         try:
             import h5py
             import torch
@@ -302,6 +349,21 @@ def _load_model(model_type: str):
                     scaler_std  = f["scaler/std"][()].astype(np.float32)
                     print(f"[SIM] Loaded scaler stats from {model_path}")
 
+                # ── Read cluster artifacts if saved (FD002/FD004) ──
+                kmeans_centroids = None
+                cluster_means = None
+                cluster_stds = None
+                if "cluster" in f:
+                    cl = f["cluster"]
+                    if "centroids" in cl:
+                        kmeans_centroids = cl["centroids"][()].astype(np.float32)
+                    if "means" in cl:
+                        cluster_means = cl["means"][()].astype(np.float32)
+                    if "stds" in cl:
+                        cluster_stds = cl["stds"][()].astype(np.float32)
+                    print(f"[SIM] Loaded cluster normalization: "
+                          f"{kmeans_centroids.shape[0]} clusters from {model_path}")
+
             # ── Build model architecture (exact train.py SBiTransformer) ──
             model = _build_model(
                 num_features   = num_features,
@@ -326,6 +388,8 @@ def _load_model(model_type: str):
 
             # Cache scaler stats alongside the model (None if not in h5)
             _SCALER_CACHE[model_type] = (scaler_mean, scaler_std)
+            # Cache cluster normalization info
+            _CLUSTER_CACHE[model_type] = (kmeans_centroids, cluster_means, cluster_stds)
 
             return model
 
@@ -334,14 +398,15 @@ def _load_model(model_type: str):
             return None
 
 
-def reload_model(model_type: str):
+def reload_model(model_type: str, supabase=None):
     """
     Force-reload the model for model_type (call after a new model is deployed).
     """
     with _MODEL_LOCK:
         _MODEL_CACHE.pop(model_type, None)
         _SCALER_CACHE.pop(model_type, None)
-    return _load_model(model_type)
+        _CLUSTER_CACHE.pop(model_type, None)
+    return _load_model(model_type, supabase=supabase)
 
 
 # ─────────────────────────────────────────────
@@ -382,11 +447,12 @@ def _load_cycles(json_path: str) -> list:
 #  PREPROCESSING
 # ─────────────────────────────────────────────
 
-def _extract_raw_sensors(row: dict) -> Optional[np.ndarray]:
+def _extract_raw_sensors(row: dict, include_os: bool = False) -> Optional[np.ndarray]:
     """
-    Extract the 14 sensor values from one row dict.
-    Op settings are NOT included — training used INCLUDE_OS_COLS=False.
-    Returns None if any sensor value is missing.
+    Extract sensor values from one row dict.
+    If include_os=True (FD002/FD004), also extracts 3 operational settings → 17 features.
+    Otherwise returns 14 sensor features only (FD001/FD003).
+    Returns None if any required value is missing.
     """
     sensors = row.get("sensors", {})
     vec = []
@@ -397,58 +463,103 @@ def _extract_raw_sensors(row: dict) -> Optional[np.ndarray]:
             vec.append(float(row[col]))
         else:
             return None
-    return np.array(vec, dtype=np.float32)  # shape (14,)
+
+    if include_os:
+        for col in OP_COLS:
+            if col in sensors:
+                vec.append(float(sensors[col]))
+            elif col in row:
+                vec.append(float(row[col]))
+            else:
+                # OS columns might be at top level of the row dict
+                vec.append(0.0)  # default if missing
+
+    return np.array(vec, dtype=np.float32)  # shape (14,) or (17,)
 
 
 class _WindowBuffer:
     """
-    Accumulates raw 14-D sensor vectors.
-    Once >= WINDOW_SIZE rows are buffered, produces the (1, W, 42) tensor
-    expected by the model, matching the training pipeline exactly:
+    Accumulates raw sensor vectors (14-D for FD001/FD003, 17-D for FD002/FD004).
+    Once >= window_size rows are buffered, produces the model input tensor:
 
-      1. Z-score each sensor using the scaler saved in the .h5 file
-         (StandardScaler fitted on all FD001 training rows — same as training)
-      2. Compute rolling mean and rolling std (window=5) on the z-scored values
-      3. Concatenate: [z_raw (14) | roll_mean (14) | roll_std (14)] → (W, 42)
+      FD001/FD003: (1, W, 42) → [z_raw(14) | roll_mean(14) | roll_std(14)]
+      FD002/FD004: (1, W, 51) → [z_raw(17) | roll_mean(17) | roll_std(17)]
 
-    Scaler stats are injected at construction from _SCALER_CACHE so they
-    always match whatever model is currently loaded.
+    Pipeline:
+      1. Z-score using scaler stats (global for FD001/FD003, per-cluster for FD002/FD004)
+      2. Compute rolling mean and std (window=5)
+      3. Concatenate [z_raw | roll_mean | roll_std]
+
+    For FD002/FD004 with per-cluster normalization:
+      - Uses KMeans centroids to assign the current OS reading to a cluster
+      - Applies the cluster-specific scaler stats
     """
     ROLLING = 5
 
     def __init__(self, window_size: int = WINDOW_SIZE,
                  scaler_mean: Optional[np.ndarray] = None,
-                 scaler_std:  Optional[np.ndarray] = None):
+                 scaler_std:  Optional[np.ndarray] = None,
+                 num_features: int = 14,
+                 kmeans_centroids: Optional[np.ndarray] = None,
+                 cluster_means: Optional[np.ndarray] = None,
+                 cluster_stds: Optional[np.ndarray] = None):
         self.window_size = window_size
-        self.buffer: list = []  # list of 14-D raw np.ndarray
+        self.num_features = num_features
+        self.buffer: list = []
 
-        # Use scaler stats from the h5 if available; warn if not
+        # Global scaler
         if scaler_mean is not None and scaler_std is not None:
             self._mean = scaler_mean.astype(np.float32)
             _std = scaler_std.astype(np.float32).copy()
             _std[_std == 0] = 1.0
             self._std = _std
         else:
-            print("[SIM][WARN] No scaler stats in model .h5 — "
-                  "re-train and re-save with preprocessing.py to fix RUL predictions.")
-            # Fallback: identity transform (no normalisation)
-            n = len(SENSOR_COLS)
-            self._mean = np.zeros(n, dtype=np.float32)
-            self._std  = np.ones(n,  dtype=np.float32)
+            self._mean = np.zeros(num_features, dtype=np.float32)
+            self._std  = np.ones(num_features, dtype=np.float32)
+
+        # Per-cluster normalization (FD002/FD004)
+        self._centroids = kmeans_centroids
+        self._cl_means = cluster_means
+        self._cl_stds = cluster_stds
+        self._use_cluster = (kmeans_centroids is not None and
+                             cluster_means is not None and
+                             cluster_stds is not None)
+
+    def _assign_cluster(self, os_values: np.ndarray) -> int:
+        """Assign OS values to nearest KMeans centroid."""
+        dists = np.linalg.norm(self._centroids - os_values, axis=1)
+        return int(np.argmin(dists))
 
     def push(self, vec: np.ndarray) -> Optional[np.ndarray]:
-        """vec: shape (14,) → returns (1, W, 42) or None if buffer not full yet."""
+        """vec: shape (n_features,) → returns (1, W, n_features*3) or None if buffer not full."""
         self.buffer.append(vec)
         if len(self.buffer) < self.window_size:
             return None
 
-        history = np.stack(self.buffer, axis=0)  # (N, 14) raw sensor values
+        history = np.stack(self.buffer, axis=0)  # (N, n_features)
 
-        # ── Step 1: z-score the full history using training scaler stats ──
-        hist_z = (history - self._mean) / self._std  # (N, 14)
+        # ── Step 1: z-score the full history ──
+        if self._use_cluster:
+            # Per-cluster normalization: OS columns are the last 3 features
+            hist_z = np.zeros_like(history)
+            for t in range(len(history)):
+                os_vals = history[t, -3:]  # last 3 cols = OS
+                cid = self._assign_cluster(os_vals)
+                c_mean = self._cl_means[cid]
+                c_std = self._cl_stds[cid].copy()
+                c_std[c_std == 0] = 1.0
+                hist_z[t] = (history[t] - c_mean) / c_std
+        elif np.all(self._mean == 0) and np.all(self._std == 1):
+            # No saved scaler — use all accumulated data for normalization
+            adapt_mean = history.mean(axis=0)
+            adapt_std = history.std(axis=0)
+            adapt_std[adapt_std == 0] = 1.0
+            hist_z = (history - adapt_mean) / adapt_std
+        else:
+            hist_z = (history - self._mean) / self._std  # (N, n_features)
 
         # ── Step 2: extract the current window ──
-        win_z = hist_z[-self.window_size:]  # (W, 14)
+        win_z = hist_z[-self.window_size:]  # (W, n_features)
 
         # ── Step 3: rolling mean/std on the z-scored window ──
         roll_mean = np.zeros_like(win_z)
@@ -456,14 +567,14 @@ class _WindowBuffer:
         for t in range(self.window_size):
             abs_t = len(self.buffer) - self.window_size + t
             lo    = max(0, abs_t - self.ROLLING + 1)
-            chunk = hist_z[lo : abs_t + 1]           # (<=ROLLING, 14)
+            chunk = hist_z[lo : abs_t + 1]
             roll_mean[t] = chunk.mean(axis=0)
             roll_std[t]  = chunk.std(axis=0) if len(chunk) > 1 else 0.0
 
-        # ── Step 4: concatenate → (W, 42) ──
+        # ── Step 4: concatenate → (W, n_features*3) ──
         features = np.concatenate([win_z, roll_mean, roll_std], axis=1)
 
-        return features[np.newaxis, :, :]  # (1, W, 42)
+        return features[np.newaxis, :, :]  # (1, W, n_features*3)
 
 
 # ─────────────────────────────────────────────
@@ -559,6 +670,62 @@ def _compute_feature_importance(model, X: np.ndarray) -> list[dict]:
 # without restarting running simulations.
 THRESHOLD_REFRESH_CYCLES = 10
 
+# ─────────────────────────────────────────────
+#  DEGRADATION TYPE DETECTION (Rule-based + SHAP)
+# ─────────────────────────────────────────────
+
+# Sensor groups for fault isolation
+_HPC_SENSORS = {"T30", "P30", "phi", "Ps30", "htBleed", "T24"}
+_FAN_SENSORS = {"Nf", "NRf", "BPR", "Nc", "NRc"}
+
+
+def _detect_degradation_type(model_type: str, shap_data: list, pred_rul: float,
+                              warn_thresh: float) -> str | None:
+    """
+    Determine degradation fault mode using model_type + SHAP attribution.
+
+    Logic:
+    - If RUL is above warning threshold → no degradation detected
+    - FD001/FD003 → only HPC degradation possible
+    - FD002/FD004 → HPC or Fan or both; use SHAP to distinguish
+
+    For FD002/FD004: sum |SHAP scores| for HPC-related sensors vs Fan-related
+    sensors. Whichever group dominates indicates the active fault mode.
+    If both are significant (ratio < 2:1), report combined degradation.
+
+    Returns: "HPC Degradation", "Fan Degradation", "HPC + Fan Degradation", or None
+    """
+    if pred_rul > warn_thresh:
+        return None  # engine still healthy, no degradation detected
+
+    if model_type in ("FD001", "FD003"):
+        return "HPC Degradation"
+
+    if model_type in ("FD002", "FD004"):
+        if not shap_data:
+            return "HPC + Fan Degradation"  # fallback when SHAP unavailable
+
+        # Sum absolute SHAP scores per sensor group
+        hpc_score = sum(abs(s["score"]) for s in shap_data if s["sensor"] in _HPC_SENSORS)
+        fan_score = sum(abs(s["score"]) for s in shap_data if s["sensor"] in _FAN_SENSORS)
+
+        total = hpc_score + fan_score
+        if total == 0:
+            return "HPC + Fan Degradation"
+
+        hpc_ratio = hpc_score / total
+        fan_ratio = fan_score / total
+
+        # If one group dominates (>65% of total attribution) → single fault
+        if hpc_ratio > 0.65:
+            return "HPC Degradation"
+        elif fan_ratio > 0.65:
+            return "Fan Degradation"
+        else:
+            return "HPC + Fan Degradation"
+
+    return None
+
 def _fetch_thresholds(supabase) -> tuple[float, float]:
     """
     Return (warn_thresh, crit_thresh) from the alert_thresholds table.
@@ -637,11 +804,19 @@ def _simulation_loop(
         print(f"[SIM] No cycle data for engine {engine_db_id} — simulation aborted.")
         return
 
-    model = _load_model(model_type)
+    model = _load_model(model_type, supabase=supabase)
     scaler_mean, scaler_std = _SCALER_CACHE.get(model_type, (None, None))
-    buffer = _WindowBuffer(window_size=WINDOW_SIZE,
+    km_centroids, cl_means, cl_stds = _CLUSTER_CACHE.get(model_type, (None, None, None))
+    _include_os = INCLUDE_OS.get(model_type, False)
+    _num_features = 17 if _include_os else 14
+    _win_size = WINDOW_SIZES.get(model_type, WINDOW_SIZE)
+    buffer = _WindowBuffer(window_size=_win_size,
                            scaler_mean=scaler_mean,
-                           scaler_std=scaler_std)
+                           scaler_std=scaler_std,
+                           num_features=_num_features,
+                           kmeans_centroids=km_centroids,
+                           cluster_means=cl_means,
+                           cluster_stds=cl_stds)
     _no_model_warned = False  # log "waiting for model" only once
 
     # Fetch active model_version_id once (re-check if model gets reloaded later)
@@ -673,7 +848,7 @@ def _simulation_loop(
             cycle_num = row.get("cycle", 0)
             if cycle_num > resume_from_cycle:
                 break
-            vec = _extract_raw_sensors(row)
+            vec = _extract_raw_sensors(row, include_os=_include_os)
             if vec is not None:
                 _push_sensor_row(engine_db_id, row)
                 buffer.push(vec)
@@ -700,7 +875,7 @@ def _simulation_loop(
                 print(f"[SIM] engine={engine_db_id} thresholds updated: warn={warn_thresh} crit={crit_thresh}")
 
         # ── Extract features ──
-        vec = _extract_raw_sensors(row)
+        vec = _extract_raw_sensors(row, include_os=_include_os)
         if vec is None:
             print(f"[SIM][WARN] Skipping cycle {cycle_num} — missing features")
             time.sleep(TICK_INTERVAL)
@@ -725,6 +900,29 @@ def _simulation_loop(
 
         # ── Predict once window is full ──
         if X is not None:
+            # Check if model was reloaded (e.g. after new deploy)
+            _current_model = _MODEL_CACHE.get(model_type)
+            if _current_model is not None and _current_model is not model:
+                model = _current_model
+                # Rebuild buffer with new scaler/cluster info
+                scaler_mean, scaler_std = _SCALER_CACHE.get(model_type, (None, None))
+                km_centroids, cl_means, cl_stds = _CLUSTER_CACHE.get(model_type, (None, None, None))
+                old_buffer_data = buffer.buffer  # preserve accumulated raw data
+                buffer = _WindowBuffer(
+                    window_size=_win_size,
+                    scaler_mean=scaler_mean, scaler_std=scaler_std,
+                    num_features=_num_features,
+                    kmeans_centroids=km_centroids,
+                    cluster_means=cl_means, cluster_stds=cl_stds,
+                )
+                buffer.buffer = old_buffer_data
+                # Re-compute X with new normalization
+                X = buffer.push(buffer.buffer[-1]) if buffer.buffer else None
+                print(f"[SIM] Hot-reloaded model for engine {engine_db_id}")
+                if X is None:
+                    time.sleep(TICK_INTERVAL)
+                    continue
+
             if model is not None:
                 try:
                     pred_raw = model.predict(X, verbose=0)
@@ -750,6 +948,12 @@ def _simulation_loop(
                     "moderate_degradation" if new_status == "warning" else
                     None
                 )
+
+                # Detect specific degradation type via model_type + SHAP
+                degradation_type = _detect_degradation_type(
+                    model_type, shap_data, pred_rul, warn_thresh
+                )
+
                 try:
                     import json as _json
                     row_data = {
@@ -769,9 +973,12 @@ def _simulation_loop(
                     _supabase_execute(
                         lambda _d=row_data: supabase.table("rul_predictions").insert(_d).execute()
                     )
+                    _eng_update = {"condition_status": new_status}
+                    if degradation_type:
+                        _eng_update["degradation_type"] = degradation_type
                     _supabase_execute(
-                        lambda _s=new_status: supabase.table("engines")
-                            .update({"condition_status": _s})
+                        lambda _u=_eng_update: supabase.table("engines")
+                            .update(_u)
                             .eq("id", engine_db_id)
                             .execute()
                     )
@@ -901,16 +1108,26 @@ def resume_all_simulations(supabase):
             continue
 
         # Resolve the JSON path by scanning data/ for the matching org folder
+        # Try new format (engine_<db_id>.json) first, then old format (engine_<num>.json)
         json_path = None
         if os.path.isdir(BASE_DATA_DIR):
             for folder in os.listdir(BASE_DATA_DIR):
                 if org_id and org_id in folder:
-                    candidate = os.path.join(
+                    # New format: engine_<uuid>.json
+                    candidate_new = os.path.join(
+                        BASE_DATA_DIR, folder,
+                        f"engine_{engine_db_id}.json"
+                    )
+                    if os.path.exists(candidate_new):
+                        json_path = candidate_new
+                        break
+                    # Old format fallback: engine_001.json
+                    candidate_old = os.path.join(
                         BASE_DATA_DIR, folder,
                         f"engine_{str(engine_id).zfill(3)}.json"
                     )
-                    if os.path.exists(candidate):
-                        json_path = candidate
+                    if os.path.exists(candidate_old):
+                        json_path = candidate_old
                         break
 
         if not json_path:
@@ -928,6 +1145,47 @@ def resume_all_simulations(supabase):
 
         if not has_cycles:
             print(f"[SIM] Data file empty for engine {engine_db_id} — skipping resume")
+            continue
+
+        # ── Check if this engine has already finished all its cycles ──
+        total_cycles_in_file = 0
+        try:
+            if isinstance(d, list):
+                total_cycles_in_file = len(d)
+            elif isinstance(d, dict):
+                total_cycles_in_file = len(d.get("cycles", []))
+        except Exception:
+            pass
+
+        # Look up current_cycle from the database
+        current_cycle = 0
+        try:
+            cc_resp = supabase.table("engines") \
+                .select("current_cycle") \
+                .eq("id", engine_db_id) \
+                .single() \
+                .execute()
+            if cc_resp.data and cc_resp.data.get("current_cycle"):
+                current_cycle = int(cc_resp.data["current_cycle"])
+        except Exception:
+            pass
+
+        if total_cycles_in_file > 0 and current_cycle >= total_cycles_in_file:
+            print(f"[SIM] Engine {engine_db_id} already completed all {total_cycles_in_file} cycles — skipping resume")
+            # Pre-populate the sensor buffer from the JSON file so sensor trends are visible
+            try:
+                raw_cycles = d if isinstance(d, list) else d.get("cycles", [])
+                with _SENSOR_LOCK:
+                    if engine_db_id not in _SENSOR_BUFFER:
+                        _SENSOR_BUFFER[engine_db_id] = deque(maxlen=SENSOR_BUFFER_MAX)
+                    buf = _SENSOR_BUFFER[engine_db_id]
+                    # Load last SENSOR_BUFFER_MAX cycles into buffer
+                    start_idx = max(0, len(raw_cycles) - SENSOR_BUFFER_MAX)
+                    for row in raw_cycles[start_idx:]:
+                        buf.append(row)
+                print(f"[SIM] Pre-loaded {len(buf)} sensor rows for completed engine {engine_db_id}")
+            except Exception:
+                print(f"[SIM][WARN] Failed to pre-load sensor data for {engine_db_id}:\n{traceback.format_exc(limit=2)}")
             continue
 
         start_engine_simulation(

@@ -277,7 +277,7 @@ def form_field(label_text, input_id, placeholder="", value="", input_type="text"
 
 
 def form_field_dropdown(label_text, input_id, options, value=None, placeholder="Select..."):
-    return html.Div(style={"flex": "1"}, children=[
+    return html.Div(style={"flex": "1", "position": "relative", "zIndex": "50"}, children=[
         form_label(label_text),
         html.Div(
             style={
@@ -352,7 +352,7 @@ def build_add_engine_body():
 
         # Single column layout
         html.Div(
-            style={"maxWidth": "800px"},
+            style={"maxWidth": "800px", "margin": "0 auto"},
             children=[
                 panel("Engine Identification", icon_hash, [
                     html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px"}, children=[
@@ -378,23 +378,30 @@ def build_add_engine_body():
                 ]),
 
                 panel("Initial Configuration", icon_settings, [
+                    html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px",
+                                    "position": "relative", "zIndex": "100"}, children=[
+                        form_field_dropdown("Assign To", "new-engine-assign-to",
+                                          options=[],  # populated by callback from users table
+                                          placeholder="Select user..."),
+                    ]),
                     html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px"}, children=[
-                        form_field("Current Cycle", "new-engine-cycle", "0", input_type="number"),
-                        form_field_dropdown("Initial Status", "new-engine-status",
-                                          options=[
-                                              {"label": "Healthy", "value": "healthy"},
-                                              {"label": "Warning", "value": "warning"},
-                                              {"label": "Critical", "value": "critical"},
-                                          ],
-                                          value="healthy"),
+                        html.Div(style={"flex": "1"}, children=[
+                            form_label("Name"),
+                            text_input("new-engine-assign-name", "", "", "text"),
+                        ]),
+                        html.Div(style={"flex": "1"}, children=[
+                            form_label("Email Address"),
+                            text_input("new-engine-assign-email", "", "", "text"),
+                        ]),
                     ]),
-                    html.Div(style={"marginBottom": "14px"}, children=[
-                        form_field("Manufacturer", "new-engine-manufacturer", "General Electric"),
-                    ]),
-                    html.Div(children=[
+                    html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                        html.Div(style={"flex": "1"}, children=[
+                            form_label("Department"),
+                            text_input("new-engine-assign-dept", "", "", "text"),
+                        ]),
                         form_field("Installation Location", "new-engine-location", "Hangar A"),
                     ]),
-                ], subtitle="Set the initial operational parameters"),
+                ], subtitle="Assign responsible personnel and set location"),
 
                 panel("Additional Information", icon_info, [
                     html.Div(children=[
@@ -480,31 +487,73 @@ def create_add_engine_layout(supabase=None, org_id=None):
 
 def register_add_engine_callbacks(app, supabase=None):
 
+    # ── Populate "Assign To" dropdown with users from the database ──
+    @app.callback(
+        Output("new-engine-assign-to", "options"),
+        Input("url-add-engine", "pathname"),
+    )
+    def load_users_dropdown(_):
+        if not supabase:
+            return []
+        try:
+            resp = supabase.table("users") \
+                .select("id, username, first_name, last_name, email_address, department") \
+                .execute()
+            options = []
+            for u in (resp.data or []):
+                label = u.get("username", "")
+                options.append({"label": label, "value": u["id"]})
+            return options
+        except Exception:
+            return []
+
+    # ── Auto-fill Name, Email, Department when user is selected ──
+    @app.callback(
+        Output("new-engine-assign-name", "value"),
+        Output("new-engine-assign-email", "value"),
+        Output("new-engine-assign-dept", "value"),
+        Input("new-engine-assign-to", "value"),
+        prevent_initial_call=True,
+    )
+    def autofill_user_info(user_id):
+        if not user_id or not supabase:
+            return "", "", ""
+        try:
+            resp = supabase.table("users") \
+                .select("first_name, last_name, email_address, department") \
+                .eq("id", user_id) \
+                .single() \
+                .execute()
+            u = resp.data or {}
+            name = f"{u.get('last_name', '')} {u.get('first_name', '')}".strip()
+            email = u.get("email_address", "")
+            dept = u.get("department", "")
+            return name, email, dept
+        except Exception:
+            return "", "", ""
+
     @app.callback(
         Output("add-engine-status", "children"),
-        Output("url-add-engine", "pathname"),
+        Output("url", "pathname", allow_duplicate=True),
         Input("create-engine-btn", "n_clicks"),
         State("new-engine-id", "value"),
         State("new-engine-model", "value"),
-        State("new-engine-cycle", "value"),
-        State("new-engine-status", "value"),
-        State("new-engine-manufacturer", "value"),
+        State("new-engine-assign-to", "value"),
         State("new-engine-location", "value"),
         State("new-engine-notes", "value"),
         State("add-engine-org-store", "data"),
         prevent_initial_call=True,
     )
-    def create_engine(n_clicks, engine_id, model_type, current_cycle, status,
-                     manufacturer, location, notes, org_id):
+    def create_engine(n_clicks, engine_id, model_type, assign_to_user_id,
+                     location, notes, org_id):
         if not engine_id or not model_type:
             return html.Span("Please fill in required fields (Engine ID and Model Type).",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         try:
-            engine_id     = int(engine_id)
-            current_cycle = int(current_cycle or 0)
+            engine_id = int(engine_id)
         except ValueError:
-            return html.Span("Engine ID and Current Cycle must be valid numbers.",
+            return html.Span("Engine ID must be a valid number.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         if engine_id < 1:
@@ -542,28 +591,18 @@ def register_add_engine_callbacks(app, supabase=None):
                         .replace("/", "_") \
                         .replace("\\", "_")
 
-            # ── 3. Create folder structure: data/[org_name]_[org_id]/ ──
-            from data_utils import create_engine_data_file, get_org_folder
-
-            file_path   = create_engine_data_file(
-                org_name=org_name,
-                org_id=org_id or "local",
-                engine_id=engine_id,
-                model_type=model_type,
-            )
-            folder_name = get_org_folder(org_name, org_id or "local")
-            engine_file = f"engine_{str(engine_id).zfill(3)}.json"
-
-            # ── 4. Insert engine into database (path derived from org_name + org_id, no extra column) ──
+            # ── 3. Insert engine into database first to get UUID ──
             payload = {
                 "engine_id":        engine_id,
                 "model_type":       model_type,
-                "current_cycle":    current_cycle,
-                "condition_status": status or "healthy",
+                "current_cycle":    0,
+                "condition_status": "healthy",
                 "created_at":       "now()",
             }
             if org_id:
                 payload["organization_id"] = org_id
+            if assign_to_user_id:
+                payload["responsible_by"] = assign_to_user_id
 
             result = supabase.table("engines").insert(payload).execute()
 
@@ -572,6 +611,18 @@ def register_add_engine_callbacks(app, supabase=None):
             if result.data:
                 new_engine_db_id = str(result.data[0].get("id", ""))
 
+            # ── 4. Create data file: data/[org_name]_[org_id]/engine_<db_id>.json ──
+            from data_utils import create_engine_data_file, get_org_folder
+
+            file_path = create_engine_data_file(
+                org_name=org_name,
+                org_id=org_id or "local",
+                engine_id=engine_id,
+                model_type=model_type,
+                db_id=new_engine_db_id,
+            )
+            folder_name = get_org_folder(org_name, org_id or "local")
+            engine_file = f"engine_{new_engine_db_id}.json" if new_engine_db_id else f"engine_{str(engine_id).zfill(3)}.json"
             # ── Start background simulation if JSON data file already has cycles ──
             if new_engine_db_id and os.path.exists(file_path):
                 try:
