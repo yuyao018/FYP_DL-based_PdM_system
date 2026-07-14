@@ -523,7 +523,7 @@ def create_add_user_layout(supabase=None):
 #  CALLBACKS
 # ─────────────────────────────────────────────
 
-def register_add_user_callbacks(app, supabase=None):
+def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
 
     # Role card selection toggles styling + access preview
     @app.callback(
@@ -583,8 +583,9 @@ def register_add_user_callbacks(app, supabase=None):
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         try:
-            # Step 1: Create auth user
-            auth_resp = supabase.auth.admin.create_user({
+            # Step 1: Create auth user (requires service role key)
+            sb_admin = supabase_admin or supabase
+            auth_resp = sb_admin.auth.admin.create_user({
                 "email": email,
                 "password": password,
                 "email_confirm": True,

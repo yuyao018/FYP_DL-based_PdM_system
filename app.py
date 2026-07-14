@@ -47,17 +47,17 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
 register_sensor_callbacks(app)
-register_alert_log_callbacks(app, supabase=supabase)
-register_user_management_callbacks(app, supabase=supabase)
-register_add_user_callbacks(app, supabase=supabase)
-register_model_upload_callbacks(app, supabase=supabase)
-register_alert_thresholds_callbacks(app, supabase=supabase)
+register_alert_log_callbacks(app, supabase=supabase_admin)
+register_user_management_callbacks(app, supabase=supabase_admin)
+register_add_user_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
+register_model_upload_callbacks(app, supabase=supabase_admin)
+register_alert_thresholds_callbacks(app, supabase=supabase_admin)
 register_engine_management_callbacks(app, supabase=supabase_admin)
-register_add_engine_callbacks(app, supabase=supabase)
-register_overview_callbacks(app, supabase=supabase)
-register_degradation_analysis_callbacks(app, supabase=supabase)
-register_new_organization_callbacks(app, supabase=supabase, supabase_admin=supabase_admin)
-register_change_password_callbacks(app, supabase=supabase, supabase_admin=supabase_admin)
+register_add_engine_callbacks(app, supabase=supabase_admin)
+register_overview_callbacks(app, supabase=supabase_admin)
+register_degradation_analysis_callbacks(app, supabase=supabase_admin)
+register_new_organization_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
+register_change_password_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
 
 # Resume simulations for any engines that already have data on disk
 from engine_simulation_manager import resume_all_simulations
@@ -96,7 +96,7 @@ def display_page(pathname, session):
         return create_change_password_layout()
 
     if pathname == "/dev-dashboard":
-        return create_dev_dashboard_layout(supabase)
+        return create_dev_dashboard_layout(supabase_admin)
 
     if pathname == "/dev-new-organization":
         return create_new_organization_layout()
@@ -105,39 +105,42 @@ def display_page(pathname, session):
     user_role = (session or {}).get("role", "") or ""
     org_id = (session or {}).get("organization_id", "") or None
 
+    # Use service role key for admin/developer, anon key for regular users
+    sb = supabase_admin if user_role in ("admin", "developer") else supabase
+
     # ── Developer role guard: redirect /dashboard → /dev-dashboard ──
     if pathname == "/dashboard" and user_role == "developer":
-        return create_dev_dashboard_layout(supabase)
+        return create_dev_dashboard_layout(supabase_admin)
 
     # ── Engine-specific pages ──
     if pathname.startswith("/overview/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_overview_layout(supabase, engine_db_id=engine_db_id)
+        return create_overview_layout(sb, engine_db_id=engine_db_id)
 
     if pathname.startswith("/sensor-trends/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_sensor_trends_layout(supabase, engine_db_id=engine_db_id)
+        return create_sensor_trends_layout(sb, engine_db_id=engine_db_id)
 
     if pathname.startswith("/alert-log/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_alert_log_layout(supabase, engine_db_id=engine_db_id)
+        return create_alert_log_layout(sb, engine_db_id=engine_db_id)
 
     if pathname.startswith("/degradation-analysis/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_degradation_analysis_layout(supabase, engine_db_id=engine_db_id)
+        return create_degradation_analysis_layout(sb, engine_db_id=engine_db_id)
 
     # ── Exact routes ──
     routes = {
-        "/dashboard":         lambda: create_dashboard_layout(supabase, org_id=org_id),
-        "/overview":          lambda: create_overview_layout(supabase),
-        "/sensor-trends":     lambda: create_sensor_trends_layout(supabase),
-        "/alert-log":         lambda: create_alert_log_layout(supabase),
-        "/degradation-analysis": lambda: create_degradation_analysis_layout(supabase),
-        "/engine-management": lambda: create_engine_management_layout(supabase, org_id=org_id),
-        "/add-engine":        lambda: create_add_engine_layout(supabase, org_id=org_id),
-        "/user-management":   lambda: create_user_management_layout(supabase, org_id=org_id),
-        "/add-user":          lambda: create_add_user_layout(supabase),
-        "/alert-thresholds":  lambda: create_alert_thresholds_layout(supabase),
+        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id),
+        "/overview":          lambda: create_overview_layout(sb),
+        "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
+        "/alert-log":         lambda: create_alert_log_layout(sb),
+        "/degradation-analysis": lambda: create_degradation_analysis_layout(sb),
+        "/engine-management": lambda: create_engine_management_layout(sb, org_id=org_id),
+        "/add-engine":        lambda: create_add_engine_layout(sb, org_id=org_id),
+        "/user-management":   lambda: create_user_management_layout(sb, org_id=org_id),
+        "/add-user":          lambda: create_add_user_layout(sb),
+        "/alert-thresholds":  lambda: create_alert_thresholds_layout(sb),
     }
 
     # ── Developer-only routes ──
@@ -154,7 +157,7 @@ def display_page(pathname, session):
                              style={"color": "#4a9eff", "textDecoration": "none", "marginTop": "12px"}),
                 ]
             )
-        return create_model_upload_layout(supabase, role=user_role)
+        return create_model_upload_layout(supabase_admin, role=user_role)
 
     if pathname in routes:
         return routes[pathname]()
