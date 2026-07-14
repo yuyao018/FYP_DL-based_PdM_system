@@ -128,7 +128,6 @@ def build_admin_sidebar(active_page="threshold"):
                 }),
                 nav_link(icon_engine,    "Engine Management", "engines",   "/engine-management"),
                 nav_link(icon_users,     "User Management",  "users",     "/user-management"),
-                nav_link(icon_upload,    "Model Upload",     "model",     "/model-upload"),
                 nav_link(icon_threshold, "Alert Thresholds", "threshold", "/alert-thresholds"),
             ]),
             html.Div(style={"flex": "1"}),

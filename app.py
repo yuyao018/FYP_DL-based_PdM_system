@@ -3,6 +3,9 @@ from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
+from dev_login_page import create_dev_login_layout
+from dev_dashboard import create_dev_dashboard_layout
+from dev_new_organization import create_new_organization_layout, register_new_organization_callbacks
 from overview import create_overview_layout, register_overview_callbacks
 from sensor_trends import create_sensor_trends_layout, register_sensor_callbacks
 from alert_log import create_alert_log_layout, register_alert_log_callbacks
@@ -52,6 +55,7 @@ register_engine_management_callbacks(app, supabase=supabase_admin)
 register_add_engine_callbacks(app, supabase=supabase)
 register_overview_callbacks(app, supabase=supabase)
 register_degradation_analysis_callbacks(app, supabase=supabase)
+register_new_organization_callbacks(app, supabase=supabase, supabase_admin=supabase_admin)
 
 # Resume simulations for any engines that already have data on disk
 from engine_simulation_manager import resume_all_simulations
@@ -79,8 +83,22 @@ def display_page(pathname, session):
     if not pathname or pathname == "/":
         return create_login_layout()
 
-    # Extract org_id from session (empty string if not logged in)
+    if pathname == "/dev-login":
+        return create_dev_login_layout()
+
+    if pathname == "/dev-dashboard":
+        return create_dev_dashboard_layout(supabase)
+
+    if pathname == "/dev-new-organization":
+        return create_new_organization_layout()
+
+    # Extract role and org_id from session
+    user_role = (session or {}).get("role", "") or ""
     org_id = (session or {}).get("organization_id", "") or None
+
+    # ── Developer role guard: redirect /dashboard → /dev-dashboard ──
+    if pathname == "/dashboard" and user_role == "developer":
+        return create_dev_dashboard_layout(supabase)
 
     # ── Engine-specific pages ──
     if pathname.startswith("/overview/"):
@@ -110,9 +128,24 @@ def display_page(pathname, session):
         "/add-engine":        lambda: create_add_engine_layout(supabase, org_id=org_id),
         "/user-management":   lambda: create_user_management_layout(supabase),
         "/add-user":          lambda: create_add_user_layout(supabase),
-        "/model-upload":      lambda: create_model_upload_layout(supabase),
         "/alert-thresholds":  lambda: create_alert_thresholds_layout(supabase),
     }
+
+    # ── Developer-only routes ──
+    if pathname == "/model-upload":
+        if user_role != "developer":
+            return html.Div(
+                style={"minHeight": "100vh", "background": "#0a1628", "display": "flex",
+                       "alignItems": "center", "justifyContent": "center", "flexDirection": "column"},
+                children=[
+                    html.H1("403", style={"color": "#ff4d4d", "fontSize": "72px", "fontWeight": "800", "margin": "0"}),
+                    html.P("Access Denied", style={"color": "#a8d4ff", "fontSize": "18px"}),
+                    html.P("Only developers can access this page.", style={"color": "rgba(168,212,255,0.6)", "fontSize": "14px"}),
+                    dcc.Link("← Back to Dashboard", href="/dashboard",
+                             style={"color": "#4a9eff", "textDecoration": "none", "marginTop": "12px"}),
+                ]
+            )
+        return create_model_upload_layout(supabase, role=user_role)
 
     if pathname in routes:
         return routes[pathname]()
@@ -272,6 +305,90 @@ def toggle_role(user_clicks, admin_clicks):
     return active_style, inactive_style
 
 
+# Developer login callback
+@app.callback(
+    Output("url", "pathname", allow_duplicate=True),
+    Output("dev-login-status", "children"),
+    Output("session-store", "data", allow_duplicate=True),
+    Input("dev-signin-btn", "n_clicks"),
+    State("dev-username-input", "value"),
+    State("dev-password-input", "value"),
+    prevent_initial_call=True,
+)
+def handle_dev_login(n_clicks, username, password):
+    if not username or not password:
+        return dash.no_update, html.Span("Please enter your credentials.",
+                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+
+    if not supabase:
+        return dash.no_update, html.Span("Supabase not connected. Check your .env file.",
+                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+
+    try:
+        # Verify credentials via RPC
+        resp = supabase.rpc("verify_login", {
+            "p_username": username,
+            "p_password": password,
+        }).execute()
+
+        if not resp.data:
+            return dash.no_update, html.Span("Invalid username or password.",
+                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+
+        # Fetch user profile
+        user_resp = supabase.table("users") \
+            .select("id, username, first_name, last_name, role, organization_id") \
+            .eq("username", username) \
+            .single() \
+            .execute()
+
+        user_profile = user_resp.data or {}
+        role = user_profile.get("role", "")
+
+        # Verify this is a developer account
+        if role != "developer":
+            return dash.no_update, html.Span("Access denied. Developer account required.",
+                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+
+        # Update last_login_at
+        supabase.table("users") \
+            .update({"last_login_at": "now()"}) \
+            .eq("username", username) \
+            .execute()
+
+        # Build session data
+        session_data = {
+            "user_id": str(user_profile.get("id", "")),
+            "username": user_profile.get("username", username),
+            "first_name": user_profile.get("first_name", ""),
+            "last_name": user_profile.get("last_name", ""),
+            "role": "developer",
+            "organization_id": str(user_profile.get("organization_id", "") or ""),
+        }
+
+        print(f"[OK] Dev Login: {username}")
+        return "/dev-dashboard", html.Span("Login successful!",
+                                       style={"color": "#4aff9e", "fontSize": "13px"}), session_data
+
+    except Exception as e:
+        print(f"[ERROR] Dev Login: {e}")
+        return dash.no_update, html.Span("Login failed. Please try again.",
+                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+
+
+# Developer logout callback
+@app.callback(
+    Output("url", "pathname", allow_duplicate=True),
+    Output("session-store", "data", allow_duplicate=True),
+    Input("dev-logout-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def handle_dev_logout(n_clicks):
+    if not n_clicks or n_clicks == 0:
+        raise dash.exceptions.PreventUpdate
+    return "/dev-login", None
+
+
 @app.callback(
     Output("engines-grid", "children"),
     Output("filter-all",      "style"),
@@ -356,8 +473,13 @@ def filter_engines(all_clicks, healthy_clicks, degrading_clicks, critical_clicks
                                  ]),
                         html.Div(style={"display": "flex", "justifyContent": "space-between"},
                                  children=[
-                                     html.Span("Degradation", style={"color": "rgba(180,210,255,0.7)", "fontSize": "12px"}),
-                                     html.Span(f"{engine['degradation']}%", style={"color": colors["text"], "fontWeight": "700", "fontSize": "14px"}),
+                                     html.Span("Model", style={"color": "rgba(180,210,255,0.7)", "fontSize": "12px"}),
+                                     html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "14px"}),
+                                 ]),
+                        html.Div(style={"display": "flex", "justifyContent": "space-between"},
+                                 children=[
+                                     html.Span("Created", style={"color": "rgba(180,210,255,0.7)", "fontSize": "12px"}),
+                                     html.Span(engine.get("created_at", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"}),
                                  ]),
                         html.Div(style={"display": "flex", "justifyContent": "space-between"},
                                  children=[
@@ -388,6 +510,131 @@ def filter_engines(all_clicks, healthy_clicks, degrading_clicks, critical_clicks
     ]
 
     return cards, *styles
+
+
+# Developer dashboard: filter organizations by search/dropdown
+@app.callback(
+    Output("dev-org-list", "children"),
+    Input("dev-org-search", "value"),
+    Input("dev-org-filter", "value"),
+    State("dev-org-data-store", "data"),
+    prevent_initial_call=True,
+)
+def filter_dev_orgs(search_value, filter_value, org_data):
+    if not org_data:
+        raise dash.exceptions.PreventUpdate
+
+    from dev_dashboard import gear_icon, org_icon
+
+    filtered = org_data
+
+    # Apply dropdown filter
+    if filter_value and filter_value != "all":
+        filtered = [o for o in filtered if o["id"] == filter_value]
+
+    # Apply search filter
+    if search_value:
+        search_lower = search_value.lower().strip()
+        filtered = [o for o in filtered if search_lower in o["name"].lower()]
+
+    status_colors = {
+        "healthy": {"bg": "rgba(0, 255, 100, 0.15)", "border": "#00ff64", "text": "#00ff64"},
+        "warning": {"bg": "rgba(255, 217, 61, 0.15)", "border": "#ffd93d", "text": "#ffd93d"},
+        "critical": {"bg": "rgba(255, 77, 77, 0.15)", "border": "#ff4d4d", "text": "#ff4d4d"},
+    }
+
+    def engine_card(engine):
+        colors = status_colors[engine["status"]]
+        return html.Div(
+            style={"minWidth": "220px", "maxWidth": "240px", "flexShrink": "0"},
+            children=[
+                dcc.Link(
+                    href=f"/overview/{engine['db_id']}",
+                    style={"textDecoration": "none"},
+                    children=[
+                        html.Div(
+                            style={
+                                "background": "#101a2f",
+                                "border": "1px solid rgba(74,158,255,0.2)",
+                                "borderRadius": "12px", "padding": "14px",
+                                "display": "flex", "flexDirection": "column",
+                                "gap": "6px", "cursor": "pointer",
+                            },
+                            children=[
+                                html.Div(
+                                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+                                    children=[
+                                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "6px"},
+                                                 children=[gear_icon(), html.Span(f"ENGINE-{engine['id']}", style={"color": "white", "fontWeight": "700", "fontSize": "13px"})]),
+                                        html.Span(engine["status"].upper(), style={
+                                            "background": colors["bg"], "color": colors["text"],
+                                            "border": f"1px solid {colors['border']}",
+                                            "borderRadius": "8px", "padding": "3px 8px",
+                                            "fontSize": "9px", "fontWeight": "700",
+                                        }),
+                                    ]
+                                ),
+                                html.Div(style={"display": "flex", "justifyContent": "space-between"},
+                                         children=[
+                                             html.Span("Model", style={"color": "rgba(180,210,255,0.7)", "fontSize": "11px"}),
+                                             html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "13px"}),
+                                         ]),
+                                html.Div(style={"display": "flex", "justifyContent": "space-between"},
+                                         children=[
+                                             html.Span("Created", style={"color": "rgba(180,210,255,0.7)", "fontSize": "11px"}),
+                                             html.Span(engine.get("created_at", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"}),
+                                         ]),
+                                html.Div(style={"display": "flex", "justifyContent": "space-between"},
+                                         children=[
+                                             html.Span("Cycles left", style={"color": "rgba(74,158,255,0.7)", "fontSize": "11px"}),
+                                             html.Span(f"{engine['rul']}", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "13px"}),
+                                         ]),
+                            ]
+                        )
+                    ]
+                )
+            ]
+        )
+
+    def org_row(org):
+        return html.Div(
+            style={
+                "background": "#0d1e3a",
+                "border": "1px solid rgba(74,158,255,0.2)",
+                "borderRadius": "14px",
+                "padding": "20px",
+                "marginBottom": "20px",
+            },
+            children=[
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "14px"},
+                    children=[
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                            children=[org_icon(), html.Span(org["name"], style={"color": "white", "fontWeight": "700", "fontSize": "17px"})]
+                        ),
+                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px"}, children=[
+                            html.Span(f"{org.get('user_count', 0)} user{'s' if org.get('user_count', 0) != 1 else ''}", style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
+                            html.Span(f"{org['engine_count']} engine{'s' if org['engine_count'] != 1 else ''}", style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
+                        ]),
+                    ]
+                ),
+                html.Div(
+                    style={"display": "flex", "gap": "14px", "overflowX": "auto", "paddingBottom": "8px"},
+                    children=[engine_card(e) for e in org["engines"]] if org.get("engines") else [
+                        html.Div("No engines registered.", style={"color": "rgba(255,255,255,0.5)", "fontSize": "13px", "padding": "10px 0"})
+                    ]
+                ),
+            ]
+        )
+
+    if filtered:
+        return [org_row(o) for o in filtered]
+    else:
+        return [html.Div("No organizations found.", style={
+            "color": "rgba(255,255,255,0.5)", "fontSize": "14px",
+            "textAlign": "center", "padding": "40px 0",
+        })]
 
 
 if __name__ == "__main__":

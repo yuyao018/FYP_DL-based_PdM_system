@@ -61,13 +61,6 @@ def icon_threshold():
       <line x1="4" y1="18" x2="20" y2="18"/><circle cx="16" cy="18" r="2" fill="#0d1e3a"/>
     </svg>''')
 
-def icon_sidebar():
-    return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
-         stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2"/>
-      <line x1="9" y1="3" x2="9" y2="21"/>
-    </svg>''', size="26px")
-
 def icon_logout():
     return _svg_img('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
          stroke="#ff4d4d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -157,7 +150,6 @@ def build_admin_sidebar(active_page="model"):
                 }),
                 nav_link(icon_engine,    "Engine Management", "engines",   "/engine-management"),
                 nav_link(icon_users,     "User Management",  "users",     "/user-management"),
-                nav_link(icon_upload,    "Model Upload",     "model",     "/model-upload"),
                 nav_link(icon_threshold, "Alert Thresholds", "threshold", "/alert-thresholds"),
             ]),
             html.Div(style={"flex": "1"}),
@@ -197,8 +189,6 @@ def build_topbar():
                 "margin": "0", "fontSize": "18px", "fontWeight": "700",
                 "color": "white", "letterSpacing": "1.2px",
             }),
-            html.Div(id="sidebar-toggle", n_clicks=0, style={"cursor": "pointer"},
-                     children=[icon_sidebar()]),
         ]
     )
 
@@ -467,16 +457,15 @@ def build_model_type_selector(selected="FD001"):
                 options=[{"label": mt, "value": mt} for mt in MODEL_TYPES],
                 value=selected,
                 clearable=False,
-                className="model-type-dropdown",
+                searchable=False,
+                className="dark-dropdown",
                 style={
                     "width": "120px",
                     "fontSize": "13px",
                     "fontWeight": "700",
-                    # Dash injects these inline — override them here
-                    "backgroundColor": "rgba(10,20,45,0.8)",
+                    "backgroundColor": "transparent",
                     "color": "white",
-                    "border": "1.5px solid rgba(74,158,255,0.4)",
-                    "borderRadius": "8px",
+                    "border": "none",
                 },
             ),
         ]
@@ -513,7 +502,7 @@ def build_model_upload_body(active_model=None, history=None, selected_type="FD00
 #  PAGE LAYOUT ENTRY POINT
 # ─────────────────────────────────────────────
 
-def create_model_upload_layout(supabase=None):
+def create_model_upload_layout(supabase=None, role=None):
     active_model = None
     history = None
     default_type = "FD001"
@@ -537,18 +526,12 @@ def create_model_upload_layout(supabase=None):
             html.Div(style={"position": "sticky", "top": "0", "zIndex": "200"},
                      children=[build_topbar()]),
             html.Div(
-                style={"flex": "1", "display": "flex", "flexDirection": "row"},
-                children=[
-                    build_admin_sidebar(active_page="model"),
-                    html.Div(
-                        style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
-                        children=build_model_upload_body(
-                            active_model=active_model,
-                            history=history,
-                            selected_type=default_type,
-                        ),
-                    )
-                ]
+                style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
+                children=build_model_upload_body(
+                    active_model=active_model,
+                    history=history,
+                    selected_type=default_type,
+                ),
             )
         ]
     )

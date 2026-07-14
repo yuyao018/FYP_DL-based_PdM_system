@@ -176,8 +176,9 @@ def create_dashboard_layout(supabase, org_id=None):
                     "db_id":       db_id,
                     "id":          str(engine.get("engine_id", "?")).zfill(2),
                     "status":      raw_status,
-                    "degradation": degradation,
                     "rul":         int(round(rul)),
+                    "model_type":  engine.get("model_type", "N/A"),
+                    "created_at":  (engine.get("created_at") or "")[:10],
                 })
 
             # ── Derive summary counts from engine_data (uses fetched thresholds) ──
@@ -269,7 +270,7 @@ def create_dashboard_layout(supabase, org_id=None):
                         id={"type": "engine-card", "index": engine["db_id"]},
                         children=[
                             html.Div(
-                                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+                                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "paddingBottom": "8px"},
                                 children=[
                                     html.Div(
                                         style={"display": "flex", "alignItems": "center", "gap": "8px"},
@@ -295,8 +296,15 @@ def create_dashboard_layout(supabase, org_id=None):
                             html.Div(
                                 style={"display": "flex", "justifyContent": "space-between"},
                                 children=[
-                                    html.Span("Degradation", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
-                                    html.Span(f"{engine['degradation']}%", style={"color": colors["text"], "fontWeight": "700", "fontSize": "14px"})
+                                    html.Span("Model", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
+                                    html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "14px"})
+                                ]
+                            ),
+                            html.Div(
+                                style={"display": "flex", "justifyContent": "space-between"},
+                                children=[
+                                    html.Span("Created", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
+                                    html.Span(engine.get("created_at", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"})
                                 ]
                             ),
                             html.Div(
@@ -414,7 +422,7 @@ def create_dashboard_layout(supabase, org_id=None):
                                             "borderRadius": "12px", "padding": "6px 16px",
                                             "display": "flex", "alignItems": "center", "gap": "8px", "cursor": "pointer",
                                         },
-                                        children=[html.Span("User Control", style={"color": "#a8d4ff", "fontSize": "14px", "fontWeight": "600"})]
+                                        children=[html.Span("Admin Control", style={"color": "#a8d4ff", "fontSize": "14px", "fontWeight": "600"})]
                                     )
                                 ]
                             ),
