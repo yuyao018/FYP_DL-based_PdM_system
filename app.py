@@ -135,7 +135,7 @@ def display_page(pathname, session):
         "/degradation-analysis": lambda: create_degradation_analysis_layout(supabase),
         "/engine-management": lambda: create_engine_management_layout(supabase, org_id=org_id),
         "/add-engine":        lambda: create_add_engine_layout(supabase, org_id=org_id),
-        "/user-management":   lambda: create_user_management_layout(supabase),
+        "/user-management":   lambda: create_user_management_layout(supabase, org_id=org_id),
         "/add-user":          lambda: create_add_user_layout(supabase),
         "/alert-thresholds":  lambda: create_alert_thresholds_layout(supabase),
     }

@@ -425,13 +425,15 @@ def build_user_management_body(users=None):
 #  PAGE LAYOUT ENTRY POINT
 # ─────────────────────────────────────────────
 
-def create_user_management_layout(supabase=None):
+def create_user_management_layout(supabase=None, org_id=None):
     users = None
     try:
         if supabase:
-            resp = supabase.table("users") \
-                .select("id, username, first_name, last_name, role, status, last_login_at") \
-                .execute()
+            query = supabase.table("users") \
+                .select("id, username, first_name, last_name, role, status, last_login_at")
+            if org_id:
+                query = query.eq("organization_id", org_id)
+            resp = query.execute()
             if resp.data:
                 users = []
                 for u in resp.data:
