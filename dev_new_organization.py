@@ -6,6 +6,7 @@ created for the organization upon successful creation.
 import dash
 from dash import dcc, html, Input, Output, State
 import base64
+import bcrypt
 
 
 # ═════════════════════════════════════════════
@@ -383,6 +384,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
                 user_id = auth_resp.user.id
 
                 # Insert profile into users table
+                hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
                 supabase.table("users").insert({
                     "id": user_id,
                     "username": username.strip(),
@@ -392,6 +394,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
                     "role": "admin",
                     "status": "active",
                     "organization_id": new_org_id,
+                    "password_hash": hashed_pw,
                     "created_at": "now()",
                 }).execute()
 

@@ -596,7 +596,7 @@ def create_dev_dashboard_layout(supabase):
                                     ]),
                                     html.Div(style={
                                         "background": "linear-gradient(135deg, rgba(255,77,77,0.15) 0%, rgba(255,0,0,0.08) 100%)",
-                                        "border": "2px solid #ff4d4d",
+                                        "border": "1px solid rgb(255, 77, 77, 0.5)",
                                         "borderRadius": "12px", "padding": "16px 24px",
                                         "display": "flex", "alignItems": "center", "gap": "20px",
                                         "minWidth": "220px", "justifyContent": "space-between",

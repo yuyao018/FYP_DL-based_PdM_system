@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
+import bcrypt
 
 # ─────────────────────────────────────────────
 #  SVG ICON HELPERS
@@ -590,7 +591,8 @@ def register_add_user_callbacks(app, supabase=None):
             })
             user_id = auth_resp.user.id
 
-            # Step 2: Insert profile
+            # Step 2: Insert profile with password hash
+            hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
             supabase.table("users").insert({
                 "id": user_id,
                 "username": username,
@@ -600,6 +602,7 @@ def register_add_user_callbacks(app, supabase=None):
                 "department": department,
                 "role": "admin" if role == "admin" else "user",
                 "status": "inactive",
+                "password_hash": hashed_pw,
                 "created_at": "now()",
             }).execute()
 

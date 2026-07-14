@@ -107,12 +107,14 @@ def create_login_layout():
             "background": "#0a1628",
         },
         children=[
+            # Store for selected role (default: "user")
+            dcc.Store(id="login-role-store", data="user"),
             # ── Left panel ──
             html.Div(
                 style={
                     "width": "48%", "background": "linear-gradient(160deg, #0d2045 0%, #071530 100%)",
                     "display": "flex", "flexDirection": "column", "alignItems": "center",
-                    "justifyContent": "center", "padding": "60px 48px",
+                    "justifyContent": "center", "padding": "0px 48px",
                     "borderRight": "1px solid rgba(74,158,255,0.15)",
                 },
                 children=[
@@ -158,7 +160,7 @@ def create_login_layout():
                 style={
                     "width": "52%", "display": "flex", "flexDirection": "column",
                     "alignItems": "center", "justifyContent": "center",
-                    "padding": "60px 64px",
+                    "padding": "0px 64px",
                     "background": "linear-gradient(170deg, #0c1e3d 0%, #071530 100%)",
                 },
                 children=[
@@ -248,8 +250,8 @@ def create_login_layout():
                                     dcc.Input(
                                         id="username-input",
                                         type="text",
-                                        placeholder="operator_1",
-                                        value="admin_ds",
+                                        placeholder="username",
+                                        value="",
                                         style={
                                             "flex": "1", "background": "transparent",
                                             "border": "none", "outline": "none",
@@ -284,7 +286,7 @@ def create_login_layout():
                                         id="password-input",
                                         type="password",
                                         placeholder="••••••••••••",
-                                        value="Admin@1234",
+                                        value="",
                                         style={
                                             "flex": "1", "background": "transparent",
                                             "border": "none", "outline": "none",

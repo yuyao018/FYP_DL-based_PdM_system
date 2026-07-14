@@ -193,7 +193,7 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=50, t=10, b=10),
-        height=200,
+        autosize=True,
         legend=dict(
             orientation="h", x=1, y=1.15, xanchor="right",
             font=dict(color="#a8d4ff", size=11),
@@ -843,14 +843,14 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                     ]
                 ),
                 card(
-                    style_extra={"flex": "2"},
+                    style_extra={"flex": "2", "display": "flex", "flexDirection": "column"},
                     children=[
                         card_title("Predicted RUL"),
                         dcc.Graph(
                             id="rul-line-chart",
                             figure=build_rul_chart(),
                             config={"displayModeBar": False},
-                            style={"height": "200px"},
+                            style={"flex": "1", "minHeight": "0"},
                         )
                     ]
                 ),

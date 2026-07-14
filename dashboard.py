@@ -129,6 +129,8 @@ def create_dashboard_layout(supabase, org_id=None):
                     .in_("engine_id", engine_ids)
                     .execute().count or 0
                 )
+            elif org_id and not engine_ids:
+                alert_count = 0
             else:
                 alert_count = supabase.table("alert_logs").select("*", count="exact").execute().count or 0
 
@@ -189,51 +191,55 @@ def create_dashboard_layout(supabase, org_id=None):
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 
             # ── Fetch maintenance alerts scoped to this org's engines ──
-            alert_query = supabase.table("alert_logs") \
-                .select("*") \
-                .in_("severity", ["warning", "critical"]) \
-                .eq("status", "active") \
-                .order("triggered_at", desc=True) \
-                .limit(10)
+            if org_id and not engine_ids:
+                # Organization has no engines — no alerts to show
+                pass
+            else:
+                alert_query = supabase.table("alert_logs") \
+                    .select("*") \
+                    .in_("severity", ["warning", "critical"]) \
+                    .eq("status", "active") \
+                    .order("triggered_at", desc=True) \
+                    .limit(10)
 
-            # If org_id present, only fetch alerts for this org's engines
-            if org_id and engine_ids:
-                alert_query = alert_query.in_("engine_id", engine_ids)
+                # If org_id present, only fetch alerts for this org's engines
+                if org_id and engine_ids:
+                    alert_query = alert_query.in_("engine_id", engine_ids)
 
-            alerts_resp = alert_query.execute()
+                alerts_resp = alert_query.execute()
 
-            for alert in (alerts_resp.data or []):
-                alert_engine_id = alert.get("engine_id")   # this is engines.id (PK), per your FK
-                if alert_engine_id is None:
-                    continue
+                for alert in (alerts_resp.data or []):
+                    alert_engine_id = alert.get("engine_id")   # this is engines.id (PK), per your FK
+                    if alert_engine_id is None:
+                        continue
 
-                # Look up the engine row for this alert
-                eng_resp = supabase.table("engines") \
-                    .select("id, engine_id, current_cycle") \
-                    .eq("id", alert_engine_id) \
-                    .single() \
-                    .execute()
-                eng = eng_resp.data or {}
+                    # Look up the engine row for this alert
+                    eng_resp = supabase.table("engines") \
+                        .select("id, engine_id, current_cycle") \
+                        .eq("id", alert_engine_id) \
+                        .single() \
+                        .execute()
+                    eng = eng_resp.data or {}
 
-                eng_db_id = eng.get("id")
-                eng_display_id = str(eng.get("engine_id", "?")).zfill(2)
+                    eng_db_id = eng.get("id")
+                    eng_display_id = str(eng.get("engine_id", "?")).zfill(2)
 
-                # Use predicted_rul if available, else cycle-based fallback
-                if eng_db_id in latest_rul_map:
-                    rul = int(round(latest_rul_map[eng_db_id]))
-                else:
-                    current_cycle = eng.get("current_cycle") or 0
-                    rul = max(0, int(max_life - current_cycle))
+                    # Use predicted_rul if available, else cycle-based fallback
+                    if eng_db_id in latest_rul_map:
+                        rul = int(round(latest_rul_map[eng_db_id]))
+                    else:
+                        current_cycle = eng.get("current_cycle") or 0
+                        rul = max(0, int(max_life - current_cycle))
 
-                severity = (alert.get("severity") or "warning").lower()
+                    severity = (alert.get("severity") or "warning").lower()
 
-                maintenance_alerts.append({
-                    "db_id": eng_db_id,
-                    "engine_id": eng_display_id,
-                    "severity": severity,
-                    "rul": rul,
-                    "action_text": "Immediate Maintenance" if severity == "critical" else "Schedule Maintenance",
-                })
+                    maintenance_alerts.append({
+                        "db_id": eng_db_id,
+                        "engine_id": eng_display_id,
+                        "severity": severity,
+                        "rul": rul,
+                        "action_text": "Immediate Maintenance" if severity == "critical" else "Schedule Maintenance",
+                    })
 
             print(f"[DEBUG] Maintenance alerts: {maintenance_alerts}")
 

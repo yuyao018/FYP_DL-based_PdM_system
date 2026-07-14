@@ -863,6 +863,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         Output("da-shap-beeswarm", "figure"),
         Output("da-shap-trend", "figure"),
         Output("da-confidence-value", "children"),
+        Output("da-interval", "disabled"),
         Input("da-interval", "n_intervals"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
@@ -872,14 +873,21 @@ def register_degradation_analysis_callbacks(app, supabase=None):
     def update_charts(n_intervals, engine_db_id, degradation_type, model_type):
         """
         Poll callback: fetch SHAP history, compute confidence, update charts.
+        Disables the interval once the prediction cycle is complete.
         Does NOT call the LLM — that is triggered only by button click.
         """
+        from engine_simulation_manager import is_running as _sim_is_running
+
         if not supabase or not engine_db_id:
             return (
                 build_shap_beeswarm([]),
                 build_shap_trend_chart([], []),
                 "—",
+                False,
             )
+
+        # ── Check if simulation is still running ──
+        sim_active = _sim_is_running(engine_db_id)
 
         # ── Fetch prediction + SHAP history ──
         cycles_list = []
@@ -917,6 +925,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 build_shap_beeswarm([]),
                 build_shap_trend_chart([], []),
                 "—",
+                not sim_active,
             )
 
         # ── Re-fetch degradation_type (may have updated since page load) ──
@@ -940,7 +949,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         beeswarm_fig = build_shap_beeswarm(latest_shap, shap_history=shap_history)
         trend_fig = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
 
-        return beeswarm_fig, trend_fig, confidence_display
+        return beeswarm_fig, trend_fig, confidence_display, not sim_active
 
     @app.callback(
         Output("da-llm-explanation", "children"),
