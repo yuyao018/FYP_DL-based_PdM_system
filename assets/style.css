@@ -509,6 +509,18 @@ input[type="number"] {
 }
 
 /* ============================================
+   SIDEBAR FIX — ensure full height in flex layout
+   ============================================ */
+
+#sidebar {
+    height: calc(100vh - 60px) !important;
+    max-height: calc(100vh - 60px) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+
+/* ============================================
    CUSTOM SCROLLBAR — dark theme
    ============================================ */
 

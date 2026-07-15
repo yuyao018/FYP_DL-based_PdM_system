@@ -187,7 +187,8 @@ def toggle_sidebar(n, is_open):
 
     base = {
         "flexShrink": "0",
-        "minHeight": "100vh",
+        "height": "calc(100vh - 60px)",
+        "maxHeight": "calc(100vh - 60px)",
         "background": "#0d1e3a",
         "borderRight": "1px solid rgba(74,158,255,0.15)",
         "display": "flex",
