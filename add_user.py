@@ -561,10 +561,11 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
         State("new-user-password", "value"),
         State("new-user-confirm-password", "value"),
         State("selected-role-store", "data"),
+        State("session-store", "data"),
         prevent_initial_call=True,
     )
     def create_user(n_clicks, first_name, last_name, email, department,
-                    username, password, confirm_password, role):
+                    username, password, confirm_password, role, session):
 
         if not all([first_name, last_name, email, username, password, confirm_password]):
             return html.Span("Please fill in all required fields.",
@@ -582,6 +583,9 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
             return html.Span("Supabase not connected.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
+        # Get admin's organization_id from session
+        admin_org_id = (session or {}).get("organization_id") or None
+
         try:
             # Step 1: Create auth user (requires service role key)
             sb_admin = supabase_admin or supabase
@@ -592,9 +596,9 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
             })
             user_id = auth_resp.user.id
 
-            # Step 2: Insert profile with password hash
+            # Step 2: Insert profile with password hash and same organization as admin
             hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-            supabase.table("users").insert({
+            user_data = {
                 "id": user_id,
                 "username": username,
                 "first_name": first_name,
@@ -602,13 +606,17 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                 "email_address": email,
                 "department": department,
                 "role": "admin" if role == "admin" else "user",
-                "status": "inactive",
+                "status": "active",
                 "password_hash": hashed_pw,
                 "created_at": "now()",
-            }).execute()
+            }
+            if admin_org_id:
+                user_data["organization_id"] = admin_org_id
+
+            supabase.table("users").insert(user_data).execute()
 
             return (
-                html.Span("Account created successfully!",
+                html.Span("✓ Account created successfully!",
                          style={"color": "#4aff9e", "fontSize": "13px"}),
                 "/user-management"
             )
