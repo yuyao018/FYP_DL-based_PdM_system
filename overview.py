@@ -835,13 +835,14 @@ def register_overview_callbacks(app, supabase=None):
         Output("engine-status-badge",  "children"),
         Output("shap-chart",           "figure"),
         Output("overview-confidence-score", "children"),
+        Output("rul-poll-interval",    "disabled"),
         Input("rul-poll-interval",     "n_intervals"),
         State("overview-engine-id-store", "data"),
         prevent_initial_call=False,
     )
     def refresh_rul_chart(n_intervals, engine_db_id):
         import json as _json
-        from engine_simulation_manager import WINDOW_SIZES
+        from engine_simulation_manager import WINDOW_SIZES, is_running as _sim_is_running
         from degradation_analysis import compute_confidence_score
         MAX_LIFE = 130
         WARN_THRESH = 62
@@ -930,6 +931,10 @@ def register_overview_callbacks(app, supabase=None):
             window_size=_window_size,
         )
 
+        # ── Check if simulation is still running ──
+        _sim_active = _sim_is_running(engine_db_id) if engine_db_id else False
+        _disable_poll = not _sim_active
+
         # ── No predictions yet — show neutral waiting state ──
         if latest_pred_rul is None:
             no_pred_style = {"color": "rgba(168,212,255,0.5)", "fontSize": "40px",
@@ -948,6 +953,7 @@ def register_overview_callbacks(app, supabase=None):
                 [status_badge("healthy")],
                 build_shap_chart(),
                 "—",
+                _disable_poll,
             )
 
         rul_display = str(int(round(latest_pred_rul)))
@@ -1022,6 +1028,7 @@ def register_overview_callbacks(app, supabase=None):
             [status_badge(live_status)],
             build_shap_chart(latest_shap),
             _confidence_display,
+            _disable_poll,
         )
 
     # ── Sensor mini-charts callback ──

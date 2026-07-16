@@ -104,6 +104,86 @@ def compute_confidence_score(degradation_type: str | None, shap_data: list[dict]
 
 
 # ─────────────────────────────────────────────
+#  TOP DRIVERS BAR CHART
+# ─────────────────────────────────────────────
+
+def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "all") -> go.Figure:
+    """
+    Horizontal bar chart showing feature importance (top drivers).
+    top_n: "all", 5, or 10 — how many sensors to show.
+    """
+    if not shap_data:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Feature importance will appear once predictions start",
+            x=0.5, y=0.5, xref="paper", yref="paper",
+            showarrow=False, font=dict(color="rgba(168,212,255,0.5)", size=12),
+        )
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=10, r=40, t=10, b=10), height=340,
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+        )
+        return fig
+
+    # Sort by absolute score
+    sorted_data = sorted(shap_data, key=lambda x: abs(x["score"]), reverse=True)
+
+    # Apply filter
+    if top_n != "all" and str(top_n).isdigit():
+        sorted_data = sorted_data[:int(top_n)]
+
+    sensors = [d["sensor"] for d in sorted_data]
+    values = [d["score"] for d in sorted_data]
+
+    colors = [
+        "#ff6b6b" if v < -0.3 else
+        "#f5a623" if v < 0 else
+        "#4a9eff" if v < 0.15 else
+        "#00c875"
+        for v in values
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=sensors,
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:+.2f}" for v in values],
+        textposition="inside",
+        insidetextanchor="end",
+        textfont=dict(color="white", size=10),
+    ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=340,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(74,158,255,0.1)",
+            zeroline=True,
+            zerolinecolor="rgba(74,158,255,0.3)",
+            color="#a8d4ff",
+            tickfont=dict(size=10),
+        ),
+        yaxis=dict(
+            showgrid=False,
+            color="#a8d4ff",
+            tickfont=dict(size=11, color="white"),
+            autorange="reversed",
+        ),
+        hoverlabel=dict(
+            bgcolor="#0d1e3a",
+            bordercolor="rgba(74,158,255,0.4)",
+            font=dict(color="white", size=12),
+        ),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────
 #  SHAP BEESWARM CHART
 # ─────────────────────────────────────────────
 
@@ -113,11 +193,10 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
 
     If shap_history is provided (list of SHAP snapshots across cycles), renders
     a true beeswarm: one dot per cycle per sensor, jittered vertically, colored
-    by score magnitude (red = drives RUL down, blue/green = drives RUL up).
+    by feature value (blue=low, purple=mid, red/magenta=high).
 
     If only shap_data (single latest snapshot) is available, falls back to a
-    strip plot using just that one point per sensor (less informative but still
-    shows relative impact).
+    strip plot using just that one point per sensor.
     """
     if not shap_data and not shap_history:
         fig = go.Figure()
@@ -150,7 +229,18 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
     # Collect all points
     x_vals = []
     y_vals = []
-    colors = []
+    feature_values = []  # normalized feature values for coloring
+
+    # Compute per-sensor min/max for feature value normalization
+    sensor_all_scores = {}
+    for snapshot in source:
+        if not snapshot:
+            continue
+        for entry in snapshot:
+            sensor_all_scores.setdefault(entry["sensor"], []).append(entry["score"])
+
+    sensor_min = {s: min(vals) for s, vals in sensor_all_scores.items()}
+    sensor_max = {s: max(vals) for s, vals in sensor_all_scores.items()}
 
     for snapshot in source:
         if not snapshot:
@@ -164,30 +254,47 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
             # Add jitter to y position to spread dots (beeswarm effect)
             jitter = np.random.uniform(-0.25, 0.25)
             y_vals.append(sensor_to_y[sensor] + jitter)
-            colors.append(score)
+            # Normalize feature value to [0, 1] for color mapping
+            s_min = sensor_min.get(sensor, 0)
+            s_max = sensor_max.get(sensor, 1)
+            if s_max - s_min > 1e-8:
+                norm_val = (score - s_min) / (s_max - s_min)
+            else:
+                norm_val = 0.5
+            feature_values.append(norm_val)
 
-    # Color scale: red for negative (drives RUL down), green for positive
+    # Color scale: blue (low) → purple (mid) → red/magenta (high)
+    beeswarm_colorscale = [
+        [0.0, "#0066ff"],
+        [0.25, "#6633cc"],
+        [0.5, "#9933cc"],
+        [0.75, "#cc3399"],
+        [1.0, "#ff0066"],
+    ]
+
     fig = go.Figure(go.Scatter(
         x=x_vals,
         y=y_vals,
         mode="markers",
         marker=dict(
             size=6,
-            color=colors,
-            colorscale=[[0, "#ff4d4d"], [0.5, "#ffd93d"], [1, "#00c875"]],
-            cmin=min(colors) if colors else -1,
-            cmax=max(colors) if colors else 1,
-            opacity=0.75,
+            color=feature_values,
+            colorscale=beeswarm_colorscale,
+            cmin=0,
+            cmax=1,
+            opacity=0.8,
             line=dict(width=0),
             colorbar=dict(
-                title=dict(text="SHAP Score", font=dict(color="rgba(168,212,255,0.7)", size=10)),
+                title=dict(text="Feature value", font=dict(color="rgba(168,212,255,0.7)", size=10)),
+                tickvals=[0, 1],
+                ticktext=["Low", "High"],
                 tickfont=dict(color="rgba(168,212,255,0.6)", size=9),
                 thickness=12, len=0.6,
                 bgcolor="rgba(0,0,0,0)",
                 borderwidth=0,
             ),
         ),
-        hovertemplate="<b>%{customdata}</b><br>Score: %{x:.4f}<extra></extra>",
+        hovertemplate="<b>%{customdata}</b><br>SHAP value: %{x:.4f}<extra></extra>",
         customdata=[sensor_order[int(round(y))] if 0 <= int(round(y)) < len(sensor_order) else ""
                     for y in y_vals],
     ))
@@ -198,7 +305,7 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
         margin=dict(l=80, r=60, t=35, b=40),
         height=380,
         xaxis=dict(
-            title="SHAP Value (Impact on RUL Prediction)",
+            title="SHAP value (impact on model output)",
             title_font=dict(color="rgba(168,212,255,0.7)", size=11),
             tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
             gridcolor="rgba(74,158,255,0.08)",
@@ -213,7 +320,7 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
             range=[len(sensor_order) - 0.5, -0.5],  # top sensor at top
         ),
         title=dict(
-            text="Feature Impact on Predicted RUL (Beeswarm)",
+            text="SHAP Beeswarm",
             font=dict(color="white", size=13),
             x=0.01, y=0.98,
         ),
@@ -521,64 +628,184 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
         except Exception:
             pass
 
-    # ── Header section ──
+    # ── Display values ──
     deg_type_display = degradation_type or "No degradation detected"
     deg_color = "#ff4d4d" if degradation_type else "rgba(168,212,255,0.5)"
 
+    # ── Header section (simplified - just page title + engine label) ──
     header = html.Div(
         style={
-            "display": "flex", "alignItems": "center", "justifyContent": "space-between",
-            "padding": "20px 28px 0px 28px", "flexWrap": "wrap", "gap": "16px",
+            "display": "flex", "alignItems": "center",
+            "padding": "20px 28px 0px 28px", "gap": "12px",
         },
         children=[
-            # Engine ID
-            html.Div(style={"display": "flex", "alignItems": "center", "gap": "12px"}, children=[
-                icon_shap(),
-                html.Div(children=[
-                    html.Div("DEGRADATION ANALYSIS", style={
-                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
-                        "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "2px",
-                    }),
-                    html.Span(engine_label, style={
-                        "color": "white", "fontSize": "18px", "fontWeight": "700",
-                    }),
-                ]),
-            ]),
-            # Degradation type badge
-            html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px"}, children=[
-                html.Div(children=[
-                    html.Div("DETECTED FAULT MODE", style={
-                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
-                        "fontWeight": "700", "letterSpacing": "1px", "marginBottom": "4px",
-                    }),
-                    html.Span(deg_type_display, style={
-                        "color": deg_color, "fontSize": "14px", "fontWeight": "700",
-                        "background": f"{deg_color}15", "border": f"1px solid {deg_color}40",
-                        "borderRadius": "6px", "padding": "4px 12px",
-                    }),
-                ]),
-                # Confidence score placeholder (populated by callback)
-                html.Div(id="da-confidence-container", children=[
-                    html.Div("CONFIDENCE", style={
-                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
-                        "fontWeight": "700", "letterSpacing": "1px", "marginBottom": "4px",
-                    }),
-                    html.Span("—", id="da-confidence-value", style={
-                        "color": "#4a9eff", "fontSize": "14px", "fontWeight": "700",
-                    }),
-                ]),
+            icon_shap(),
+            html.Div(children=[
+                html.Div("DEGRADATION ANALYSIS", style={
+                    "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                    "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "2px",
+                }),
+                html.Span(engine_label, style={
+                    "color": "white", "fontSize": "18px", "fontWeight": "700",
+                }),
             ]),
         ]
     )
 
-    # ── Row 1: SHAP beeswarm + LLM explanation ──
+    # ── Row 1: Status Overview Card | 3D Engine Model | SHAP Beeswarm ──
     row1 = html.Div(
-        style={"display": "flex", "gap": "20px", "padding": "20px 28px", "flexWrap": "wrap"},
+        style={"display": "flex", "gap": "20px", "padding": "20px 28px", "flexWrap": "nowrap"},
         children=[
-            # Column 1: SHAP beeswarm chart
+            # Column 1: Status Overview card (flex: 1)
             html.Div(
                 style={
-                    "flex": "1", "minWidth": "400px",
+                    "flex": "1", "minWidth": "0",
+                    "background": "rgba(13,32,69,0.6)",
+                    "border": "1px solid rgba(74,158,255,0.15)",
+                    "borderRadius": "12px", "padding": "20px",
+                    "display": "flex", "flexDirection": "column", "gap": "16px",
+                },
+                children=[
+                    # Section 1: Status Overview + Fault Mode
+                    html.Div(children=[
+                        html.Div("STATUS OVERVIEW", style={
+                            "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                            "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "4px",
+                        }),
+                        html.Div("DETECTED FAULT MODE", style={
+                            "color": "rgba(168,212,255,0.6)", "fontSize": "10px",
+                            "fontWeight": "600", "marginBottom": "10px",
+                        }),
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                            children=[
+                                html.Span(
+                                    id="da-fault-mode-label",
+                                    children=deg_type_display.upper(),
+                                    style={
+                                        "color": "white", "fontSize": "16px", "fontWeight": "800",
+                                    }
+                                ),
+                                # Red indicator dot
+                                html.Div(style={
+                                    "width": "10px", "height": "10px", "borderRadius": "50%",
+                                    "background": "#ff4d4d" if degradation_type else "rgba(168,212,255,0.3)",
+                                    "boxShadow": "0 0 8px rgba(255,77,77,0.6)" if degradation_type else "none",
+                                }),
+                            ]
+                        ),
+                    ]),
+
+                    # Divider
+                    html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.12)"}),
+
+                    # Section 2: Confidence + donut ring (space-between)
+                    html.Div(children=[
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center",
+                                   "justifyContent": "space-between"},
+                            children=[
+                                html.Div(children=[
+                                    html.Div("CONFIDENCE", style={
+                                        "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                                        "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "10px",
+                                    }),
+                                    html.Span("—", id="da-confidence-value", style={
+                                        "color": "white", "fontSize": "36px", "fontWeight": "800",
+                                    }),
+                                ]),
+                                # SVG donut ring for confidence
+                                html.Div(
+                                    id="da-confidence-ring",
+                                    style={"width": "100px", "height": "100px"},
+                                ),
+                            ]
+                        ),
+                    ]),
+
+                    # Divider
+                    html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.12)"}),
+
+                    # Section 3: Time to EOL (predicted RUL) + mini chart
+                    html.Div(children=[
+                        html.Div("TIME TO EOL (CYCLES)", style={
+                            "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
+                            "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "10px",
+                        }),
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center",
+                                   "justifyContent": "space-between"},
+                            children=[
+                                html.Span("—", id="da-rul-value", style={
+                                    "color": "white", "fontSize": "36px", "fontWeight": "800",
+                                }),
+                                # Mini RUL sparkline chart
+                                dcc.Graph(
+                                    id="da-rul-sparkline",
+                                    config={"displayModeBar": False, "staticPlot": True},
+                                    style={"width": "50%", "height": "50px", "minWidth": "0"},
+                                ),
+                            ]
+                        ),
+                    ]),
+                ]
+            ),
+            # Column 2: Top Drivers chart (flex: 2)
+            html.Div(
+                style={
+                    "flex": "2", "minWidth": "0",
+                    "background": "rgba(13,32,69,0.5)",
+                    "border": "1px solid rgba(74,158,255,0.15)",
+                    "borderRadius": "12px", "padding": "16px",
+                    "display": "flex", "flexDirection": "column",
+                },
+                children=[
+                    # Header with title + filter selector (space-between)
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "justifyContent": "space-between", "marginBottom": "12px"},
+                        children=[
+                            html.Div("Top Drivers", style={
+                                "color": "white", "fontSize": "14px", "fontWeight": "700",
+                            }),
+                            html.Div(
+                                style={"display": "flex", "gap": "6px"},
+                                children=[
+                                    html.Div("All", id="da-filter-all", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "rgba(74,158,255,0.25)", "color": "white",
+                                        "border": "1px solid rgba(74,158,255,0.5)",
+                                    }),
+                                    html.Div("Top 5", id="da-filter-5", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                    }),
+                                    html.Div("Top 10", id="da-filter-10", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                    }),
+                                ]
+                            ),
+                        ]
+                    ),
+                    dcc.Store(id="da-top-drivers-filter", data="all"),
+                    # Top drivers bar chart
+                    dcc.Graph(
+                        id="da-top-drivers-chart",
+                        config={"displayModeBar": False},
+                        style={"flex": "1", "minHeight": "0"},
+                    ),
+                ]
+            ),
+            # Column 3: SHAP beeswarm chart (flex: 2)
+            html.Div(
+                style={
+                    "flex": "2", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "16px",
@@ -588,18 +815,38 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                               figure=build_shap_beeswarm([])),
                 ]
             ),
-            # Column 2: LLM explanation
+        ]
+    )
+
+    # ── Row 2: SHAP trend chart (5:1 ratio) + AI explanation ──
+    row2 = html.Div(
+        style={"display": "flex", "gap": "20px", "padding": "0 28px 28px"},
+        children=[
+            # SHAP trend chart (flex: 5)
             html.Div(
                 style={
-                    "flex": "1", "minWidth": "350px",
+                    "flex": "5", "minWidth": "0",
+                    "background": "rgba(13,32,69,0.5)",
+                    "border": "1px solid rgba(74,158,255,0.15)",
+                    "borderRadius": "12px", "padding": "16px",
+                },
+                children=[
+                    dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
+                              figure=build_shap_trend_chart([], [])),
+                ]
+            ),
+            # AI Explanation (flex: 1)
+            html.Div(
+                style={
+                    "flex": "1", "minWidth": "200px",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "20px",
                     "display": "flex", "flexDirection": "column",
                 },
                 children=[
-                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px",
-                                    "marginBottom": "14px", "justifyContent": "space-between"}, children=[
+                    html.Div(style={"display": "flex", "flexDirection": "column", "gap": "8px",
+                                    "marginBottom": "14px"}, children=[
                         html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px"}, children=[
                             html.Div("AI EXPLANATION", style={
                                 "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
@@ -612,7 +859,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                             }),
                         ]),
                         html.Button(
-                            "Generate Explanation",
+                            "Generate",
                             id="da-generate-btn",
                             n_clicks=0,
                             style={
@@ -620,20 +867,20 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                 "border": "none", "color": "white", "fontSize": "11px",
                                 "fontWeight": "700", "padding": "6px 14px",
                                 "borderRadius": "6px", "cursor": "pointer",
-                                "letterSpacing": "0.5px",
+                                "letterSpacing": "0.5px", "width": "fit-content",
                             },
                         ),
                     ]),
                     html.Div(
                         id="da-llm-explanation",
                         style={
-                            "color": "rgba(168,212,255,0.8)", "fontSize": "13px",
-                            "lineHeight": "1.7", "flex": "1",
+                            "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
+                            "lineHeight": "1.7", "flex": "1", "overflowY": "auto",
                         },
                         children=[
                             html.Div(cached_explanation, style={"marginBottom": "8px"})
                             if cached_explanation else
-                            html.Div("Click 'Generate Explanation' to request an AI-powered analysis."),
+                            html.Div("Click 'Generate' to request an AI-powered analysis."),
                             html.Div(
                                 f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
                                 if cached_explanation_ts else "",
@@ -647,30 +894,12 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
         ]
     )
 
-    # ── Row 2: SHAP trend chart ──
-    row2 = html.Div(
-        style={"padding": "0 28px 28px"},
-        children=[
-            html.Div(
-                style={
-                    "background": "rgba(13,32,69,0.5)",
-                    "border": "1px solid rgba(74,158,255,0.15)",
-                    "borderRadius": "12px", "padding": "16px",
-                },
-                children=[
-                    dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
-                              figure=build_shap_trend_chart([], [])),
-                ]
-            ),
-        ]
-    )
-
     # ── Stores ──
     stores = html.Div([
         dcc.Store(id="da-engine-db-id", data=engine_db_id),
         dcc.Store(id="da-degradation-type", data=degradation_type),
         dcc.Store(id="da-model-type", data=model_type),
-        dcc.Interval(id="da-interval", interval=10_000, n_intervals=0),  # poll every 10s
+        dcc.Interval(id="da-interval", interval=5_000, n_intervals=0),  # poll every 5s (same as overview)
     ])
 
     # ── Assemble full page ──
@@ -700,18 +929,77 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
 def register_degradation_analysis_callbacks(app, supabase=None):
     """Register all callbacks for the Degradation Analysis page."""
 
+    def _build_confidence_ring(confidence_pct: int):
+        """Build an SVG donut ring showing confidence percentage."""
+        # SVG circle math: circumference = 2*pi*r, r=25, C≈157
+        radius = 25
+        circumference = 2 * 3.14159 * radius
+        filled = (confidence_pct / 100) * circumference
+        gap = circumference - filled
+
+        # Gradient from blue to magenta/pink
+        svg_str = f'''
+        <svg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="ring-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#4a9eff"/>
+              <stop offset="50%" stop-color="#9933cc"/>
+              <stop offset="100%" stop-color="#ff0066"/>
+            </linearGradient>
+          </defs>
+          <circle cx="30" cy="30" r="{radius}" fill="none" stroke="rgba(74,158,255,0.15)" stroke-width="5"/>
+          <circle cx="30" cy="30" r="{radius}" fill="none" stroke="url(#ring-grad)" stroke-width="5"
+                  stroke-dasharray="{filled:.1f} {gap:.1f}" stroke-linecap="round"
+                  transform="rotate(-90 30 30)"/>
+          <text x="30" y="34" text-anchor="middle" fill="white" font-size="11" font-weight="700">{confidence_pct}%</text>
+        </svg>'''
+        b64 = base64.b64encode(svg_str.strip().encode("utf-8")).decode("utf-8")
+        return html.Img(
+            src=f"data:image/svg+xml;base64,{b64}",
+            style={"width": "100px", "height": "100px"},
+        )
+
+    def _build_rul_sparkline(predicted_ruls: list):
+        """Build a tiny sparkline chart for predicted RUL."""
+        fig = go.Figure()
+        if predicted_ruls:
+            x = list(range(len(predicted_ruls)))
+            fig.add_trace(go.Scatter(
+                x=x, y=predicted_ruls,
+                mode="lines",
+                line=dict(color="#9933cc", width=2),
+                fill="none",
+                showlegend=False,
+            ))
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=50,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            hovermode=False,
+        )
+        return fig
+
     @app.callback(
         Output("da-shap-beeswarm", "figure"),
         Output("da-shap-trend", "figure"),
         Output("da-confidence-value", "children"),
+        Output("da-confidence-ring", "children"),
+        Output("da-rul-value", "children"),
+        Output("da-rul-sparkline", "figure"),
+        Output("da-fault-mode-label", "children"),
+        Output("da-top-drivers-chart", "figure"),
         Output("da-interval", "disabled"),
         Input("da-interval", "n_intervals"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
         State("da-model-type", "data"),
+        State("da-top-drivers-filter", "data"),
         prevent_initial_call=False,
     )
-    def update_charts(n_intervals, engine_db_id, degradation_type, model_type):
+    def update_charts(n_intervals, engine_db_id, degradation_type, model_type, top_n_filter):
         """
         Poll callback: fetch SHAP history, compute confidence, update charts.
         Disables the interval once the prediction cycle is complete.
@@ -719,11 +1007,18 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         """
         from engine_simulation_manager import is_running as _sim_is_running
 
+        empty_sparkline = _build_rul_sparkline([])
+
         if not supabase or not engine_db_id:
             return (
                 build_shap_beeswarm([]),
                 build_shap_trend_chart([], []),
                 "—",
+                _build_confidence_ring(0),
+                "—",
+                empty_sparkline,
+                "NO DEGRADATION DETECTED",
+                build_top_drivers_chart(None),
                 False,
             )
 
@@ -734,6 +1029,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         cycles_list = []
         shap_history = []
         latest_shap = []
+        predicted_ruls = []
 
         try:
             resp = supabase.table("rul_predictions") \
@@ -753,6 +1049,8 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                         parsed_shap = []
                 cycles_list.append(cycle)
                 shap_history.append(parsed_shap)
+                pred_rul = row.get("predicted_rul")
+                predicted_ruls.append(float(pred_rul) if pred_rul is not None else None)
 
             # Latest valid SHAP snapshot
             for snapshot in reversed(shap_history):
@@ -766,6 +1064,11 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 build_shap_beeswarm([]),
                 build_shap_trend_chart([], []),
                 "—",
+                _build_confidence_ring(0),
+                "—",
+                empty_sparkline,
+                "NO DEGRADATION DETECTED",
+                build_top_drivers_chart(None),
                 not sim_active,
             )
 
@@ -784,13 +1087,37 @@ def register_degradation_analysis_callbacks(app, supabase=None):
 
         # ── Compute confidence ──
         confidence = compute_confidence_score(degradation_type, latest_shap)
-        confidence_display = f"{confidence:.0%}" if confidence is not None else "—"
+        confidence_pct = int(round(confidence * 100)) if confidence is not None else 0
+        confidence_display = f"{confidence_pct}%"
+
+        # ── Latest RUL value ──
+        latest_rul = None
+        for v in reversed(predicted_ruls):
+            if v is not None:
+                latest_rul = v
+                break
+        rul_display = str(int(round(latest_rul))) if latest_rul is not None else "—"
+
+        # ── Fault mode label ──
+        fault_label = degradation_type.upper() if degradation_type else "NO DEGRADATION DETECTED"
 
         # ── Build charts ──
         beeswarm_fig = build_shap_beeswarm(latest_shap, shap_history=shap_history)
         trend_fig = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
+        sparkline_fig = _build_rul_sparkline([v for v in predicted_ruls if v is not None])
+        top_drivers_fig = build_top_drivers_chart(latest_shap, top_n=top_n_filter or "all")
 
-        return beeswarm_fig, trend_fig, confidence_display, not sim_active
+        return (
+            beeswarm_fig,
+            trend_fig,
+            confidence_display,
+            _build_confidence_ring(confidence_pct),
+            rul_display,
+            sparkline_fig,
+            fault_label,
+            top_drivers_fig,
+            not sim_active,
+        )
 
     @app.callback(
         Output("da-llm-explanation", "children"),
@@ -869,3 +1196,64 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             print(f"[DEGRAD] Failed to cache LLM explanation: {e}")
 
         return explanation
+
+    # ── Top drivers filter callback (instant response on button click) ──
+    @app.callback(
+        Output("da-top-drivers-chart", "figure", allow_duplicate=True),
+        Output("da-top-drivers-filter", "data"),
+        Output("da-filter-all", "style"),
+        Output("da-filter-5", "style"),
+        Output("da-filter-10", "style"),
+        Input("da-filter-all", "n_clicks"),
+        Input("da-filter-5", "n_clicks"),
+        Input("da-filter-10", "n_clicks"),
+        State("da-engine-db-id", "data"),
+        prevent_initial_call=True,
+    )
+    def update_top_drivers_filter(n_all, n_5, n_10, engine_db_id):
+        """Re-render top drivers chart when filter button is clicked."""
+        from dash import callback_context as _ctx
+
+        active_style = {
+            "padding": "4px 12px", "borderRadius": "6px",
+            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+            "background": "rgba(74,158,255,0.25)", "color": "white",
+            "border": "1px solid rgba(74,158,255,0.5)",
+        }
+        inactive_style = {
+            "padding": "4px 12px", "borderRadius": "6px",
+            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+            "background": "transparent", "color": "rgba(168,212,255,0.6)",
+            "border": "1px solid rgba(74,158,255,0.25)",
+        }
+
+        triggered = _ctx.triggered[0]["prop_id"].split(".")[0] if _ctx.triggered else "da-filter-all"
+        if triggered == "da-filter-5":
+            top_n = "5"
+            styles = (inactive_style, active_style, inactive_style)
+        elif triggered == "da-filter-10":
+            top_n = "10"
+            styles = (inactive_style, inactive_style, active_style)
+        else:
+            top_n = "all"
+            styles = (active_style, inactive_style, inactive_style)
+
+        if not supabase or not engine_db_id:
+            return build_top_drivers_chart(None), top_n, *styles
+
+        try:
+            resp = supabase.table("rul_predictions") \
+                .select("shap_values") \
+                .eq("engine_id", engine_db_id) \
+                .order("cycle", desc=True) \
+                .limit(1) \
+                .execute()
+            if resp.data:
+                raw_shap = resp.data[0].get("shap_values")
+                if raw_shap:
+                    latest_shap = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
+                    return build_top_drivers_chart(latest_shap, top_n=top_n), top_n, *styles
+        except Exception:
+            pass
+
+        return build_top_drivers_chart(None), top_n, *styles
