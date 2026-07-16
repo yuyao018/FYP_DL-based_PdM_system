@@ -4,6 +4,7 @@ import dash_bootstrap_components as dbc
 import base64
 import os
 from datetime import datetime
+from assets.components import (build_dev_sidebar, icon_sidebar)
 
 # Shared model storage directory
 SHARED_MODELS_DIR = os.path.join(os.path.dirname(__file__), "data", "shared_models")
@@ -517,21 +518,66 @@ def create_model_upload_layout(supabase=None, role=None):
 
     return html.Div(
         style={
-            "minHeight": "100vh", "display": "flex", "flexDirection": "column",
+            "height": "100vh",
+            "display": "flex",
+            "flexDirection": "column",
             "fontFamily": "'Segoe UI', 'Inter', sans-serif",
-            "background": "#0a1628", "color": "white",
+            "background": "#0a1628",
+            "color": "white",
+            "overflow": "hidden",
         },
         children=[
             dcc.Location(id="url-model-upload", refresh=False),
-            html.Div(style={"position": "sticky", "top": "0", "zIndex": "200"},
-                     children=[build_topbar()]),
+
+            # ── Topbar ──
             html.Div(
-                style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
-                children=build_model_upload_body(
-                    active_model=active_model,
-                    history=history,
-                    selected_type=default_type,
-                ),
+                style={
+                    "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
+                    "borderBottom": "1px solid rgba(74,158,255,0.18)",
+                    "padding": "0 28px",
+                    "height": "60px", "minHeight": "60px", "flexShrink": "0",
+                    "display": "flex", "alignItems": "center", "justifyContent": "space-between",
+                    "zIndex": "200", "width": "100%",
+                },
+                children=[
+                    html.H1("MODEL UPLOAD", style={
+                        "margin": "0", "fontSize": "18px", "fontWeight": "700",
+                        "color": "white", "letterSpacing": "1.2px",
+                    }),
+                    html.Div(id="sidebar-toggle", n_clicks=0, style={"cursor": "pointer"},
+                             children=[icon_sidebar()]),
+                ]
+            ),
+
+            # ── Body: sidebar + content ──
+            html.Div(
+                style={
+                    "flex": "1",
+                    "display": "flex",
+                    "flexDirection": "row",
+                    "overflow": "hidden",
+                    "minHeight": "0",
+                },
+                children=[
+                    # Developer sidebar
+                    build_dev_sidebar(active_page="model_upload"),
+
+                    # Scrollable content
+                    html.Div(
+                        style={
+                            "flex": "1",
+                            "overflowY": "auto",
+                            "overflowX": "hidden",
+                            "padding": "24px 28px",
+                            "minWidth": "0",
+                        },
+                        children=build_model_upload_body(
+                            active_model=active_model,
+                            history=history,
+                            selected_type=default_type,
+                        ),
+                    )
+                ]
             )
         ]
     )
@@ -822,7 +868,10 @@ def register_model_upload_callbacks(app, supabase=None):
     def toggle_sidebar(n, is_open):
         is_open = not is_open
         base = {
-            "flexShrink": "0", "height": "100%", "background": "#0d1e3a",
+            "flexShrink": "0",
+            "height": "calc(100vh - 60px)",
+            "maxHeight": "calc(100vh - 60px)",
+            "background": "#0d1e3a",
             "borderRight": "1px solid rgba(74,158,255,0.15)",
             "display": "flex", "flexDirection": "column",
             "overflow": "hidden", "transition": "width 0.3s ease",

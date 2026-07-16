@@ -4,11 +4,7 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import base64
 import numpy as np
-from assets.components import (build_sidebar, build_topbar)
-
-# ─────────────────────────────────────────────
-#  3D HOLOGRAPHIC JET ENGINE MODEL
-# ─────────────────────────────────────────────
+from assets.components import (build_sidebar, build_topbar, icon_sidebar)
 
 def build_engine_3d_model(status="healthy", degradation_type=None):
     """
