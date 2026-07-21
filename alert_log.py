@@ -46,7 +46,7 @@ def summary_card(value, label, color="white", border=None):
     return html.Div(
         style={
             "flex": "1", "textAlign": "center", "padding": "18px 0",
-            "borderRight": "2px solid rgba(74,158,255)" if border != "last" else "none",
+            "borderRight": "1px solid rgba(74,158,255,0.2)" if border != "last" else "none",
         },
         children=[
             html.Div(str(value), style={"color": color, "fontSize": "28px", "fontWeight": "800",
@@ -340,8 +340,7 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
         # ── Engine title ──
         html.Div(
             style={
-                "background": "transparent", "borderBottom": "2px solid rgba(74,158,255,0.5)",
-                "padding": "24px 22px", "marginBottom": "0px",
+                "background": "transparent", "padding": "24px 22px", "marginBottom": "0px",
             },
             children=[
                 html.H2(f"ENGINE-{engine_id}",
@@ -353,9 +352,8 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
         html.Div(
             id="alert-summary-row",
             style={
-                "display": "flex", "background": "transparent",
-                "border": "2px solid rgba(74,158,255,0.5)", "borderRadius": "0px",
-                "marginBottom": "0px",
+                "display": "flex", "background": "rgba(13,32,69,0.5)",
+                "border": "1px solid rgba(74,158,255,0.2)"
             },
             children=[
                 summary_card(total, "Total Alerts", "white"),
