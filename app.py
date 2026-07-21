@@ -131,7 +131,7 @@ def display_page(pathname, session):
 
     # ── Exact routes ──
     routes = {
-        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id),
+        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role),
         "/overview":          lambda: create_overview_layout(sb),
         "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
         "/alert-log":         lambda: create_alert_log_layout(sb),

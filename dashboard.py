@@ -78,7 +78,7 @@ def logout_icon():
     return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}', style={'width': '28px', 'height': '28px'})
 
 
-def create_dashboard_layout(supabase, org_id=None):
+def create_dashboard_layout(supabase, org_id=None, role=None):
     engine_data = []
     maintenance_alerts = []
     total_count = 0
@@ -419,7 +419,8 @@ def create_dashboard_layout(supabase, org_id=None):
                         children=[
                             dcc.Link(
                                 href="/user-management",
-                                style={"textDecoration": "none"},
+                                style={"textDecoration": "none",
+                                       "display": "block" if role == "admin" else "none"},
                                 children=[
                                     html.Div(
                                         style={

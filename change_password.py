@@ -203,7 +203,7 @@ def register_change_password_callbacks(app, supabase=None, supabase_admin=None):
     """Register callback for handling password change."""
 
     @app.callback(
-        Output("url-change-password", "pathname"),
+        Output("url", "pathname", allow_duplicate=True),
         Output("change-pw-status", "children"),
         Output("session-store", "data", allow_duplicate=True),
         Input("change-pw-btn", "n_clicks"),
