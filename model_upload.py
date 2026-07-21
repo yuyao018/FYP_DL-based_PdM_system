@@ -858,26 +858,6 @@ def register_model_upload_callbacks(app, supabase=None):
                 dash.no_update,
             )
 
-    @app.callback(
-        Output("sidebar", "style"),
-        Output("sidebar-state", "data"),
-        Input("sidebar-toggle", "n_clicks"),
-        State("sidebar-state", "data"),
-        prevent_initial_call=True,
-    )
-    def toggle_sidebar(n, is_open):
-        is_open = not is_open
-        base = {
-            "flexShrink": "0",
-            "height": "calc(100vh - 60px)",
-            "maxHeight": "calc(100vh - 60px)",
-            "background": "#0d1e3a",
-            "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex", "flexDirection": "column",
-            "overflow": "hidden", "transition": "width 0.3s ease",
-        }
-        return ({**base, "width": "210px"}, True) if is_open else ({**base, "width": "0px"}, False)
-
 
 # ─────────────────────────────────────────────
 #  STANDALONE RUN

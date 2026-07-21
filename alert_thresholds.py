@@ -316,19 +316,20 @@ def create_alert_thresholds_layout(supabase=None):
 
     return html.Div(
         style={
-            "minHeight": "100vh", "display": "flex", "flexDirection": "column",
+            "height": "100vh", "display": "flex", "flexDirection": "column",
             "fontFamily": "'Segoe UI', 'Inter', sans-serif",
-            "background": "#0a1628", "color": "white",
+            "background": "#0a1628", "color": "white", "overflow": "hidden",
         },
         children=[
-            html.Div(style={"position": "sticky", "top": "0", "zIndex": "200"},
-                     children=[build_topbar()]),
+            build_topbar(),
             html.Div(
-                style={"flex": "1", "display": "flex", "flexDirection": "row"},
+                style={"flex": "1", "display": "flex", "flexDirection": "row",
+                       "overflow": "hidden", "minHeight": "0"},
                 children=[
                     build_admin_sidebar(active_page="threshold"),
                     html.Div(
-                        style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
+                        style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
+                               "minWidth": "0"},
                         children=build_threshold_body(warn=warn, crit=crit, max_rul=max_rul),
                     )
                 ]

@@ -183,6 +183,9 @@ def display_page(pathname, session):
     prevent_initial_call=True,
 )
 def toggle_sidebar(n, is_open):
+    if not n or n == 0:
+        raise dash.exceptions.PreventUpdate
+
     is_open = not is_open
 
     base = {

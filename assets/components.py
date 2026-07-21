@@ -353,13 +353,14 @@ def build_admin_sidebar(active_page="engines"):
     return html.Div(
         id="sidebar",
         style={
-            "width": "210px", "flexShrink": "0", "height": "100%",
+            "width": "210px", "flexShrink": "0",
+            "height": "calc(100vh - 60px)", "maxHeight": "calc(100vh - 60px)",
             "background": "#0d1e3a", "borderRight": "1px solid rgba(74,158,255,0.15)",
             "display": "flex", "flexDirection": "column",
             "overflow": "hidden", "transition": "width 0.3s ease",
         },
         children=[
-            html.A(href="/dashboard", style={"textDecoration": "none"}, children=[
+            html.A(href="/dashboard", style={"textDecoration": "none", "flexShrink": "0"}, children=[
                 html.Div(style={
                     "padding": "20px 20px 18px",
                     "borderBottom": "1px solid rgba(74,158,255,0.12)",
@@ -435,7 +436,8 @@ def build_dev_sidebar(active_page="dashboard"):
         style={
             "width": "210px",
             "flexShrink": "0",
-            "height": "100%",
+            "height": "calc(100vh - 60px)",
+            "maxHeight": "calc(100vh - 60px)",
             "background": "#0d1e3a",
             "borderRight": "1px solid rgba(74,158,255,0.15)",
             "display": "flex",

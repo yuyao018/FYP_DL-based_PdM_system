@@ -904,14 +904,15 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
 
     # ── Assemble full page ──
     return html.Div(
-        style={"minHeight": "100vh", "background": "#0a1628", "display": "flex",
-               "flexDirection": "column"},
+        style={"height": "100vh", "background": "#0a1628", "display": "flex",
+               "flexDirection": "column", "overflow": "hidden"},
         children=[
             build_topbar(),
-            html.Div(style={"display": "flex", "flex": "1"}, children=[
+            html.Div(style={"flex": "1", "display": "flex", "flexDirection": "row",
+                            "overflow": "hidden", "minHeight": "0"}, children=[
                 build_sidebar(active_page="degradation_analysis", engine_db_id=engine_db_id),
                 html.Div(style={"flex": "1", "overflowY": "auto", "display": "flex",
-                                "flexDirection": "column"}, children=[
+                                "flexDirection": "column", "minWidth": "0"}, children=[
                     header,
                     row1,
                     row2,

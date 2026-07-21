@@ -253,36 +253,33 @@ def create_engine_management_layout(supabase=None, org_id=None):
 
     return html.Div(
         style={
-            "minHeight": "100vh",
+            "height": "100vh",
             "display": "flex",
             "flexDirection": "column",
             "fontFamily": "'Segoe UI', 'Inter', sans-serif",
             "background": "#0a1628",
             "color": "white",
+            "overflow": "hidden",
         },
         children=[
             dcc.Location(id="url-engine-mgmt", refresh=False),
 
-            html.Div(
-                style={
-                    "position": "sticky",
-                    "top": "0",
-                    "zIndex": "200",
-                },
-                children=[build_topbar()]
-            ),
+            build_topbar(),
 
             html.Div(
                 style={
                     "flex": "1",
                     "display": "flex",
                     "flexDirection": "row",
+                    "overflow": "hidden",
+                    "minHeight": "0",
                 },
                 children=[
                     build_admin_sidebar(active_page="engines"),
                     html.Div(
                         style={
                             "flex": "1",
+                            "overflowY": "auto",
                             "padding": "24px 28px",
                             "minWidth": "0",
                         },
