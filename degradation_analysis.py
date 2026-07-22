@@ -388,8 +388,8 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=50, r=20, t=40, b=50),
-        height=320,
+        margin=dict(l=50, r=20, t=40, b=40),
+        height=300,
         legend=dict(
             font=dict(color="rgba(168,212,255,0.8)", size=11),
             bgcolor="rgba(0,0,0,0)",
@@ -410,7 +410,7 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
         ),
         title=dict(
             text="SHAP Value Trend Over Cycles (Top Sensors)",
-            font=dict(color="white", size=13),
+            font=dict(color="white", size=16),
             x=0.01, y=0.98,
         ),
     )
@@ -766,7 +766,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                "justifyContent": "space-between", "marginBottom": "12px"},
                         children=[
                             html.Div("Top Drivers", style={
-                                "color": "white", "fontSize": "14px", "fontWeight": "700",
+                                "color": "white", "fontSize": "16px", "fontWeight": "700"
                             }),
                             html.Div(
                                 style={"display": "flex", "gap": "6px"},
@@ -820,7 +820,8 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
 
     # ── Row 2: SHAP trend chart (5:1 ratio) + AI explanation ──
     row2 = html.Div(
-        style={"display": "flex", "gap": "20px", "padding": "0 28px 28px"},
+        style={"display": "flex", "gap": "20px", "padding": "0 28px 28px",
+               "alignItems": "stretch"},
         children=[
             # SHAP trend chart (flex: 5)
             html.Div(
@@ -828,14 +829,14 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "flex": "5", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
-                    "borderRadius": "12px", "padding": "16px",
+                    "borderRadius": "12px", "padding": "16px", "height": "auto",
                 },
                 children=[
                     dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
                               figure=build_shap_trend_chart([], [])),
                 ]
             ),
-            # AI Explanation (flex: 1)
+            # AI Explanation (flex: 1) — matches chart height, content scrolls
             html.Div(
                 style={
                     "flex": "1", "minWidth": "200px",
@@ -843,10 +844,11 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "20px",
                     "display": "flex", "flexDirection": "column",
+                    "overflow": "hidden", "height": "350px",
                 },
                 children=[
                     html.Div(style={"display": "flex", "flexDirection": "column", "gap": "8px",
-                                    "marginBottom": "14px"}, children=[
+                                    "marginBottom": "14px", "flexShrink": "0"}, children=[
                         html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px"}, children=[
                             html.Div("AI EXPLANATION", style={
                                 "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
@@ -875,7 +877,8 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                         id="da-llm-explanation",
                         style={
                             "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
-                            "lineHeight": "1.7", "flex": "1", "overflowY": "auto",
+                            "lineHeight": "1.7", "flex": "1", "minHeight": "0",
+                            "overflowY": "auto",
                         },
                         children=[
                             html.Div(cached_explanation, style={"marginBottom": "8px"})
