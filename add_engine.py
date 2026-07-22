@@ -453,25 +453,27 @@ def build_add_engine_body():
 def create_add_engine_layout(supabase=None, org_id=None):
     return html.Div(
         style={
-            "minHeight": "100vh",
+            "height": "100vh",
             "display": "flex", "flexDirection": "column",
             "fontFamily": "'Segoe UI', 'Inter', sans-serif",
             "background": "#0a1628", "color": "white",
+            "overflow": "hidden",
         },
         children=[
             dcc.Location(id="url-add-engine", refresh=False),
             # Store org_id so the create callback can access it
             dcc.Store(id="add-engine-org-store", data=org_id),
 
-            html.Div(style={"position": "sticky", "top": "0", "zIndex": "200"},
-                     children=[build_topbar()]),
+            build_topbar(),
 
             html.Div(
-                style={"flex": "1", "display": "flex", "flexDirection": "row"},
+                style={"flex": "1", "display": "flex", "flexDirection": "row",
+                       "overflow": "hidden", "minHeight": "0"},
                 children=[
                     build_admin_sidebar(active_page="engines"),
                     html.Div(
-                        style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
+                        style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
+                               "minWidth": "0"},
                         children=build_add_engine_body(),
                     )
                 ]
@@ -486,21 +488,25 @@ def create_add_engine_layout(supabase=None, org_id=None):
 
 def register_add_engine_callbacks(app, supabase=None):
 
-    # ── Populate "Assign To" dropdown with users from the database ──
+    # ── Populate "Assign To" dropdown with users from the same organization ──
     @app.callback(
         Output("new-engine-assign-to", "options"),
         Input("url-add-engine", "pathname"),
+        State("add-engine-org-store", "data"),
     )
-    def load_users_dropdown(_):
+    def load_users_dropdown(_, org_id):
         if not supabase:
             return []
         try:
-            resp = supabase.table("users") \
-                .select("id, username, first_name, last_name, email_address, department") \
-                .execute()
+            query = supabase.table("users") \
+                .select("id, username, first_name, last_name, email_address, department")
+            if org_id:
+                query = query.eq("organization_id", org_id)
+            resp = query.execute()
             options = []
             for u in (resp.data or []):
-                label = u.get("username", "")
+                name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
+                label = f"{name} ({u.get('username', '')})" if name else u.get("username", "")
                 options.append({"label": label, "value": u["id"]})
             return options
         except Exception:
@@ -656,23 +662,6 @@ def register_add_engine_callbacks(app, supabase=None):
             print(f"[ERROR] create engine: {e}")
             return html.Span(f"Failed to register engine: {str(e)}",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    @app.callback(
-        Output("sidebar", "style"),
-        Output("sidebar-state", "data"),
-        Input("sidebar-toggle", "n_clicks"),
-        State("sidebar-state", "data"),
-        prevent_initial_call=True,
-    )
-    def toggle_sidebar(n, is_open):
-        is_open = not is_open
-        base = {
-            "flexShrink": "0", "height": "100%", "background": "#0d1e3a",
-            "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex", "flexDirection": "column",
-            "overflow": "hidden", "transition": "width 0.3s ease",
-        }
-        return ({**base, "width": "210px"}, True) if is_open else ({**base, "width": "0px"}, False)
 
 
 # ─────────────────────────────────────────────
