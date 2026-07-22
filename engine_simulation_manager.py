@@ -47,7 +47,7 @@ WINDOW_SIZES = {
     "FD001": 45,
     "FD002": 35,
     "FD003": 45,
-    "FD004": 50,
+    "FD004": 35,
 }
 WINDOW_SIZE = 45  # default fallback
 
