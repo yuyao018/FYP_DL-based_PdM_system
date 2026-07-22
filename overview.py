@@ -164,7 +164,7 @@ def build_shap_chart(shap_data=None):
         )
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=40, t=10, b=10), height=220,
+            margin=dict(l=10, r=40, t=10, b=10), height=280,
             xaxis=dict(visible=False), yaxis=dict(visible=False),
         )
         return fig
@@ -199,7 +199,7 @@ def build_shap_chart(shap_data=None):
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=10, t=10, b=10),
-        height=220,
+        height=280,
         xaxis=dict(
             showgrid=True,
             gridcolor="rgba(74,158,255,0.1)",
@@ -610,10 +610,10 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
 
         # Row 2: Sensor Trends (3 mini charts) + Top Drivers
         html.Div(
-            style={"display": "flex", "gap": "20px"},
+            style={"display": "flex", "gap": "20px", "alignItems": "stretch"},
             children=[
                 card(
-                    style_extra={"flex": "3"},
+                    style_extra={"flex": "3", "minWidth": "0", "overflow": "hidden"},
                     children=[
                         # Header with "more information" link
                         html.Div(
@@ -682,7 +682,8 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                     ]
                 ),
                 card(
-                    style_extra={"flex": "1"},
+                    style_extra={"flex": "1", "minWidth": "0", "overflow": "hidden",
+                                 "display": "flex", "flexDirection": "column"},
                     children=[
                         html.Div(
                             style={"display": "flex", "alignItems": "center",
@@ -705,8 +706,8 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                         dcc.Graph(
                             id="shap-chart",
                             figure=build_shap_chart(),
-                            config={"displayModeBar": False},
-                            style={"height": "220px"},
+                            config={"displayModeBar": False, "responsive": True},
+                            style={"flex": "1", "minHeight": "0", "width": "100%"},
                         )
                     ]
                 ),
