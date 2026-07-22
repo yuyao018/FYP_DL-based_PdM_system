@@ -129,6 +129,10 @@ def display_page(pathname, session):
         engine_db_id = pathname.split("/")[-1]
         return create_degradation_analysis_layout(sb, engine_db_id=engine_db_id)
 
+    if pathname.startswith("/edit-user/"):
+        user_id = pathname.split("/")[-1]
+        return create_add_user_layout(sb, edit_user_id=user_id)
+
     # ── Exact routes ──
     routes = {
         "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role),

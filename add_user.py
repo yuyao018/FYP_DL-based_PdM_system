@@ -387,15 +387,28 @@ def panel(title, icon_fn, children, subtitle=None):
 #  MAIN PAGE BODY
 # ─────────────────────────────────────────────
 
-def build_add_user_body():
+def build_add_user_body(edit_user=None):
+    is_edit = edit_user is not None
+    title = "EDIT USER" if is_edit else "ADD NEW USER"
+    subtitle = "Update user account details" if is_edit else "Create a new account and assign a role"
+    btn_label = "Save Changes" if is_edit else "Create Account"
+
+    # Pre-fill values if editing
+    first_name = edit_user.get("first_name", "") if is_edit else ""
+    last_name = edit_user.get("last_name", "") if is_edit else ""
+    email = edit_user.get("email_address", "") if is_edit else ""
+    department = edit_user.get("department", "") if is_edit else ""
+    username = edit_user.get("username", "") if is_edit else ""
+    role = (edit_user.get("role") or "user").lower() if is_edit else "user"
+
     return [
         # Page title
         html.Div(
             style={"marginBottom": "8px"},
             children=[
-                html.H2("ADD NEW USER", style={"margin": "0", "color": "white",
+                html.H2(title, style={"margin": "0", "color": "white",
                                                 "fontSize": "22px", "fontWeight": "800"}),
-                html.Div("Create a new account and assign a role",
+                html.Div(subtitle,
                          style={"color": "rgba(168,212,255,0.6)", "fontSize": "13px", "marginTop": "4px"}),
             ]
         ),
@@ -413,28 +426,32 @@ def build_add_user_body():
                     children=[
                         panel("Personal Information", icon_person_outline, [
                             html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px"}, children=[
-                                form_field("First Name", "new-user-first-name", "John"),
-                                form_field("Last Name",  "new-user-last-name",  "Doe"),
+                                form_field("First Name", "new-user-first-name", "John", value=first_name),
+                                form_field("Last Name",  "new-user-last-name",  "Doe", value=last_name),
                             ]),
                             html.Div(style={"marginBottom": "16px"}, children=[
-                                form_field("Email Address", "new-user-email", "doe@example.com", input_type="email"),
+                                form_field("Email Address", "new-user-email", "doe@example.com",
+                                           input_type="email", value=email),
                             ]),
                             html.Div(children=[
-                                form_field("Department", "new-user-department", "R&D"),
+                                form_field("Department", "new-user-department", "R&D", value=department),
                             ]),
                         ]),
 
                         panel("Account Credentials", icon_lock_outline, [
                             html.Div(style={"marginBottom": "16px"}, children=[
-                                form_field("Username", "new-user-username", "John01"),
+                                form_field("Username", "new-user-username", "John01", value=username),
                             ]),
                             html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "14px"}, children=[
-                                form_field("Password", "new-user-password", "", input_type="password",
-                                          icon=icon_lock_outline()),
-                                form_field("Confirm Password", "new-user-confirm-password", "", input_type="password",
-                                          icon=icon_lock_outline()),
+                                form_field("Password", "new-user-password",
+                                           "Leave blank to keep current" if is_edit else "",
+                                           input_type="password", icon=icon_lock_outline()),
+                                form_field("Confirm Password", "new-user-confirm-password",
+                                           "Leave blank to keep current" if is_edit else "",
+                                           input_type="password", icon=icon_lock_outline()),
                             ]),
                             html.Div(
+                                "Leave password fields empty to keep the current password" if is_edit else
                                 "User will be prompted to change password on first login",
                                 style={
                                     "color": "#4a9eff", "fontSize": "12px", "textAlign": "center",
@@ -452,10 +469,10 @@ def build_add_user_body():
                     style={"flex": "1"},
                     children=[
                         panel("Assign Role", icon_shield, [
-                            build_role_selector(selected_role="user"),
+                            build_role_selector(selected_role=role),
                         ]),
                         panel("Access Preview", icon_eye, [
-                            build_access_preview(selected_role="user"),
+                            build_access_preview(selected_role=role),
                         ]),
                     ]
                 ),
@@ -473,7 +490,7 @@ def build_add_user_body():
                         "padding": "12px 28px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer",
                     })
                 ]),
-                html.Button("Create Account", id="create-user-btn", n_clicks=0, style={
+                html.Button(btn_label, id="create-user-btn", n_clicks=0, style={
                     "background": "linear-gradient(90deg, #1a6fd4 0%, #2a85f0 100%)",
                     "border": "none", "borderRadius": "8px", "color": "white",
                     "padding": "12px 28px", "fontSize": "14px", "fontWeight": "700",
@@ -482,7 +499,8 @@ def build_add_user_body():
             ]
         ),
 
-        dcc.Store(id="selected-role-store", data="user"),
+        dcc.Store(id="selected-role-store", data=role),
+        dcc.Store(id="edit-user-id-store", data=edit_user.get("id") if is_edit else None),
         html.Div(id="add-user-status", style={"marginTop": "12px", "textAlign": "right"}),
     ]
 
@@ -491,27 +509,42 @@ def build_add_user_body():
 #  PAGE LAYOUT ENTRY POINT
 # ─────────────────────────────────────────────
 
-def create_add_user_layout(supabase=None):
+def create_add_user_layout(supabase=None, edit_user_id=None):
+    edit_user = None
+    if supabase and edit_user_id:
+        try:
+            resp = supabase.table("users") \
+                .select("id, username, first_name, last_name, email_address, department, role") \
+                .eq("id", edit_user_id) \
+                .single() \
+                .execute()
+            if resp.data:
+                edit_user = resp.data
+        except Exception:
+            pass
+
     return html.Div(
         style={
-            "minHeight": "100vh",
+            "height": "100vh",
             "display": "flex", "flexDirection": "column",
             "fontFamily": "'Segoe UI', 'Inter', sans-serif",
             "background": "#0a1628", "color": "white",
+            "overflow": "hidden",
         },
         children=[
             dcc.Location(id="url-add-user", refresh=False),
 
-            html.Div(style={"position": "sticky", "top": "0", "zIndex": "200"},
-                     children=[build_topbar()]),
+            build_topbar(),
 
             html.Div(
-                style={"flex": "1", "display": "flex", "flexDirection": "row"},
+                style={"flex": "1", "display": "flex", "flexDirection": "row",
+                       "overflow": "hidden", "minHeight": "0"},
                 children=[
                     build_admin_sidebar(active_page="users"),
                     html.Div(
-                        style={"flex": "1", "padding": "24px 28px", "minWidth": "0"},
-                        children=build_add_user_body(),
+                        style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
+                               "minWidth": "0"},
+                        children=build_add_user_body(edit_user=edit_user),
                     )
                 ]
             )
@@ -548,10 +581,10 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
 
         return selector.children, preview.children, role_key
 
-    # Create account
+    # Create or update account
     @app.callback(
         Output("add-user-status", "children"),
-        Output("url-add-user", "pathname"),
+        Output("url", "pathname", allow_duplicate=True),
         Input("create-user-btn", "n_clicks"),
         State("new-user-first-name", "value"),
         State("new-user-last-name", "value"),
@@ -562,20 +595,28 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
         State("new-user-confirm-password", "value"),
         State("selected-role-store", "data"),
         State("session-store", "data"),
+        State("edit-user-id-store", "data"),
         prevent_initial_call=True,
     )
-    def create_user(n_clicks, first_name, last_name, email, department,
-                    username, password, confirm_password, role, session):
+    def create_or_update_user(n_clicks, first_name, last_name, email, department,
+                              username, password, confirm_password, role, session, edit_user_id):
 
-        if not all([first_name, last_name, email, username, password, confirm_password]):
+        is_edit = edit_user_id is not None
+
+        if not all([first_name, last_name, email, username]):
             return html.Span("Please fill in all required fields.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
-        if password != confirm_password:
+        # For new users, password is required
+        if not is_edit and not password:
+            return html.Span("Password is required for new accounts.",
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+
+        if password and password != confirm_password:
             return html.Span("Passwords do not match.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
-        if len(password) < 8:
+        if password and len(password) < 8:
             return html.Span("Password must be at least 8 characters.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
@@ -587,61 +628,74 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
         admin_org_id = (session or {}).get("organization_id") or None
 
         try:
-            # Step 1: Create auth user (requires service role key)
-            sb_admin = supabase_admin or supabase
-            auth_resp = sb_admin.auth.admin.create_user({
-                "email": email,
-                "password": password,
-                "email_confirm": True,
-            })
-            user_id = auth_resp.user.id
+            if is_edit:
+                # ── UPDATE existing user ──
+                update_data = {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email_address": email,
+                    "department": department,
+                    "username": username,
+                    "role": "admin" if role == "admin" else "user",
+                }
 
-            # Step 2: Insert profile with password hash and same organization as admin
-            hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-            user_data = {
-                "id": user_id,
-                "username": username,
-                "first_name": first_name,
-                "last_name": last_name,
-                "email_address": email,
-                "department": department,
-                "role": "admin" if role == "admin" else "user",
-                "status": "active",
-                "password_hash": hashed_pw,
-                "created_at": "now()",
-            }
-            if admin_org_id:
-                user_data["organization_id"] = admin_org_id
+                # Update password if provided
+                if password:
+                    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    update_data["password_hash"] = hashed_pw
+                    # Also update in Supabase Auth
+                    try:
+                        sb_admin = supabase_admin or supabase
+                        sb_admin.auth.admin.update_user_by_id(edit_user_id, {"password": password})
+                    except Exception:
+                        pass
 
-            supabase.table("users").insert(user_data).execute()
+                supabase.table("users").update(update_data).eq("id", edit_user_id).execute()
 
-            return (
-                html.Span("✓ Account created successfully!",
-                         style={"color": "#4aff9e", "fontSize": "13px"}),
-                "/user-management"
-            )
+                return (
+                    html.Span("✓ User updated successfully!",
+                             style={"color": "#4aff9e", "fontSize": "13px"}),
+                    "/user-management"
+                )
+
+            else:
+                # ── CREATE new user ──
+                sb_admin = supabase_admin or supabase
+                auth_resp = sb_admin.auth.admin.create_user({
+                    "email": email,
+                    "password": password,
+                    "email_confirm": True,
+                })
+                user_id = auth_resp.user.id
+
+                hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                user_data = {
+                    "id": user_id,
+                    "username": username,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email_address": email,
+                    "department": department,
+                    "role": "admin" if role == "admin" else "user",
+                    "status": "active",
+                    "password_hash": hashed_pw,
+                    "created_at": "now()",
+                }
+                if admin_org_id:
+                    user_data["organization_id"] = admin_org_id
+
+                supabase.table("users").insert(user_data).execute()
+
+                return (
+                    html.Span("✓ Account created successfully!",
+                             style={"color": "#4aff9e", "fontSize": "13px"}),
+                    "/user-management"
+                )
 
         except Exception as e:
-            print(f"[ERROR] create user: {e}")
-            return html.Span(f"Failed to create account: {str(e)}",
+            print(f"[ERROR] {'update' if is_edit else 'create'} user: {e}")
+            return html.Span(f"Failed: {str(e)}",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    @app.callback(
-        Output("sidebar", "style"),
-        Output("sidebar-state", "data"),
-        Input("sidebar-toggle", "n_clicks"),
-        State("sidebar-state", "data"),
-        prevent_initial_call=True,
-    )
-    def toggle_sidebar(n, is_open):
-        is_open = not is_open
-        base = {
-            "flexShrink": "0", "height": "100%", "background": "#0d1e3a",
-            "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex", "flexDirection": "column",
-            "overflow": "hidden", "transition": "width 0.3s ease",
-        }
-        return ({**base, "width": "210px"}, True) if is_open else ({**base, "width": "0px"}, False)
 
 
 # ─────────────────────────────────────────────
