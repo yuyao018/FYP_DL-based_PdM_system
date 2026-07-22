@@ -26,6 +26,7 @@ tracked in _RUNNING_SIMULATIONS so we don't double-start the same engine.
 
 import json
 import os
+from pathlib import Path
 import threading
 import time
 import traceback
@@ -271,6 +272,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
 _MODEL_CACHE:  dict = {}
 _SCALER_CACHE: dict = {}   # model_type → (mean: np.ndarray | None, std: np.ndarray | None)
 _CLUSTER_CACHE: dict = {}  # model_type → (centroids, cluster_means, cluster_stds) | (None, None, None)
+_BIAS_CACHE: dict = {}     # model_type → float (bias_shift from training)
 _MODEL_LOCK  = threading.Lock()
 
 
@@ -279,6 +281,7 @@ def _load_model(model_type: str, supabase=None):
     Load and cache the active model for the given model_type.
     First checks the model_versions table for the active version's stored_filename.
     Falls back to the most recently modified .h5 in the model directory.
+    If no local files exist, downloads from Supabase Storage.
     Returns None if no model file is found or loading fails.
     """
     with _MODEL_LOCK:
@@ -286,12 +289,11 @@ def _load_model(model_type: str, supabase=None):
             return _MODEL_CACHE[model_type]
 
         model_dir = os.path.join(SHARED_MODELS_DIR, model_type)
-        if not os.path.isdir(model_dir):
-            print(f"[SIM] No model directory for {model_type}: {model_dir}")
-            return None
+        os.makedirs(model_dir, exist_ok=True)
 
         # Try to find the active model file from database
         model_path = None
+        active_filename = None
         if supabase:
             try:
                 resp = supabase.table("model_versions") \
@@ -302,27 +304,46 @@ def _load_model(model_type: str, supabase=None):
                     .execute()
                 if resp.data:
                     row = resp.data[0]
-                    fname = row.get("filename")
-                    if fname:
-                        candidate = os.path.join(model_dir, fname)
+                    active_filename = row.get("filename")
+                    if active_filename:
+                        candidate = os.path.join(model_dir, active_filename)
                         if os.path.exists(candidate):
                             model_path = candidate
-                            print(f"[SIM] Using active model from DB: {fname}")
+                            print(f"[SIM] Using active model from DB: {active_filename}")
             except Exception:
                 pass
 
-        # Fallback: most recently modified .h5
+        # Fallback: most recently modified .h5 on local disk
         if not model_path:
             h5_files = sorted(
                 [f for f in os.listdir(model_dir) if f.endswith(".h5")],
                 key=lambda f: os.path.getmtime(os.path.join(model_dir, f)),
                 reverse=True,
             )
-            if not h5_files:
-                print(f"[SIM] No .h5 model found in {model_dir}")
-                return None
-            model_path = os.path.join(model_dir, h5_files[0])
-            print(f"[SIM] Using most recent model file: {h5_files[0]}")
+            if h5_files:
+                model_path = os.path.join(model_dir, h5_files[0])
+                print(f"[SIM] Using most recent model file: {h5_files[0]}")
+
+        # Fallback: download from Supabase Storage
+        if not model_path:
+            try:
+                from storage_utils import download_model_file, list_model_files
+                # Try active filename first, then any available file
+                fname_to_try = active_filename or None
+                if fname_to_try:
+                    model_path = download_model_file(model_type, fname_to_try, model_dir)
+                if not model_path:
+                    available = list_model_files(model_type)
+                    for fname in reversed(available):  # most recent last
+                        model_path = download_model_file(model_type, fname, model_dir)
+                        if model_path:
+                            break
+            except Exception as e:
+                print(f"[SIM] Storage download failed: {e}")
+
+        if not model_path:
+            print(f"[SIM] No .h5 model found for {model_type}")
+            return None
 
         try:
             import h5py
@@ -390,6 +411,12 @@ def _load_model(model_type: str, supabase=None):
             _SCALER_CACHE[model_type] = (scaler_mean, scaler_std)
             # Cache cluster normalization info
             _CLUSTER_CACHE[model_type] = (kmeans_centroids, cluster_means, cluster_stds)
+            # Cache bias shift (for test-time correction)
+            with h5py.File(model_path, "r") as _f:
+                _bias_shift = float(_f["metadata"].attrs.get("bias_shift", 0.0))
+            _BIAS_CACHE[model_type] = _bias_shift
+            if _bias_shift != 0:
+                print(f"[SIM] Bias shift for {model_type}: {_bias_shift}")
 
             return model
 
@@ -416,14 +443,45 @@ def reload_model(model_type: str, supabase=None):
 def _load_cycles(json_path: str) -> list:
     """
     Load cycle rows from the engine JSON file.
+    If the file doesn't exist locally, attempts to download from Supabase Storage.
     Supports two formats:
       - List of cycle dicts (the actual format used in the project)
       - Dict with a 'cycles' key
     Returns a list sorted by 'cycle' ascending.
     """
+    # If file doesn't exist locally, try downloading from storage
     if not os.path.exists(json_path):
-        print(f"[SIM] JSON file not found: {json_path}")
-        return []
+        try:
+            from storage_utils import download_engine_json
+            # Derive storage path from local path
+            # e.g. "data/engines/FD004/engine_test_42.json" → "FD004/engine_test_42.json"
+            # or "data/abc_sdn.../engine_xxx.json" → "orgs/abc_sdn.../engine_xxx.json"
+            parts = Path(json_path).parts
+            if "engines" in parts:
+                idx = parts.index("engines")
+                storage_path = "/".join(parts[idx + 1:])
+            else:
+                # Organization folder: data/<org_folder>/engine_xxx.json
+                data_idx = None
+                for i, p in enumerate(parts):
+                    if p == "data":
+                        data_idx = i
+                        break
+                if data_idx is not None and data_idx + 1 < len(parts):
+                    storage_path = "orgs/" + "/".join(parts[data_idx + 1:])
+                else:
+                    storage_path = parts[-1]
+
+            downloaded = download_engine_json(storage_path, local_fallback=json_path)
+            if downloaded:
+                json_path = downloaded
+            else:
+                print(f"[SIM] JSON file not found locally or in storage: {json_path}")
+                return []
+        except Exception as e:
+            print(f"[SIM] JSON file not found: {json_path} (storage fallback failed: {e})")
+            return []
+
     try:
         with open(json_path, "r") as f:
             data = json.load(f)
@@ -561,13 +619,12 @@ class _WindowBuffer:
         # ── Step 2: extract the current window ──
         win_z = hist_z[-self.window_size:]  # (W, n_features)
 
-        # ── Step 3: rolling mean/std on the z-scored window ──
+        # ── Step 3: rolling mean/std WITHIN the window only (matches training) ──
         roll_mean = np.zeros_like(win_z)
         roll_std  = np.zeros_like(win_z)
         for t in range(self.window_size):
-            abs_t = len(self.buffer) - self.window_size + t
-            lo    = max(0, abs_t - self.ROLLING + 1)
-            chunk = hist_z[lo : abs_t + 1]
+            start = max(0, t - self.ROLLING + 1)
+            chunk = win_z[start : t + 1]  # only look within the window
             roll_mean[t] = chunk.mean(axis=0)
             roll_std[t]  = chunk.std(axis=0) if len(chunk) > 1 else 0.0
 
@@ -682,47 +739,72 @@ _FAN_SENSORS = {"Nf", "NRf", "BPR", "Nc", "NRc"}
 def _detect_degradation_type(model_type: str, shap_data: list, pred_rul: float,
                               warn_thresh: float) -> str | None:
     """
-    Determine degradation fault mode using model_type + SHAP attribution.
+    Determine degradation fault mode using SHAP-based confidence scoring.
 
     Logic:
-    - If RUL is above warning threshold → no degradation detected
-    - FD001/FD003 → only HPC degradation possible
-    - FD002/FD004 → HPC or Fan or both; use SHAP to distinguish
+    - For each candidate fault mode, compute a confidence score based on how
+      well the SHAP sign pattern matches the expected sensor signature.
+    - Report the fault mode with the highest confidence, as long as it exceeds
+      a minimum confidence threshold (30%).
+    - This allows early degradation detection BEFORE RUL drops to warning level.
 
-    For FD002/FD004: sum |SHAP scores| for HPC-related sensors vs Fan-related
-    sensors. Whichever group dominates indicates the active fault mode.
-    If both are significant (ratio < 2:1), report combined degradation.
+    FD001/FD003 → only HPC degradation possible (check HPC confidence)
+    FD002/FD004 → HPC, Fan, or both; pick whichever has highest confidence
 
     Returns: "HPC Degradation", "Fan Degradation", "HPC + Fan Degradation", or None
     """
-    if pred_rul > warn_thresh:
-        return None  # engine still healthy, no degradation detected
+    if not shap_data:
+        # No SHAP data yet — can't determine fault mode
+        return None
+
+    MIN_CONFIDENCE = 0.30  # minimum confidence to report a fault mode
+
+    # Expected SHAP sign patterns per fault mode (negative = drives RUL down)
+    hpc_expected = {"T30": -1, "P30": -1, "phi": -1, "Ps30": -1, "htBleed": -1, "T24": -1}
+    fan_expected = {"Nf": -1, "NRf": -1, "BPR": -1, "Nc": -1, "NRc": -1}
+
+    def _compute_confidence(expected_signs: dict) -> float:
+        """Compute confidence for a given fault signature against current SHAP data."""
+        shap_map = {s["sensor"]: s["score"] for s in shap_data}
+        weighted_matches = 0.0
+        total_weight = 0.0
+        for sensor, expected_sign in expected_signs.items():
+            score = shap_map.get(sensor, 0.0)
+            magnitude = abs(score)
+            total_weight += magnitude
+            if magnitude > 0.01:
+                actual_sign = -1 if score < 0 else 1
+                if actual_sign == expected_sign:
+                    weighted_matches += magnitude
+        if total_weight == 0:
+            return 0.0
+        return weighted_matches / total_weight
 
     if model_type in ("FD001", "FD003"):
-        return "HPC Degradation"
+        # Only HPC fault possible — check confidence
+        hpc_conf = _compute_confidence(hpc_expected)
+        if hpc_conf >= MIN_CONFIDENCE:
+            return "HPC Degradation"
+        return None
 
     if model_type in ("FD002", "FD004"):
-        if not shap_data:
-            return "HPC + Fan Degradation"  # fallback when SHAP unavailable
+        # Both fault modes possible — compute confidence for each
+        hpc_conf = _compute_confidence(hpc_expected)
+        fan_conf = _compute_confidence(fan_expected)
+        combined_expected = {**hpc_expected, **fan_expected}
+        combined_conf = _compute_confidence(combined_expected)
 
-        # Sum absolute SHAP scores per sensor group
-        hpc_score = sum(abs(s["score"]) for s in shap_data if s["sensor"] in _HPC_SENSORS)
-        fan_score = sum(abs(s["score"]) for s in shap_data if s["sensor"] in _FAN_SENSORS)
+        # Pick the highest confidence mode
+        best_conf = max(hpc_conf, fan_conf, combined_conf)
+        if best_conf < MIN_CONFIDENCE:
+            return None
 
-        total = hpc_score + fan_score
-        if total == 0:
+        if combined_conf >= hpc_conf and combined_conf >= fan_conf and hpc_conf >= 0.25 and fan_conf >= 0.25:
             return "HPC + Fan Degradation"
-
-        hpc_ratio = hpc_score / total
-        fan_ratio = fan_score / total
-
-        # If one group dominates (>65% of total attribution) → single fault
-        if hpc_ratio > 0.65:
+        elif hpc_conf >= fan_conf:
             return "HPC Degradation"
-        elif fan_ratio > 0.65:
-            return "Fan Degradation"
         else:
-            return "HPC + Fan Degradation"
+            return "Fan Degradation"
 
     return None
 
@@ -854,6 +936,8 @@ def _simulation_loop(
                 buffer.push(vec)
         print(f"[SIM] engine={engine_db_id} buffer warmed up to cycle {resume_from_cycle}")
 
+    # ── EMA smoothing removed — raw predictions are now accurate after rolling stats fix ──
+
     for idx, row in enumerate(cycles):
         cycle_num = row.get("cycle", idx + 1)
 
@@ -927,6 +1011,9 @@ def _simulation_loop(
                 try:
                     pred_raw = model.predict(X, verbose=0)
                     pred_rul = float(np.squeeze(pred_raw))
+                    # Apply bias correction if stored in model metadata
+                    _bias = _BIAS_CACHE.get(model_type, 0.0)
+                    pred_rul = pred_rul - _bias
                     pred_rul = max(0.0, min(float(RUL_CAP), pred_rul))
                     # Compute feature importance on the same window
                     shap_data = _compute_feature_importance(model, X)
@@ -1051,7 +1138,7 @@ def start_engine_simulation(
             daemon=True,
             name=f"sim-{engine_db_id}",
         )
-        _RUNNING_SIMULATIONS[engine_db_id] = {"thread": thread, "stop": stop_event}
+        _RUNNING_SIMULATIONS[engine_db_id] = {"thread": thread, "stop": stop_event, "model_type": model_type}
         thread.start()
         print(f"[SIM] Spawned simulation thread for engine {engine_db_id}")
         return True
@@ -1070,6 +1157,15 @@ def is_running(engine_db_id: str) -> bool:
     with _LOCK:
         entry = _RUNNING_SIMULATIONS.get(engine_db_id)
     return entry is not None and entry["thread"].is_alive()
+
+
+def get_engine_model_type(engine_db_id: str) -> str | None:
+    """Get the model_type for a running or completed simulation."""
+    with _LOCK:
+        entry = _RUNNING_SIMULATIONS.get(engine_db_id)
+    if entry:
+        return entry.get("model_type")
+    return None
 
 
 def active_simulations() -> list:

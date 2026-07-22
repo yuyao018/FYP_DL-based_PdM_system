@@ -72,10 +72,11 @@ SENSOR_JSON_KEY = {
 #  SENSOR CHART
 # ─────────────────────────────────────────────
 
-def build_sensor_chart(selected_ids, sensor_history=None, normalize=True):
+def build_sensor_chart(selected_ids, sensor_history=None, normalize=True, cluster_info=None):
     """
     Build multi-line sensor chart from real sensor history rows.
     sensor_history: list of row dicts from engine_simulation_manager.get_sensor_history()
+    cluster_info: (centroids, cluster_means, cluster_stds) for FD002/FD004 per-cluster normalization.
     Falls back to an empty placeholder if no data yet.
     """
     fig = go.Figure()
@@ -91,6 +92,36 @@ def build_sensor_chart(selected_ids, sensor_history=None, normalize=True):
 
     cycles = [r.get("cycle", i + 1) for i, r in enumerate(sensor_history)]
 
+    # ── Per-cluster normalization for FD002/FD004 ──
+    _use_cluster = (cluster_info is not None and cluster_info[0] is not None)
+    os_keys = ["operational_setting_1", "operational_setting_2", "operational_setting_3"]
+    sensor_keys_ordered = ["s2", "s3", "s4", "s7", "s8", "s9", "s11",
+                           "s12", "s13", "s14", "s15", "s17", "s20", "s21"]
+    cluster_normalized = {}  # json_key → list of normalized values
+
+    if _use_cluster and normalize:
+        centroids, cl_means, cl_stds = cluster_info
+        for row in sensor_history:
+            sensors_dict = row.get("sensors", {})
+            # Get OS for cluster assignment
+            os_vals = []
+            for ok in os_keys:
+                v = row.get(ok, sensors_dict.get(ok, 0.0))
+                os_vals.append(float(v) if v is not None else 0.0)
+            os_arr = np.array(os_vals, dtype=np.float32)
+            dists = np.linalg.norm(centroids - os_arr, axis=1)
+            cid = int(np.argmin(dists))
+            c_mean = cl_means[cid]
+            c_std = cl_stds[cid].copy()
+            c_std[c_std == 0] = 1.0
+            for idx, sk in enumerate(sensor_keys_ordered):
+                raw_val = sensors_dict.get(sk)
+                if raw_val is not None:
+                    norm_val = (float(raw_val) - c_mean[idx]) / c_std[idx]
+                else:
+                    norm_val = None
+                cluster_normalized.setdefault(sk, []).append(norm_val)
+
     for sid in selected_ids:
         if sid not in ALL_SENSORS:
             continue
@@ -99,24 +130,38 @@ def build_sensor_chart(selected_ids, sensor_history=None, normalize=True):
             continue
 
         s = ALL_SENSORS[sid]
-        values = []
-        for row in sensor_history:
-            sensors_dict = row.get("sensors", {})
-            v = sensors_dict.get(json_key)
-            if v is None:
-                v = row.get(json_key)
-            values.append(float(v) if v is not None else None)
 
-        if all(v is None for v in values):
-            continue
+        # Use cluster-normalized values if available
+        if _use_cluster and normalize and json_key in cluster_normalized:
+            y = cluster_normalized[json_key]
+            # Apply rolling mean smoothing (window=10)
+            arr = np.array([v if v is not None else np.nan for v in y], dtype=float)
+            smoothed = np.convolve(arr, np.ones(10) / 10, mode='same')
+            # Fix edges
+            for i in range(min(5, len(smoothed))):
+                smoothed[i] = np.nanmean(arr[:i + 1])
+            for i in range(max(0, len(smoothed) - 5), len(smoothed)):
+                smoothed[i] = np.nanmean(arr[i:])
+            y = smoothed.tolist()
+        else:
+            values = []
+            for row in sensor_history:
+                sensors_dict = row.get("sensors", {})
+                v = sensors_dict.get(json_key)
+                if v is None:
+                    v = row.get(json_key)
+                values.append(float(v) if v is not None else None)
 
-        y = values
-        if normalize:
-            vals = [v for v in values if v is not None]
-            if vals:
-                mn, mx = min(vals), max(vals)
-                rng = mx - mn if mx != mn else 1.0
-                y = [(v - mn) / rng if v is not None else None for v in values]
+            if all(v is None for v in values):
+                continue
+
+            y = values
+            if normalize:
+                vals = [v for v in values if v is not None]
+                if vals:
+                    mn, mx = min(vals), max(vals)
+                    rng = mx - mn if mx != mn else 1.0
+                    y = [(v - mn) / rng if v is not None else None for v in values]
 
         fig.add_trace(go.Scatter(
             x=cycles, y=y,
@@ -520,14 +565,24 @@ def register_sensor_callbacks(app):
 
         # Pull live sensor rows from the simulation ring buffer
         sensor_history = None
+        cluster_info = None
         if engine_db_id:
             try:
-                from engine_simulation_manager import get_sensor_history
+                from engine_simulation_manager import (
+                    get_sensor_history, get_engine_model_type, _CLUSTER_CACHE
+                )
                 sensor_history = get_sensor_history(engine_db_id) or None
+                # Get cluster info for FD002/FD004 per-cluster normalization
+                _mt = get_engine_model_type(engine_db_id)
+                if _mt:
+                    _ci = _CLUSTER_CACHE.get(_mt, (None, None, None))
+                    if _ci and _ci[0] is not None:
+                        cluster_info = _ci
             except Exception:
                 pass
 
-        fig = build_sensor_chart(selected, sensor_history=sensor_history, normalize=is_norm)
+        fig = build_sensor_chart(selected, sensor_history=sensor_history,
+                                 normalize=is_norm, cluster_info=cluster_info)
 
         legend = [
             html.Div(
