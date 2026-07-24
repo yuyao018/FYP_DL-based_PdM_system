@@ -1176,11 +1176,11 @@ def active_simulations() -> list:
 def resume_all_simulations(supabase):
     """
     Called once at app startup. Fetches every engine from Supabase that has a
-    JSON data file on disk and starts a simulation thread for it if one isn't
-    already running.
+    JSON data file (local or in Supabase Storage) and starts a simulation thread
+    for it if one isn't already running.
     """
     import json as _json
-    from data_utils import BASE_DATA_DIR
+    from data_utils import BASE_DATA_DIR, get_org_folder
 
     try:
         resp = supabase.table("engines") \
@@ -1191,8 +1191,14 @@ def resume_all_simulations(supabase):
         print(f"[SIM][ERROR] resume_all_simulations — failed to fetch engines:\n{traceback.format_exc()}")
         return
 
-    # Build a set of valid UUIDs so we only start threads for engines that exist
-    valid_ids = {str(eng.get("id")) for eng in engines if eng.get("id")}
+    # Also fetch org names for storage path resolution
+    org_names = {}
+    try:
+        org_resp = supabase.table("organizations").select("id, name").execute()
+        for o in (org_resp.data or []):
+            org_names[str(o["id"])] = o.get("name", "unknown")
+    except Exception:
+        pass
 
     for eng in engines:
         engine_db_id = str(eng.get("id", ""))
@@ -1200,60 +1206,10 @@ def resume_all_simulations(supabase):
         model_type   = eng.get("model_type", "FD001")
         org_id       = str(eng.get("organization_id") or "")
 
-        if not engine_db_id or engine_db_id not in valid_ids:
-            continue
-
-        # Resolve the JSON path by scanning data/ for the matching org folder
-        # Try new format (engine_<db_id>.json) first, then old format (engine_<num>.json)
-        json_path = None
-        if os.path.isdir(BASE_DATA_DIR):
-            for folder in os.listdir(BASE_DATA_DIR):
-                if org_id and org_id in folder:
-                    # New format: engine_<uuid>.json
-                    candidate_new = os.path.join(
-                        BASE_DATA_DIR, folder,
-                        f"engine_{engine_db_id}.json"
-                    )
-                    if os.path.exists(candidate_new):
-                        json_path = candidate_new
-                        break
-                    # Old format fallback: engine_001.json
-                    candidate_old = os.path.join(
-                        BASE_DATA_DIR, folder,
-                        f"engine_{str(engine_id).zfill(3)}.json"
-                    )
-                    if os.path.exists(candidate_old):
-                        json_path = candidate_old
-                        break
-
-        if not json_path:
-            print(f"[SIM] No data file found for engine {engine_db_id} — skipping resume")
-            continue
-
-        # Check the file actually has cycle data
-        try:
-            with open(json_path, encoding="utf-8") as f:
-                d = _json.load(f)
-            has_cycles = (isinstance(d, list) and len(d) > 0) or \
-                         (isinstance(d, dict) and len(d.get("cycles", [])) > 0)
-        except Exception:
-            has_cycles = False
-
-        if not has_cycles:
-            print(f"[SIM] Data file empty for engine {engine_db_id} — skipping resume")
+        if not engine_db_id:
             continue
 
         # ── Check if this engine has already finished all its cycles ──
-        total_cycles_in_file = 0
-        try:
-            if isinstance(d, list):
-                total_cycles_in_file = len(d)
-            elif isinstance(d, dict):
-                total_cycles_in_file = len(d.get("cycles", []))
-        except Exception:
-            pass
-
-        # Look up current_cycle from the database
         current_cycle = 0
         try:
             cc_resp = supabase.table("engines") \
@@ -1266,24 +1222,85 @@ def resume_all_simulations(supabase):
         except Exception:
             pass
 
-        if total_cycles_in_file > 0 and current_cycle >= total_cycles_in_file:
-            print(f"[SIM] Engine {engine_db_id} already completed all {total_cycles_in_file} cycles — skipping resume")
-            # Pre-populate the sensor buffer from the JSON file so sensor trends are visible
+        # ── Try to resolve the JSON file path ──
+        json_path = None
+
+        # 1. Try local disk first (org folder format)
+        if os.path.isdir(BASE_DATA_DIR) and org_id:
+            for folder in os.listdir(BASE_DATA_DIR):
+                if org_id in folder:
+                    candidate = os.path.join(BASE_DATA_DIR, folder, f"engine_{engine_db_id}.json")
+                    if os.path.exists(candidate):
+                        json_path = candidate
+                        break
+
+        # 2. Try local engines/<model_type> folder
+        if not json_path:
+            engines_dir = os.path.join(os.path.dirname(__file__), "data", "engines", model_type)
+            if os.path.isdir(engines_dir):
+                for fname in os.listdir(engines_dir):
+                    if fname.endswith(".json"):
+                        json_path = os.path.join(engines_dir, fname)
+                        break
+
+        # 3. Try Supabase Storage download
+        if not json_path:
             try:
-                raw_cycles = d if isinstance(d, list) else d.get("cycles", [])
-                with _SENSOR_LOCK:
-                    if engine_db_id not in _SENSOR_BUFFER:
-                        _SENSOR_BUFFER[engine_db_id] = deque(maxlen=SENSOR_BUFFER_MAX)
-                    buf = _SENSOR_BUFFER[engine_db_id]
-                    # Load last SENSOR_BUFFER_MAX cycles into buffer
-                    start_idx = max(0, len(raw_cycles) - SENSOR_BUFFER_MAX)
-                    for row in raw_cycles[start_idx:]:
-                        buf.append(row)
-                print(f"[SIM] Pre-loaded {len(buf)} sensor rows for completed engine {engine_db_id}")
-            except Exception:
-                print(f"[SIM][WARN] Failed to pre-load sensor data for {engine_db_id}:\n{traceback.format_exc(limit=2)}")
+                from storage_utils import download_engine_json
+                # Try org-specific path first
+                if org_id and org_id in org_names:
+                    org_name = org_names[org_id].strip().lower().replace(" ", "_").replace("/", "_")
+                    org_folder = f"{org_name}_{org_id}"
+                    storage_path = f"orgs/{org_folder}/engine_{engine_db_id}.json"
+                    result = download_engine_json(storage_path)
+                    if result:
+                        json_path = result
+
+                # Try model_type folder (template engines)
+                if not json_path:
+                    storage_path = f"{model_type}/engine_test_{engine_id}.json"
+                    result = download_engine_json(storage_path)
+                    if result:
+                        json_path = result
+            except Exception as e:
+                print(f"[SIM] Storage download failed for engine {engine_db_id}: {e}")
+
+        if not json_path:
+            print(f"[SIM] No data file found for engine {engine_db_id} — skipping resume")
             continue
 
+        # Check total cycles to see if already complete
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                d = _json.load(f)
+            if isinstance(d, list):
+                total_cycles = len(d)
+            elif isinstance(d, dict):
+                total_cycles = len(d.get("cycles", []))
+            else:
+                total_cycles = 0
+        except Exception:
+            total_cycles = 0
+
+        if total_cycles == 0:
+            print(f"[SIM] Data file empty for engine {engine_db_id} — skipping resume")
+            continue
+
+        if current_cycle >= total_cycles:
+            print(f"[SIM] Engine {engine_db_id} already completed all {total_cycles} cycles — skipping resume")
+            # Still pre-load sensor rows into the ring buffer for display
+            try:
+                cycles_data = _json.loads(open(json_path).read()) if isinstance(d, str) else d
+                if isinstance(cycles_data, dict):
+                    cycles_data = cycles_data.get("cycles", [])
+                for row in cycles_data:
+                    _push_sensor_row(engine_db_id, row)
+                print(f"[SIM] Pre-loaded {len(cycles_data)} sensor rows for completed engine {engine_db_id}")
+            except Exception:
+                pass
+            continue
+
+        # ── Start simulation thread ──
         start_engine_simulation(
             engine_db_id=engine_db_id,
             json_path=json_path,
