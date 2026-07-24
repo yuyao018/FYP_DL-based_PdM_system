@@ -46,15 +46,39 @@ def _cfg(key: str, default: str = "") -> str:
 # ─────────────────────────────────────────────
 
 def _send_email(subject: str, html_body: str) -> bool:
-    """Send an HTML email via SMTP. Returns True on success."""
-    sender     = _cfg("EMAIL_SENDER")
-    password   = _cfg("EMAIL_PASSWORD")
+    """Send an HTML email via Resend API. Falls back to SMTP if Resend not configured."""
+    resend_key = _cfg("RESEND_API_KEY")
     recipients = [r.strip() for r in _cfg("EMAIL_RECIPIENTS").split(",") if r.strip()]
-    smtp_host  = _cfg("SMTP_HOST", "smtp.gmail.com")
-    smtp_port  = int(_cfg("SMTP_PORT", "587"))
+    sender     = _cfg("EMAIL_SENDER", "alerts@resend.dev")
 
-    if not sender or not password or not recipients:
-        print("[EMAIL] Skipping — EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECIPIENTS not configured.")
+    if not recipients:
+        print("[EMAIL] Skipping — EMAIL_RECIPIENTS not configured.")
+        return False
+
+    # ── Primary: Resend API (works on all platforms) ──
+    if resend_key:
+        try:
+            import resend
+            resend.api_key = resend_key
+            r = resend.Emails.send({
+                "from": sender,
+                "to": recipients,
+                "subject": subject,
+                "html": html_body,
+            })
+            print(f"[EMAIL] Sent via Resend '{subject}' → {recipients} (id={r.get('id', '?')})")
+            return True
+        except Exception:
+            print(f"[EMAIL][ERROR] Resend failed:\n{traceback.format_exc()}")
+            return False
+
+    # ── Fallback: SMTP (for local development) ──
+    password  = _cfg("EMAIL_PASSWORD")
+    smtp_host = _cfg("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(_cfg("SMTP_PORT", "587"))
+
+    if not sender or not password:
+        print("[EMAIL] Skipping — no RESEND_API_KEY or EMAIL_PASSWORD configured.")
         return False
 
     msg = MIMEMultipart("alternative")
@@ -69,10 +93,10 @@ def _send_email(subject: str, html_body: str) -> bool:
             server.starttls()
             server.login(sender, password)
             server.sendmail(sender, recipients, msg.as_string())
-        print(f"[EMAIL] Sent '{subject}' → {recipients}")
+        print(f"[EMAIL] Sent via SMTP '{subject}' → {recipients}")
         return True
     except Exception:
-        print(f"[EMAIL][ERROR] Failed to send '{subject}':\n{traceback.format_exc()}")
+        print(f"[EMAIL][ERROR] SMTP failed:\n{traceback.format_exc()}")
         return False
 
 
@@ -340,7 +364,7 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
             if supabase:
                 try:
                     resp = supabase.table("alert_logs") \
-                        .select("status") \
+                        .select("status, triggered_at") \
                         .eq("engine_id", engine_db_id) \
                         .order("triggered_at", desc=True) \
                         .limit(1) \
@@ -352,7 +376,7 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
                             _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
                             return False
                         elif latest_status == "active":
-                            # Active alert exists — don't duplicate, just track state
+                            # Active alert exists — track state but don't duplicate
                             _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
                             return False
                 except Exception:
