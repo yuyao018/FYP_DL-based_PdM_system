@@ -9,7 +9,7 @@ h5py==3.14.0
 bcrypt==5.0.0
 python-dotenv==1.2.2
 supabase==2.18.1
-google-generativeai==0.8.6
+groq==0.25.0
 gunicorn==23.0.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.12.1+cpu

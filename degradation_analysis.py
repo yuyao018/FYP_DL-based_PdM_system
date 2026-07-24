@@ -4,7 +4,7 @@ Degradation Analysis page — SHAP beeswarm, LLM explanation, SHAP trend over cy
 Replaces the former "Explainability AI" page.  Provides:
   • Header: engine selector, detected degradation type, confidence score
   • Row 1 col 1: SHAP beeswarm-style horizontal bar chart (feature impact on RUL)
-  • Row 1 col 2: LLM-generated natural language explanation (Gemini Flash)
+  • Row 1 col 2: LLM-generated natural language explanation (Groq Llama)
   • Row 2: SHAP value trend line chart for top sensors over cycles
 """
 
@@ -418,13 +418,13 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
 
 
 # ─────────────────────────────────────────────
-#  LLM EXPLANATION (Gemini Flash)
+#  LLM EXPLANATION (Groq — Llama 3.3 70B)
 # ─────────────────────────────────────────────
 
 def _build_llm_prompt(degradation_type: str, confidence: float,
                       top_features: list[dict], sensor_trends: dict | None = None) -> str:
     """
-    Construct a tightly-scoped prompt for Gemini Flash.
+    Construct a tightly-scoped prompt for Groq (Llama 3.3 70B).
     Includes domain knowledge so the LLM can explain *why* sensor patterns
     indicate specific degradation, rather than just restating the inputs.
     """
@@ -561,40 +561,37 @@ def generate_llm_explanation(degradation_type: str, confidence: float,
                              top_features: list[dict],
                              sensor_trends: dict | None = None) -> str:
     """
-    Call Gemini Flash API to generate natural language explanation.
+    Call Groq API (Llama 3.3 70B) to generate natural language explanation.
     Falls back to a templated string if the API is unavailable or validation fails.
     """
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
         return _fallback_explanation(degradation_type, confidence, top_features)
 
     prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends)
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0.3,
-                max_output_tokens=300,
-            ),
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=300,
         )
-        text = response.text.strip() if response.text else ""
+        text = response.choices[0].message.content.strip() if response.choices else ""
 
-        # Post-generation validation
         if _validate_llm_output(text, degradation_type, confidence):
             return text
         else:
-            print(f"[DEGRAD] LLM output failed validation, using fallback.")
+            print("[DEGRAD] LLM output failed validation, using fallback.")
             return _fallback_explanation(degradation_type, confidence, top_features)
 
     except ImportError:
-        print("[DEGRAD] google-generativeai package not installed. Using fallback.")
+        print("[DEGRAD] groq package not installed. Using fallback.")
         return _fallback_explanation(degradation_type, confidence, top_features)
     except Exception as e:
-        print(f"[DEGRAD] Gemini API error: {e}")
+        print(f"[DEGRAD] Groq API error: {e}")
         return _fallback_explanation(degradation_type, confidence, top_features)
 
 
@@ -854,7 +851,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                 "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
                                 "fontWeight": "700", "letterSpacing": "1px",
                             }),
-                            html.Span("Gemini Flash", style={
+                            html.Span("Llama 3.3 70B", style={
                                 "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
                                 "background": "rgba(74,158,255,0.1)",
                                 "borderRadius": "4px", "padding": "2px 6px",
@@ -873,23 +870,31 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                             },
                         ),
                     ]),
-                    html.Div(
-                        id="da-llm-explanation",
-                        style={
-                            "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
-                            "lineHeight": "1.7", "flex": "1", "minHeight": "0",
-                            "overflowY": "auto",
-                        },
+                    dcc.Loading(
+                        id="da-llm-loading",
+                        type="circle",
+                        color="#4a9eff",
+                        style={"flex": "1", "minHeight": "0"},
                         children=[
-                            html.Div(cached_explanation, style={"marginBottom": "8px"})
-                            if cached_explanation else
-                            html.Div("Click 'Generate' to request an AI-powered analysis."),
                             html.Div(
-                                f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
-                                if cached_explanation_ts else "",
-                                style={"color": "rgba(168,212,255,0.4)", "fontSize": "10px",
-                                       "marginTop": "8px"},
-                            ) if cached_explanation else None,
+                                id="da-llm-explanation",
+                                style={
+                                    "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
+                                    "lineHeight": "1.7", "height": "100%",
+                                    "overflowY": "auto",
+                                },
+                                children=[
+                                    html.Div(cached_explanation, style={"marginBottom": "8px"})
+                                    if cached_explanation else
+                                    html.Div("Click 'Generate' to request an AI-powered analysis."),
+                                    html.Div(
+                                        f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
+                                        if cached_explanation_ts else "",
+                                        style={"color": "rgba(168,212,255,0.4)", "fontSize": "10px",
+                                               "marginTop": "8px"},
+                                    ) if cached_explanation else None,
+                                ]
+                            ),
                         ]
                     ),
                 ]
@@ -1133,7 +1138,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
     def generate_explanation_on_click(n_clicks, engine_db_id, degradation_type):
         """
         Triggered ONLY by the 'Generate Explanation' button click.
-        Calls Gemini Flash API once per click, then caches the result
+        Calls Groq API once per click, then caches the result
         in engines.llm_explanation to avoid repeat API calls.
         """
         if not n_clicks or not supabase or not engine_db_id:
