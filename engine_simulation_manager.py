@@ -85,9 +85,15 @@ OP_COLS = [
 FEATURE_COLS = SENSOR_COLS          # 14 sensor features only (FD001/FD003)
 BASE_FEATURE_COLS = FEATURE_COLS    # alias used by _extract_raw_sensors
 
-# Path to shared model directory
+# Path to shared model directory (local dev) or temp cache (deployment)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SHARED_MODELS_DIR = os.path.join(_BASE_DIR, "data", "shared_models")
+_LOCAL_MODELS_DIR = os.path.join(_BASE_DIR, "data", "shared_models")
+if os.path.isdir(_LOCAL_MODELS_DIR):
+    SHARED_MODELS_DIR = _LOCAL_MODELS_DIR
+else:
+    import tempfile as _tf
+    SHARED_MODELS_DIR = os.path.join(_tf.gettempdir(), "pdm_cache", "models")
+    os.makedirs(SHARED_MODELS_DIR, exist_ok=True)
 
 # Active simulation threads: engine_db_id → threading.Thread
 _RUNNING_SIMULATIONS: dict = {}
@@ -1225,45 +1231,35 @@ def resume_all_simulations(supabase):
         # ── Try to resolve the JSON file path ──
         json_path = None
 
-        # 1. Try local disk first (org folder format)
-        if os.path.isdir(BASE_DATA_DIR) and org_id:
+        # 1. Try Supabase Storage first (works on Render and local)
+        try:
+            from storage_utils import download_engine_json
+            # Try org-specific path
+            if org_id and org_id in org_names:
+                _org_name = org_names[org_id].strip().lower().replace(" ", "_").replace("/", "_")
+                org_folder = f"{_org_name}_{org_id}"
+                storage_path = f"orgs/{org_folder}/engine_{engine_db_id}.json"
+                result = download_engine_json(storage_path)
+                if result:
+                    json_path = result
+
+            # Try model_type template folder
+            if not json_path:
+                storage_path = f"{model_type}/engine_test_{engine_id}.json"
+                result = download_engine_json(storage_path)
+                if result:
+                    json_path = result
+        except Exception as e:
+            print(f"[SIM] Storage download failed for engine {engine_db_id}: {e}")
+
+        # 2. Fallback: try local disk (for development only)
+        if not json_path and os.path.isdir(BASE_DATA_DIR) and org_id:
             for folder in os.listdir(BASE_DATA_DIR):
                 if org_id in folder:
                     candidate = os.path.join(BASE_DATA_DIR, folder, f"engine_{engine_db_id}.json")
                     if os.path.exists(candidate):
                         json_path = candidate
                         break
-
-        # 2. Try local engines/<model_type> folder
-        if not json_path:
-            engines_dir = os.path.join(os.path.dirname(__file__), "data", "engines", model_type)
-            if os.path.isdir(engines_dir):
-                for fname in os.listdir(engines_dir):
-                    if fname.endswith(".json"):
-                        json_path = os.path.join(engines_dir, fname)
-                        break
-
-        # 3. Try Supabase Storage download
-        if not json_path:
-            try:
-                from storage_utils import download_engine_json
-                # Try org-specific path first
-                if org_id and org_id in org_names:
-                    org_name = org_names[org_id].strip().lower().replace(" ", "_").replace("/", "_")
-                    org_folder = f"{org_name}_{org_id}"
-                    storage_path = f"orgs/{org_folder}/engine_{engine_db_id}.json"
-                    result = download_engine_json(storage_path)
-                    if result:
-                        json_path = result
-
-                # Try model_type folder (template engines)
-                if not json_path:
-                    storage_path = f"{model_type}/engine_test_{engine_id}.json"
-                    result = download_engine_json(storage_path)
-                    if result:
-                        json_path = result
-            except Exception as e:
-                print(f"[SIM] Storage download failed for engine {engine_db_id}: {e}")
 
         if not json_path:
             print(f"[SIM] No data file found for engine {engine_db_id} — skipping resume")
