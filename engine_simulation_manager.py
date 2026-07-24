@@ -407,16 +407,14 @@ def _load_model(model_type: str, supabase=None):
             # ── Load weights with strict=True to catch any mismatch ──
             try:
                 state_dict = _load_state_dict_from_h5(model_path)
-                print(f"[SIM] Loaded state_dict keys: {len(state_dict)} | model params: {len(list(model.state_dict().keys()))}")
                 model.load_state_dict(state_dict, strict=True)
             except Exception as _load_err:
-                print(f"[SIM][ERROR] load_state_dict failed: {type(_load_err).__name__}: {_load_err}")
-                # Try with strict=False as fallback
+                print(f"[SIM][ERROR] MODEL LOAD FAILED: {type(_load_err).__name__}: {str(_load_err)[:200]}")
                 try:
                     model.load_state_dict(state_dict, strict=False)
-                    print(f"[SIM][WARN] Loaded model with strict=False (some keys may be missing)")
+                    print(f"[SIM][WARN] Loaded with strict=False")
                 except Exception as _load_err2:
-                    print(f"[SIM][ERROR] Even strict=False failed: {_load_err2}")
+                    print(f"[SIM][ERROR] strict=False also failed: {type(_load_err2).__name__}: {str(_load_err2)[:200]}")
                     return None
             model.eval()
 
