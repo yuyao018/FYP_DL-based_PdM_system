@@ -616,36 +616,70 @@ def register_add_engine_callbacks(app, supabase=None):
             if result.data:
                 new_engine_db_id = str(result.data[0].get("id", ""))
 
-            # ── 4. Create data file: data/[org_name]_[org_id]/engine_<db_id>.json ──
-            from data_utils import create_engine_data_file, get_org_folder
+            # ── 4. Get engine data from storage and start simulation ──
+            from storage_utils import _get_supabase_admin, ENGINE_DATA_BUCKET
+            from data_utils import get_org_folder
+            import json as _json
+            import random
+            import tempfile
 
-            file_path = create_engine_data_file(
-                org_name=org_name,
-                org_id=org_id or "local",
-                engine_id=engine_id,
-                model_type=model_type,
-                db_id=new_engine_db_id,
-            )
             folder_name = get_org_folder(org_name, org_id or "local")
             engine_file = f"engine_{new_engine_db_id}.json" if new_engine_db_id else f"engine_{str(engine_id).zfill(3)}.json"
-            # ── Start background simulation if JSON data file already has cycles ──
-            if new_engine_db_id and os.path.exists(file_path):
-                try:
-                    import json as _json
-                    with open(file_path) as _f:
-                        _d = _json.load(_f)
-                    has_cycles = (
-                        (isinstance(_d, list) and len(_d) > 0) or
-                        (isinstance(_d, dict) and len(_d.get("cycles", [])) > 0)
-                    )
-                    if has_cycles:
-                        from engine_simulation_manager import start_engine_simulation
-                        start_engine_simulation(
-                            engine_db_id=new_engine_db_id,
-                            json_path=file_path,
-                            model_type=model_type,
-                            supabase=supabase,
+
+            # Download a random template JSON from storage/<model_type>/
+            # and store it in storage at orgs/<org_folder>/engine_<id>.json
+            has_cycles = False
+            file_path = None
+            try:
+                _sb_storage = _get_supabase_admin()
+                if _sb_storage:
+                    # List available JSON files in the model_type folder
+                    file_list = _sb_storage.storage.from_(ENGINE_DATA_BUCKET).list(model_type)
+                    json_files = [f["name"] for f in file_list if f.get("name", "").endswith(".json")]
+
+                    if json_files:
+                        # Randomly select one
+                        selected_template = random.choice(json_files)
+                        storage_path = f"{model_type}/{selected_template}"
+                        print(f"[OK] Selected template: {storage_path}")
+
+                        # Download template data
+                        template_data = _sb_storage.storage.from_(ENGINE_DATA_BUCKET).download(storage_path)
+
+                        # Upload to orgs folder in storage (persistent)
+                        org_storage_path = f"orgs/{folder_name}/{engine_file}"
+                        try:
+                            _sb_storage.storage.from_(ENGINE_DATA_BUCKET).remove([org_storage_path])
+                        except Exception:
+                            pass
+                        _sb_storage.storage.from_(ENGINE_DATA_BUCKET).upload(
+                            path=org_storage_path, file=template_data,
+                            file_options={"content-type": "application/json"}
                         )
+                        print(f"[OK] Stored engine data in storage: {org_storage_path}")
+
+                        # Write to temp file for simulation to read
+                        tmp_dir = os.path.join(tempfile.gettempdir(), "pdm_engines", folder_name)
+                        os.makedirs(tmp_dir, exist_ok=True)
+                        file_path = os.path.join(tmp_dir, engine_file)
+                        with open(file_path, "wb") as _wf:
+                            _wf.write(template_data)
+                        has_cycles = True
+                    else:
+                        print(f"[WARN] No template JSON files found in {model_type}/")
+            except Exception as _storage_err:
+                print(f"[WARN] Storage template download failed: {_storage_err}")
+
+            # ── Start background simulation ──
+            if new_engine_db_id and has_cycles and file_path:
+                try:
+                    from engine_simulation_manager import start_engine_simulation
+                    start_engine_simulation(
+                        engine_db_id=new_engine_db_id,
+                        json_path=file_path,
+                        model_type=model_type,
+                        supabase=supabase,
+                    )
                 except Exception as _sim_err:
                     print(f"[WARN] Could not start simulation for engine {engine_id}: {_sim_err}")
 
