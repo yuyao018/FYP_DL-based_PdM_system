@@ -405,8 +405,19 @@ def _load_model(model_type: str, supabase=None):
             )
 
             # ── Load weights with strict=True to catch any mismatch ──
-            state_dict = _load_state_dict_from_h5(model_path)
-            model.load_state_dict(state_dict, strict=True)
+            try:
+                state_dict = _load_state_dict_from_h5(model_path)
+                print(f"[SIM] Loaded state_dict keys: {len(state_dict)} | model params: {len(list(model.state_dict().keys()))}")
+                model.load_state_dict(state_dict, strict=True)
+            except Exception as _load_err:
+                print(f"[SIM][ERROR] load_state_dict failed: {type(_load_err).__name__}: {_load_err}")
+                # Try with strict=False as fallback
+                try:
+                    model.load_state_dict(state_dict, strict=False)
+                    print(f"[SIM][WARN] Loaded model with strict=False (some keys may be missing)")
+                except Exception as _load_err2:
+                    print(f"[SIM][ERROR] Even strict=False failed: {_load_err2}")
+                    return None
             model.eval()
 
             _MODEL_CACHE[model_type] = model
@@ -1188,11 +1199,14 @@ def resume_all_simulations(supabase):
     import json as _json
     from data_utils import BASE_DATA_DIR, get_org_folder
 
+    print("[SIM] resume_all_simulations starting...")
+
     try:
         resp = supabase.table("engines") \
             .select("id, engine_id, model_type, organization_id") \
             .execute()
         engines = resp.data or []
+        print(f"[SIM] Found {len(engines)} engines in database")
     except Exception:
         print(f"[SIM][ERROR] resume_all_simulations — failed to fetch engines:\n{traceback.format_exc()}")
         return
@@ -1203,6 +1217,7 @@ def resume_all_simulations(supabase):
         org_resp = supabase.table("organizations").select("id, name").execute()
         for o in (org_resp.data or []):
             org_names[str(o["id"])] = o.get("name", "unknown")
+        print(f"[SIM] Loaded {len(org_names)} organization names")
     except Exception:
         pass
 

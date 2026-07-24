@@ -179,6 +179,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                     "id":          str(engine.get("engine_id", "?")).zfill(2),
                     "status":      raw_status,
                     "rul":         int(round(rul)),
+                    "has_prediction": db_id in latest_rul_map,
                     "model_type":  engine.get("model_type", "N/A"),
                     "created_at":  (engine.get("created_at") or "")[:10],
                 })
@@ -317,7 +318,14 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                                 style={"display": "flex", "justifyContent": "space-between"},
                                 children=[
                                     html.Span("Predicted cycles left", style={"color": "rgba(74, 158, 255, 0.7)", "fontSize": "11px"}),
-                                    html.Span(f"{engine['rul']}", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "14px"})
+                                    html.Span(
+                                        f"{engine['rul']}" if engine.get("has_prediction") else "Warming up…",
+                                        style={
+                                            "color": "#4a9eff" if engine.get("has_prediction") else "rgba(168,212,255,0.5)",
+                                            "fontWeight": "700", "fontSize": "14px" if engine.get("has_prediction") else "12px",
+                                            "fontStyle": "normal" if engine.get("has_prediction") else "italic",
+                                        }
+                                    )
                                 ]
                             ),
                             html.Div(
