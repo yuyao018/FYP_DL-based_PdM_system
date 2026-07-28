@@ -48,13 +48,29 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
     y_max = warn_thresh + 10
 
     if not cycles or (not has_actual and not has_predicted):
-        # ── Placeholder when simulation hasn't produced data yet ──
-        fig.add_annotation(
-            text=f"Warming up \u2014 predictions start after cycle {window_size}",
-            x=0.5, y=0.5, xref="paper", yref="paper",
-            showarrow=False,
-            font=dict(color="rgba(168,212,255,0.5)", size=13),
+        # ── Render empty chart with axes (will be blurred via container) ──
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=10, r=50, t=10, b=10),
+            autosize=True,
+            xaxis=dict(
+                showgrid=False, color="#a8d4ff", zeroline=False,
+                showticklabels=False,
+                range=[0, window_size * 3],
+                title=dict(text="", font=dict(color="#a8d4ff", size=11)),
+            ),
+            yaxis=dict(
+                showgrid=True, gridcolor="rgba(74,158,255,0.1)",
+                color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
+                range=[0, warn_thresh + 10],
+                title=dict(text="RUL", font=dict(color="#a8d4ff", size=11)),
+            ),
         )
+        # Return a special marker so the caller can wrap with blur overlay
+        fig._pdm_warming_up = True
+        fig._pdm_window_size = window_size
+        return fig
     else:
         x = cycles
 
@@ -157,15 +173,22 @@ def build_shap_chart(shap_data=None):
     # Fall back to placeholder if no data yet
     if not shap_data:
         fig = go.Figure()
-        fig.add_annotation(
-            text="Feature importance will appear once predictions start",
-            x=0.5, y=0.5, xref="paper", yref="paper",
-            showarrow=False, font=dict(color="rgba(168,212,255,0.5)", size=12),
-        )
+        # Empty chart with axes visible (blurred by overlay)
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=40, t=10, b=10), height=280,
-            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            margin=dict(l=40, r=10, t=10, b=10), height=280,
+            xaxis=dict(
+                showgrid=True, gridcolor="rgba(74,158,255,0.1)",
+                zeroline=True, zerolinecolor="rgba(74,158,255,0.3)",
+                color="#a8d4ff", tickfont=dict(size=10), range=[-1, 0.5],
+            ),
+            yaxis=dict(
+                showgrid=False, color="#a8d4ff",
+                tickfont=dict(size=11, color="rgba(168,212,255,0.4)"),
+                tickmode="array",
+                tickvals=[0, 1, 2, 3, 4, 5],
+                ticktext=["Nc", "NRc", "Ps30", "phi", "T30", "htBleed"],
+            ),
         )
         return fig
 
@@ -549,12 +572,38 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                     style_extra={"flex": "2", "display": "flex", "flexDirection": "column"},
                     children=[
                         card_title("Predicted RUL"),
-                        dcc.Graph(
-                            id="rul-line-chart",
-                            figure=build_rul_chart(),
-                            config={"displayModeBar": False},
-                            style={"flex": "1", "minHeight": "0"},
-                        )
+                        html.Div(
+                            style={"flex": "1", "minHeight": "0", "position": "relative"},
+                            children=[
+                                dcc.Graph(
+                                    id="rul-line-chart",
+                                    figure=build_rul_chart(),
+                                    config={"displayModeBar": False},
+                                    style={"height": "100%", "width": "100%"},
+                                ),
+                                # Blur overlay (shown/hidden by callback)
+                                html.Div(
+                                    id="rul-chart-overlay",
+                                    style={
+                                        "position": "absolute", "top": "0", "left": "0",
+                                        "width": "100%", "height": "100%",
+                                        "backdropFilter": "blur(4px)",
+                                        "WebkitBackdropFilter": "blur(4px)",
+                                        "background": "rgba(10,22,40,0.5)",
+                                        "borderRadius": "8px",
+                                        "display": "flex", "alignItems": "center",
+                                        "justifyContent": "center",
+                                        "zIndex": "10",
+                                    },
+                                    children=[
+                                        html.Div("Warming up — predictions will appear shortly",
+                                                 style={"color": "rgba(168,212,255,0.8)",
+                                                        "fontSize": "13px", "fontWeight": "600",
+                                                        "textAlign": "center", "padding": "0 20px"}),
+                                    ]
+                                ),
+                            ]
+                        ),
                     ]
                 ),
                 card(
@@ -703,12 +752,38 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                 ),
                             ]
                         ),
-                        dcc.Graph(
-                            id="shap-chart",
-                            figure=build_shap_chart(),
-                            config={"displayModeBar": False, "responsive": True},
-                            style={"flex": "1", "minHeight": "0", "width": "100%"},
-                        )
+                        html.Div(
+                            style={"flex": "1", "minHeight": "0", "position": "relative"},
+                            children=[
+                                dcc.Graph(
+                                    id="shap-chart",
+                                    figure=build_shap_chart(),
+                                    config={"displayModeBar": False, "responsive": True},
+                                    style={"height": "100%", "width": "100%"},
+                                ),
+                                # Blur overlay for warming up
+                                html.Div(
+                                    id="shap-chart-overlay",
+                                    style={
+                                        "position": "absolute", "top": "0", "left": "0",
+                                        "width": "100%", "height": "100%",
+                                        "backdropFilter": "blur(4px)",
+                                        "WebkitBackdropFilter": "blur(4px)",
+                                        "background": "rgba(10,22,40,0.5)",
+                                        "borderRadius": "8px",
+                                        "display": "flex", "alignItems": "center",
+                                        "justifyContent": "center",
+                                        "zIndex": "10",
+                                    },
+                                    children=[
+                                        html.Div("Warming up — feature importance will appear shortly",
+                                                 style={"color": "rgba(168,212,255,0.8)",
+                                                        "fontSize": "12px", "fontWeight": "600",
+                                                        "textAlign": "center", "padding": "0 16px"}),
+                                    ]
+                                ),
+                            ]
+                        ),
                     ]
                 ),
             ]
@@ -837,6 +912,8 @@ def register_overview_callbacks(app, supabase=None):
         Output("shap-chart",           "figure"),
         Output("overview-confidence-score", "children"),
         Output("rul-poll-interval",    "disabled"),
+        Output("rul-chart-overlay",    "style"),
+        Output("shap-chart-overlay",   "style"),
         Input("rul-poll-interval",     "n_intervals"),
         State("overview-engine-id-store", "data"),
         prevent_initial_call=False,
@@ -955,6 +1032,20 @@ def register_overview_callbacks(app, supabase=None):
                 build_shap_chart(),
                 "—",
                 _disable_poll,
+                # Show blur overlay on RUL chart
+                {"position": "absolute", "top": "0", "left": "0",
+                 "width": "100%", "height": "100%",
+                 "backdropFilter": "blur(4px)", "WebkitBackdropFilter": "blur(4px)",
+                 "background": "rgba(10,22,40,0.5)", "borderRadius": "8px",
+                 "display": "flex", "alignItems": "center", "justifyContent": "center",
+                 "zIndex": "10"},
+                # Show blur overlay on Top Drivers
+                {"position": "absolute", "top": "0", "left": "0",
+                 "width": "100%", "height": "100%",
+                 "backdropFilter": "blur(4px)", "WebkitBackdropFilter": "blur(4px)",
+                 "background": "rgba(10,22,40,0.5)", "borderRadius": "8px",
+                 "display": "flex", "alignItems": "center", "justifyContent": "center",
+                 "zIndex": "10"},
             )
 
         rul_display = str(int(round(latest_pred_rul)))
@@ -1030,6 +1121,9 @@ def register_overview_callbacks(app, supabase=None):
             build_shap_chart(latest_shap),
             _confidence_display,
             _disable_poll,
+            # Hide blur overlay
+            {"display": "none"},
+            {"display": "none"},
         )
 
     # ── Sensor mini-charts callback ──

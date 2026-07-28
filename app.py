@@ -72,7 +72,22 @@ app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
     dcc.Store(id='sidebar-state', data=True),  # True = open by default
     dcc.Store(id='session-store', data=None, storage_type='session'),
-    html.Div(id='page-content')
+    dcc.Store(id='toast-store', data=None, storage_type='session'),  # success message for toast
+    # Global toast notification
+    html.Div(
+        id='global-toast',
+        style={
+            "position": "fixed", "top": "-60px", "left": "50%",
+            "transform": "translateX(-50%)", "zIndex": "9999",
+            "background": "linear-gradient(135deg, #1a6fd4, #00c875)",
+            "color": "white", "padding": "14px 28px",
+            "borderRadius": "10px", "fontSize": "14px", "fontWeight": "700",
+            "boxShadow": "0 4px 20px rgba(0,200,100,0.3)",
+            "transition": "top 0.4s ease",
+            "whiteSpace": "nowrap",
+        },
+    ),
+    html.Div(id='page-content'),
 ])
 
 # Routing callback
@@ -133,6 +148,10 @@ def display_page(pathname, session):
         user_id = pathname.split("/")[-1]
         return create_add_user_layout(sb, edit_user_id=user_id)
 
+    if pathname.startswith("/edit-engine/"):
+        engine_id = pathname.split("/")[-1]
+        return create_add_engine_layout(sb, org_id=org_id, edit_engine_id=engine_id)
+
     # ── Exact routes ──
     routes = {
         "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role),
@@ -177,6 +196,43 @@ def display_page(pathname, session):
                      style={"color": "#4a9eff", "textDecoration": "none", "marginTop": "12px"}),
         ]
     )
+
+# Toast notification — clientside callback for smooth slide-in/out animation
+app.clientside_callback(
+    """
+    function(data) {
+        if (!data) {
+            return [
+                '',
+                {position: 'fixed', top: '-60px', left: '50%', transform: 'translateX(-50%)',
+                 zIndex: '9999', transition: 'top 0.4s ease'},
+                null
+            ];
+        }
+        // Auto-hide after 2.5 seconds
+        setTimeout(function() {
+            var el = document.getElementById('global-toast');
+            if (el) { el.style.top = '-60px'; }
+        }, 2500);
+        return [
+            data,
+            {position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
+             zIndex: '9999', background: 'linear-gradient(135deg, #1a6fd4, #00c875)',
+             color: 'white', padding: '14px 28px', borderRadius: '10px',
+             fontSize: '14px', fontWeight: '700',
+             boxShadow: '0 4px 20px rgba(0,200,100,0.3)',
+             transition: 'top 0.4s ease', whiteSpace: 'nowrap'},
+            null
+        ];
+    }
+    """,
+    Output("global-toast", "children"),
+    Output("global-toast", "style"),
+    Output("toast-store", "data"),
+    Input("toast-store", "data"),
+    prevent_initial_call=True,
+)
+
 
 # Sidebar toggle callback
 @app.callback(

@@ -334,15 +334,29 @@ def panel(title, icon_fn, children, subtitle=None):
 #  MAIN PAGE BODY
 # ─────────────────────────────────────────────
 
-def build_add_engine_body():
+def build_add_engine_body(edit_engine=None):
+    is_edit = edit_engine is not None
+    title = "EDIT ENGINE" if is_edit else "ADD NEW ENGINE"
+    subtitle = "Update engine details" if is_edit else "Register a new engine to the monitoring system"
+    btn_label = "Save Changes" if is_edit else "Register Engine"
+
+    # Pre-fill values if editing
+    engine_id_val = str(edit_engine.get("engine_id", "")) if is_edit else ""
+    model_type_val = edit_engine.get("model_type", "FD001") if is_edit else "FD001"
+    assign_to_val = edit_engine.get("responsible_by") if is_edit else None
+    location_val = edit_engine.get("installation_location", "") if is_edit else ""
+    user_name_val = edit_engine.get("_user_name", "") if is_edit else ""
+    user_email_val = edit_engine.get("_user_email", "") if is_edit else ""
+    user_dept_val = edit_engine.get("_user_dept", "") if is_edit else ""
+
     return [
         # Page title
         html.Div(
             style={"marginBottom": "8px"},
             children=[
-                html.H2("ADD NEW ENGINE", style={"margin": "0", "color": "white",
+                html.H2(title, style={"margin": "0", "color": "white",
                                                   "fontSize": "22px", "fontWeight": "800"}),
-                html.Div("Register a new engine to the monitoring system",
+                html.Div(subtitle,
                          style={"color": "rgba(168,212,255,0.6)", "fontSize": "13px", "marginTop": "4px"}),
             ]
         ),
@@ -355,7 +369,7 @@ def build_add_engine_body():
             children=[
                 panel("Engine Identification", icon_hash, [
                     html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px"}, children=[
-                        form_field("Engine ID", "new-engine-id", "1", input_type="number"),
+                        form_field("Engine ID", "new-engine-id", "1", value=engine_id_val, input_type="number"),
                         form_field_dropdown("Model Type", "new-engine-model", 
                                           options=[
                                               {"label": "FD001", "value": "FD001"},
@@ -363,7 +377,7 @@ def build_add_engine_body():
                                               {"label": "FD003", "value": "FD003"},
                                               {"label": "FD004", "value": "FD004"},
                                           ],
-                                          value="FD001"),
+                                          value=model_type_val),
                     ]),
                     html.Div(
                         "Engine ID must be unique within the system",
@@ -380,25 +394,26 @@ def build_add_engine_body():
                     html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px",
                                     "position": "relative", "zIndex": "100"}, children=[
                         form_field_dropdown("Assign To", "new-engine-assign-to",
-                                          options=[],  # populated by callback from users table
+                                          options=[{"label": user_name_val or "Select user...", "value": assign_to_val}] if assign_to_val else [],
+                                          value=assign_to_val,
                                           placeholder="Select user..."),
                     ]),
                     html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px"}, children=[
                         html.Div(style={"flex": "1"}, children=[
                             form_label("Name"),
-                            text_input("new-engine-assign-name", "", "", "text"),
+                            text_input("new-engine-assign-name", "", user_name_val, "text"),
                         ]),
                         html.Div(style={"flex": "1"}, children=[
                             form_label("Email Address"),
-                            text_input("new-engine-assign-email", "", "", "text"),
+                            text_input("new-engine-assign-email", "", user_email_val, "text"),
                         ]),
                     ]),
                     html.Div(style={"display": "flex", "gap": "16px"}, children=[
                         html.Div(style={"flex": "1"}, children=[
                             form_label("Department"),
-                            text_input("new-engine-assign-dept", "", "", "text"),
+                            text_input("new-engine-assign-dept", "", user_dept_val, "text"),
                         ]),
-                        form_field("Installation Location", "new-engine-location", "Hangar A"),
+                        form_field("Installation Location", "new-engine-location", "Hangar A", value=location_val),
                     ]),
                 ], subtitle="Assign responsible personnel and set location"),
 
@@ -433,7 +448,7 @@ def build_add_engine_body():
                         "padding": "12px 28px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer",
                     })
                 ]),
-                html.Button("Register Engine", id="create-engine-btn", n_clicks=0, style={
+                html.Button(btn_label, id="create-engine-btn", n_clicks=0, style={
                     "background": "linear-gradient(90deg, #1a6fd4 0%, #2a85f0 100%)",
                     "border": "none", "borderRadius": "8px", "color": "white",
                     "padding": "12px 28px", "fontSize": "14px", "fontWeight": "700",
@@ -442,6 +457,7 @@ def build_add_engine_body():
             ]
         ),
 
+        dcc.Store(id="edit-engine-id-store", data=edit_engine.get("id") if is_edit else None),
         html.Div(id="add-engine-status", style={"marginTop": "12px", "textAlign": "right"}),
     ]
 
@@ -450,7 +466,37 @@ def build_add_engine_body():
 #  PAGE LAYOUT ENTRY POINT
 # ─────────────────────────────────────────────
 
-def create_add_engine_layout(supabase=None, org_id=None):
+def create_add_engine_layout(supabase=None, org_id=None, edit_engine_id=None):
+    edit_engine = None
+    if supabase and edit_engine_id:
+        try:
+            resp = supabase.table("engines") \
+                .select("id, engine_id, model_type, responsible_by") \
+                .eq("id", edit_engine_id) \
+                .single() \
+                .execute()
+            if resp.data:
+                edit_engine = resp.data
+                # Fetch responsible user's info for pre-filling
+                responsible_by = edit_engine.get("responsible_by")
+                if responsible_by:
+                    try:
+                        user_resp = supabase.table("users") \
+                            .select("first_name, last_name, email_address, department") \
+                            .eq("id", responsible_by) \
+                            .single() \
+                            .execute()
+                        if user_resp.data:
+                            u = user_resp.data
+                            edit_engine["_user_name"] = f"{u.get('last_name', '')} {u.get('first_name', '')}".strip()
+                            edit_engine["_user_email"] = u.get("email_address", "")
+                            edit_engine["_user_dept"] = u.get("department", "")
+                    except Exception:
+                        pass
+                print(f"[DEBUG] Edit engine loaded: {edit_engine}")
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch engine for edit: {e}")
+
     return html.Div(
         style={
             "height": "100vh",
@@ -461,7 +507,6 @@ def create_add_engine_layout(supabase=None, org_id=None):
         },
         children=[
             dcc.Location(id="url-add-engine", refresh=False),
-            # Store org_id so the create callback can access it
             dcc.Store(id="add-engine-org-store", data=org_id),
 
             build_topbar(),
@@ -474,7 +519,7 @@ def create_add_engine_layout(supabase=None, org_id=None):
                     html.Div(
                         style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
                                "minWidth": "0"},
-                        children=build_add_engine_body(),
+                        children=build_add_engine_body(edit_engine=edit_engine),
                     )
                 ]
             )
@@ -540,6 +585,7 @@ def register_add_engine_callbacks(app, supabase=None):
     @app.callback(
         Output("add-engine-status", "children"),
         Output("url", "pathname", allow_duplicate=True),
+        Output("toast-store", "data", allow_duplicate=True),
         Input("create-engine-btn", "n_clicks"),
         State("new-engine-id", "value"),
         State("new-engine-model", "value"),
@@ -547,29 +593,55 @@ def register_add_engine_callbacks(app, supabase=None):
         State("new-engine-location", "value"),
         State("new-engine-notes", "value"),
         State("add-engine-org-store", "data"),
+        State("edit-engine-id-store", "data"),
         prevent_initial_call=True,
     )
     def create_engine(n_clicks, engine_id, model_type, assign_to_user_id,
-                     location, notes, org_id):
+                     location, notes, org_id, edit_engine_id):
+        if not n_clicks or n_clicks == 0:
+            raise dash.exceptions.PreventUpdate
+
+        is_edit = edit_engine_id is not None
+
         if not engine_id or not model_type:
             return html.Span("Please fill in required fields (Engine ID and Model Type).",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         try:
             engine_id = int(engine_id)
         except ValueError:
             return html.Span("Engine ID must be a valid number.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         if engine_id < 1:
             return html.Span("Engine ID must be a positive number.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         if not supabase:
             return html.Span("Supabase not connected.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         try:
+            # ── EDIT MODE: update existing engine ──
+            if is_edit:
+                update_data = {
+                    "engine_id": engine_id,
+                    "model_type": model_type,
+                }
+                if assign_to_user_id:
+                    update_data["responsible_by"] = assign_to_user_id
+                if location:
+                    update_data["installation_location"] = location
+
+                supabase.table("engines").update(update_data).eq("id", edit_engine_id).execute()
+                print(f"[OK] Engine {edit_engine_id} updated")
+                return (
+                    "",
+                    "/engine-management",
+                    "✓ Engine updated successfully!"
+                )
+
+            # ── CREATE MODE ──
             # ── 1. Check uniqueness within the same organization ──
             check_q = supabase.table("engines") \
                 .select("engine_id") \
@@ -578,7 +650,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 check_q = check_q.eq("organization_id", org_id)
             if check_q.execute().data:
                 return html.Span(f"Engine ID {engine_id} already exists in your organization.",
-                                style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                                style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
             # ── 2. Fetch organization name for folder naming ──
             org_name = "unknown_org"
@@ -685,17 +757,15 @@ def register_add_engine_callbacks(app, supabase=None):
 
             print(f"[OK] Engine {engine_id} registered | file: {file_path}")
             return (
-                html.Span(
-                    f"Engine registered! Paste sensor data into: data/{folder_name}/{engine_file}",
-                    style={"color": "#4aff9e", "fontSize": "13px"}
-                ),
-                "/engine-management"
+                "",
+                "/engine-management",
+                "✓ Engine registered successfully!"
             )
 
         except Exception as e:
             print(f"[ERROR] create engine: {e}")
             return html.Span(f"Failed to register engine: {str(e)}",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
 
 # ─────────────────────────────────────────────

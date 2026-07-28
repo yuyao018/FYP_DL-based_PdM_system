@@ -585,6 +585,7 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
     @app.callback(
         Output("add-user-status", "children"),
         Output("url", "pathname", allow_duplicate=True),
+        Output("toast-store", "data", allow_duplicate=True),
         Input("create-user-btn", "n_clicks"),
         State("new-user-first-name", "value"),
         State("new-user-last-name", "value"),
@@ -600,29 +601,31 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
     )
     def create_or_update_user(n_clicks, first_name, last_name, email, department,
                               username, password, confirm_password, role, session, edit_user_id):
+        if not n_clicks or n_clicks == 0:
+            raise dash.exceptions.PreventUpdate
 
         is_edit = edit_user_id is not None
 
         if not all([first_name, last_name, email, username]):
             return html.Span("Please fill in all required fields.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         # For new users, password is required
         if not is_edit and not password:
             return html.Span("Password is required for new accounts.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         if password and password != confirm_password:
             return html.Span("Passwords do not match.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         if password and len(password) < 8:
             return html.Span("Password must be at least 8 characters.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         if not supabase:
             return html.Span("Supabase not connected.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         # Get admin's organization_id from session
         admin_org_id = (session or {}).get("organization_id") or None
@@ -653,9 +656,9 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                 supabase.table("users").update(update_data).eq("id", edit_user_id).execute()
 
                 return (
-                    html.Span("✓ User updated successfully!",
-                             style={"color": "#4aff9e", "fontSize": "13px"}),
-                    "/user-management"
+                    "",
+                    "/user-management",
+                    "✓ User updated successfully!"
                 )
 
             else:
@@ -687,15 +690,15 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                 supabase.table("users").insert(user_data).execute()
 
                 return (
-                    html.Span("✓ Account created successfully!",
-                             style={"color": "#4aff9e", "fontSize": "13px"}),
-                    "/user-management"
+                    "",
+                    "/user-management",
+                    "✓ Account created successfully!"
                 )
 
         except Exception as e:
             print(f"[ERROR] {'update' if is_edit else 'create'} user: {e}")
             return html.Span(f"Failed: {str(e)}",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
 
 # ─────────────────────────────────────────────

@@ -110,6 +110,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                 q = supabase.table("engines").select("*", count="exact")
                 if org_id:
                     q = q.eq("organization_id", org_id)
+                q = q.eq("is_deleted", True)
                 return q
 
             response     = eng_query().execute()

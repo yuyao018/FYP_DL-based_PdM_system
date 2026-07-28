@@ -45,14 +45,19 @@ def _cfg(key: str, default: str = "") -> str:
 #  SMTP SEND
 # ─────────────────────────────────────────────
 
-def _send_email(subject: str, html_body: str) -> bool:
+def _send_email(subject: str, html_body: str, recipients_override: list = None) -> bool:
     """Send an HTML email via Resend API. Falls back to SMTP if Resend not configured."""
     resend_key = _cfg("RESEND_API_KEY")
-    recipients = [r.strip() for r in _cfg("EMAIL_RECIPIENTS").split(",") if r.strip()]
     sender     = _cfg("EMAIL_SENDER", "alerts@resend.dev")
 
+    # Use dynamic recipients if provided, else skip
+    if recipients_override:
+        recipients = recipients_override
+    else:
+        recipients = []
+
     if not recipients:
-        print("[EMAIL] Skipping — EMAIL_RECIPIENTS not configured.")
+        print("[EMAIL] Skipping — no recipients found for this engine.")
         return False
 
     # ── Primary: Resend API (works on all platforms) ──
@@ -422,6 +427,70 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
 #  THRESHOLD ALERT TRIGGER  (called from simulation loop)
 # ─────────────────────────────────────────────
 
+def _get_alert_recipients(supabase, engine_db_id: str) -> list:
+    """
+    Look up email recipients for an engine alert:
+    1. The responsible user (engines.responsible_by → users.email_address)
+    2. All admins in the same organization
+    Returns a deduplicated list of email addresses.
+    """
+    recipients = set()
+
+    if not supabase:
+        return []
+
+    try:
+        # Get engine's organization_id and responsible_by
+        eng_resp = supabase.table("engines") \
+            .select("organization_id, responsible_by") \
+            .eq("id", engine_db_id) \
+            .single() \
+            .execute()
+
+        if not eng_resp.data:
+            return []
+
+        org_id = eng_resp.data.get("organization_id")
+        responsible_by = eng_resp.data.get("responsible_by")
+
+        # Get responsible user's email
+        if responsible_by:
+            try:
+                user_resp = supabase.table("users") \
+                    .select("email_address") \
+                    .eq("id", responsible_by) \
+                    .single() \
+                    .execute()
+                if user_resp.data and user_resp.data.get("email_address"):
+                    recipients.add(user_resp.data["email_address"])
+            except Exception:
+                pass
+
+        # Get all admins in the same organization
+        if org_id:
+            try:
+                admins_resp = supabase.table("users") \
+                    .select("email_address") \
+                    .eq("organization_id", org_id) \
+                    .eq("role", "admin") \
+                    .eq("is_deleted", True) \
+                    .execute()
+                for u in (admins_resp.data or []):
+                    email = u.get("email_address")
+                    if email:
+                        recipients.add(email)
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"[EMAIL] Failed to resolve recipients for engine {engine_db_id}: {e}")
+
+    result = sorted(recipients)
+    if result:
+        print(f"[EMAIL] Recipients for engine {engine_db_id}: {result}")
+    return result
+
+
 def check_and_send_threshold_alert(
     supabase,
     engine_db_id: str,
@@ -485,8 +554,11 @@ def check_and_send_threshold_alert(
         triggered_at=now,
     )
 
+    # ── Resolve recipients: org admin(s) + responsible user ──
+    dynamic_recipients = _get_alert_recipients(supabase, engine_db_id)
+
     def _send():
-        _send_email(subject, html)
+        _send_email(subject, html, recipients_override=dynamic_recipients)
 
     threading.Thread(target=_send, daemon=True, name=f"email-alert-{engine_db_id}").start()
 
