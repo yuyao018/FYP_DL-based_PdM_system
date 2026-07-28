@@ -874,14 +874,16 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                         id="da-llm-loading",
                         type="circle",
                         color="#4a9eff",
-                        style={"flex": "1", "minHeight": "0"},
+                        style={"flex": "1", "minHeight": "0", "overflow": "hidden",
+                               "display": "flex", "flexDirection": "column"},
                         children=[
                             html.Div(
                                 id="da-llm-explanation",
                                 style={
                                     "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
-                                    "lineHeight": "1.7", "height": "100%",
+                                    "lineHeight": "1.7",
                                     "overflowY": "auto",
+                                    "maxHeight": "200px",
                                 },
                                 children=[
                                     html.Div(cached_explanation, style={"marginBottom": "8px"})

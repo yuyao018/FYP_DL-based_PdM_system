@@ -202,32 +202,24 @@ app.clientside_callback(
     """
     function(data) {
         if (!data) {
-            return [
-                '',
-                {position: 'fixed', top: '-60px', left: '50%', transform: 'translateX(-50%)',
-                 zIndex: '9999', transition: 'top 0.4s ease'},
-                null
-            ];
+            return window.dash_clientside.no_update;
         }
-        // Auto-hide after 2.5 seconds
-        setTimeout(function() {
-            var el = document.getElementById('global-toast');
-            if (el) { el.style.top = '-60px'; }
-        }, 2500);
-        return [
-            data,
-            {position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
-             zIndex: '9999', background: 'linear-gradient(135deg, #1a6fd4, #00c875)',
-             color: 'white', padding: '14px 28px', borderRadius: '10px',
-             fontSize: '14px', fontWeight: '700',
-             boxShadow: '0 4px 20px rgba(0,200,100,0.3)',
-             transition: 'top 0.4s ease', whiteSpace: 'nowrap'},
-            null
-        ];
+        // Extract message (ignore timestamp suffix)
+        var msg = data.split('|')[0];
+        // Show toast
+        var el = document.getElementById('global-toast');
+        if (el) {
+            el.innerText = msg;
+            el.style.top = '20px';
+            // Auto-hide after 2.5 seconds
+            setTimeout(function() {
+                el.style.top = '-60px';
+            }, 2500);
+        }
+        // Clear the store so it doesn't re-trigger on navigation
+        return null;
     }
     """,
-    Output("global-toast", "children"),
-    Output("global-toast", "style"),
     Output("toast-store", "data"),
     Input("toast-store", "data"),
     prevent_initial_call=True,

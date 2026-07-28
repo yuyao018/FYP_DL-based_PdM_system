@@ -173,12 +173,13 @@ def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=62):
         height=160,
         xaxis=dict(
             showgrid=False, color="#a8d4ff", tickfont=dict(size=9),
-            zeroline=False,
+            zeroline=False, showspikes=False,
             range=[x_start, x_end] if len(x) > 1 else None,
         ),
         yaxis=dict(
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
             color="#a8d4ff", tickfont=dict(size=9), zeroline=False,
+            showspikes=False,
             title=dict(text="RUL", font=dict(size=9, color="#a8d4ff")),
         ),
         showlegend=False,
@@ -293,6 +294,27 @@ def alert_detail_panel(alert):
                 html.Span("Fault Type", style={"color": "#a8d4ff", "fontSize": "13px"}),
                 html.Span(alert["fault_type"], style={"color": "white", "fontSize": "13px",
                                                         "fontWeight": "700"}),
+            ]
+        ),
+        # AI Explanation (from Degradation Analysis)
+        html.Div(
+            style={"marginBottom": "22px"} if alert.get("llm_explanation") else {"display": "none"},
+            children=[
+                html.Div("AI ANALYSIS", style={
+                    "color": "#4a9eff", "fontSize": "11px", "fontWeight": "700",
+                    "letterSpacing": "1px", "marginBottom": "8px",
+                }),
+                html.Div(
+                    alert.get("llm_explanation", ""),
+                    style={
+                        "color": "rgba(168,212,255,0.8)", "fontSize": "11px",
+                        "lineHeight": "1.6", "maxHeight": "100px",
+                        "overflowY": "auto",
+                        "background": "rgba(10,20,45,0.4)",
+                        "borderRadius": "8px", "padding": "10px 12px",
+                        "border": "1px solid rgba(74,158,255,0.1)",
+                    }
+                ),
             ]
         ),
     ]
@@ -536,7 +558,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
             engines_lookup = {}
             if engine_ids:
                 eng_resp = supabase.table("engines") \
-                    .select("id, engine_id, condition_status, current_cycle, degradation_type") \
+                    .select("id, engine_id, condition_status, current_cycle, degradation_type, llm_explanation") \
                     .in_("id", engine_ids) \
                     .execute()
                 for e in (eng_resp.data or []):
@@ -566,6 +588,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
 
                 current_cycle = eng.get("current_cycle") or 0
                 fault_type = eng.get("degradation_type") or "Unknown"
+                llm_explanation = eng.get("llm_explanation") or ""
 
                 triggered_at = log.get("triggered_at")
                 try:
@@ -605,6 +628,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                     "status": alert_status,
                     "rul": latest_rul,
                     "fault_type": fault_type,
+                    "llm_explanation": llm_explanation,
                     "shap": [],
                     "rul_progression": rul_progression,
                     "warn_thresh": warn_thresh,
