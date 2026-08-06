@@ -1070,15 +1070,10 @@ def register_overview_callbacks(app, supabase=None):
                 pass
 
         label_text  = _deg_type if _deg_type else "No Degradation Detected"
-        # Tone down ambiguous/insufficient states — show them without alarming colour
         label_color = "#4a9eff"
         label_bg    = "rgba(74,158,255,0.12)"
         label_bdr   = "#4a9eff"
-        if _deg_type == "Pattern Ambiguous":
-            label_color = "#f5a623"
-            label_bg    = "rgba(245,166,35,0.10)"
-            label_bdr   = "#f5a623"
-        elif _deg_type == "Insufficient Signal":
+        if _deg_type == "Insufficient Signal":
             label_text  = "Monitoring…"
             label_color = "rgba(168,212,255,0.5)"
             label_bg    = "rgba(74,158,255,0.06)"

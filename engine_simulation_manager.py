@@ -779,8 +779,10 @@ _PATTERN_SENSORS = [
 ]
 
 # Similarity thresholds (tunable)
-_FLOOR_THRESHOLD     = 0.65   # below this → "Insufficient Signal"
-_AMBIGUITY_THRESHOLD = 0.08   # margin below this → "Pattern Ambiguous"
+# Note: these are calibrated for full-lifecycle averaged reference signatures
+# (the seeded shap_signatures.json).  Once generate_shap_signatures.py is run
+# with degraded-phase-only data, raise _FLOOR_THRESHOLD back toward 0.65.
+_FLOOR_THRESHOLD = 0.40   # below this → "Insufficient Signal"
 
 # Runtime caches populated by _load_shap_signatures()
 _SIGNATURES:  dict = {}   # raw JSON content
@@ -789,28 +791,57 @@ _REF_VECS:    dict = {}   # pre-L2-normalised numpy vectors keyed by dataset nam
 _SIGNATURES_PATH = Path(os.path.join(_BASE_DIR, "data", "shap_signatures.json"))
 
 
+SHAP_SIGNATURES_BUCKET = "SHAP"
+SHAP_SIGNATURES_FILENAME = "shap_signatures.json"
+
 def _load_shap_signatures(path: Path = _SIGNATURES_PATH) -> None:
     """
-    Load reference SHAP signatures from JSON into module-level caches.
-    Called once at module import.  Safe to call again after retraining
-    (re-loads the file and refreshes the cache).
+    Load reference SHAP signatures into module-level caches.
+
+    Resolution order:
+      1. Local file at data/shap_signatures.json  (development / already cached)
+      2. Supabase Storage bucket "SHAP"            (production / after upload)
+      3. Warn and leave caches empty               (pattern matching unavailable)
+
+    Safe to call again after retraining to refresh the cache.
     """
     global _SIGNATURES, _REF_VECS
-    if not path.exists():
+
+    # ── Step 1: try local file ────────────────────────────────────────────────
+    resolved_path = path
+    if not resolved_path.exists():
+        # ── Step 2: try downloading from Supabase Storage ────────────────────
+        try:
+            from storage_utils import _get_supabase_admin
+            sb = _get_supabase_admin()
+            if sb:
+                data = sb.storage.from_(SHAP_SIGNATURES_BUCKET).download(
+                    SHAP_SIGNATURES_FILENAME
+                )
+                resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                resolved_path.write_bytes(data)
+                print(f"[SIM] Downloaded shap_signatures.json from "
+                      f"Storage bucket '{SHAP_SIGNATURES_BUCKET}' → {resolved_path}")
+            else:
+                print("[SIM][WARN] No Supabase admin client — cannot download shap_signatures.json.")
+        except Exception:
+            print(f"[SIM][WARN] Could not download shap_signatures.json from Storage:\n"
+                  f"{traceback.format_exc(limit=2)}")
+
+    if not resolved_path.exists():
         print(
-            f"[SIM][WARN] shap_signatures.json not found at {path}. "
-            "Degradation pattern matching is unavailable until "
-            "generate_shap_signatures.py has been run."
+            "[SIM][WARN] shap_signatures.json not found locally or in Storage. "
+            "Degradation pattern matching is unavailable until the file exists."
         )
         _SIGNATURES = {}
         _REF_VECS   = {}
         return
 
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(resolved_path, encoding="utf-8") as f:
             _SIGNATURES = json.load(f)
     except Exception:
-        print(f"[SIM][ERROR] Failed to load {path}:\n{traceback.format_exc(limit=2)}")
+        print(f"[SIM][ERROR] Failed to parse {resolved_path}:\n{traceback.format_exc(limit=2)}")
         _SIGNATURES = {}
         _REF_VECS   = {}
         return
@@ -829,13 +860,6 @@ def _load_shap_signatures(path: Path = _SIGNATURES_PATH) -> None:
 _load_shap_signatures()
 
 
-def _sigmoid(x: float) -> float:
-    """Numerically stable sigmoid."""
-    if x >= 0:
-        return 1.0 / (1.0 + np.exp(-x))
-    e = np.exp(x)
-    return e / (1.0 + e)
-
 
 def _detect_degradation_type(
     model_type: str,
@@ -844,45 +868,62 @@ def _detect_degradation_type(
     warn_thresh: float,
 ) -> tuple[str | None, float | None]:
     """
-    Identify which known degradation profile the current SHAP importance
-    pattern most closely resembles, using cosine similarity against
-    dataset-specific reference signatures.
+    Identify whether the current SHAP importance pattern is strong enough to
+    report a degradation profile, and return the label determined by model_type.
+
+    The fault mode is fixed by dataset — FD001/FD002 can only exhibit HPC
+    degradation; FD003/FD004 can exhibit HPC + Fan degradation.  Cosine
+    similarity is used only to decide whether the current pattern is strong
+    enough to report (above floor threshold), NOT to choose between fault modes.
 
     Parameters
     ----------
     model_type  : one of "FD001", "FD002", "FD003", "FD004"
     shap_data   : list of {"sensor": str, "score": float} dicts (current cycle)
-    pred_rul    : predicted RUL for this cycle (not used in matching, kept for
-                  API compatibility)
-    warn_thresh : warning threshold (not used in matching, kept for API
-                  compatibility)
+    pred_rul    : predicted RUL (kept for API compatibility)
+    warn_thresh : warning threshold (kept for API compatibility)
 
     Returns
     -------
     (pattern_label, pattern_similarity)
 
     pattern_label : str or None
-        One of:
-          "HPC Degradation"       – pattern closely matches HPC-only reference
-          "HPC + Fan Degradation" – pattern closely matches HPC+Fan reference
-          "Pattern Ambiguous"     – two candidates are too close to distinguish
-          "Insufficient Signal"   – overall similarity below reliable threshold
-          None                    – no SHAP data or signatures not loaded
+        "HPC Degradation"       – for FD001/FD002, pattern signal sufficient
+        "HPC + Fan Degradation" – for FD003/FD004, pattern signal sufficient
+        "Insufficient Signal"   – similarity below floor threshold
+        None                    – no SHAP data or signatures not loaded
     pattern_similarity : float or None
-        Cosine similarity to the best-matching reference (0–1).
+        Cosine similarity to the matching reference (0–1).
 
     Notes
     ─────
     This method identifies similarity to a known degradation profile.
-    It does NOT directly detect or classify a confirmed fault.  A high
-    similarity score indicates the model is attending to sensor groups
-    consistent with a known degradation mode; physical confirmation
-    requires inspection.
+    It does NOT directly detect or classify a confirmed fault.
     """
     if not shap_data or not _REF_VECS:
         return None, None
 
-    # ── Build current importance vector (use |score| — magnitude only) ──────
+    # ── Fault mode is fixed by model_type ────────────────────────────────────
+    _FAULT_LABELS = {
+        "FD001": "HPC Degradation",
+        "FD002": "HPC Degradation",
+        "FD003": "HPC + Fan Degradation",
+        "FD004": "HPC + Fan Degradation",
+    }
+    fault_label = _FAULT_LABELS.get(model_type)
+    if not fault_label:
+        return None, None
+
+    # ── Select the matching reference for this model_type ────────────────────
+    ref_key = model_type  # compare against own dataset's reference directly
+    if ref_key not in _REF_VECS:
+        # Fallback: use the other dataset in the same condition group
+        fallback = {"FD001": "FD003", "FD003": "FD001", "FD002": "FD004", "FD004": "FD002"}
+        ref_key = fallback.get(model_type)
+        if not ref_key or ref_key not in _REF_VECS:
+            return None, None
+
+    # ── Build current importance vector (magnitude only) ─────────────────────
     shap_map = {d["sensor"]: abs(d["score"]) for d in shap_data}
     current_vec = np.array(
         [shap_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64
@@ -892,47 +933,14 @@ def _detect_degradation_type(
         return "Insufficient Signal", 0.0
     current_vec_norm = current_vec / norm
 
-    # ── Select candidate references for this model_type ──────────────────────
-    # Single-condition datasets compare against FD001/FD003 signatures only.
-    # Multi-condition datasets compare against FD002/FD004 signatures only.
-    # Comparing across groups is not meaningful because the SHAP magnitude
-    # distributions differ structurally between single and multi-condition data.
-    if model_type in ("FD001", "FD003"):
-        candidates = [k for k in _REF_VECS if k in ("FD001", "FD003")]
-    else:
-        candidates = [k for k in _REF_VECS if k in ("FD002", "FD004")]
+    # ── Cosine similarity against this model's own reference ─────────────────
+    similarity = float(np.dot(current_vec_norm, _REF_VECS[ref_key]))
 
-    if not candidates:
-        # Signatures for this group not loaded — fall back gracefully
-        print(f"[SIM][WARN] No reference signatures available for {model_type} group.")
-        return None, None
+    # ── Single-threshold decision: is the signal strong enough to report? ────
+    if similarity < _FLOOR_THRESHOLD:
+        return "Insufficient Signal", round(similarity, 4)
 
-    # ── Cosine similarity to each candidate ──────────────────────────────────
-    similarities = {
-        name: float(np.dot(current_vec_norm, _REF_VECS[name]))
-        for name in candidates
-    }
-    ranked = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
-    best_name,   best_score   = ranked[0]
-    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-    margin       = best_score - second_score
-
-    # ── Confidence: similarity weighted by decisiveness of margin ─────────────
-    # sigmoid maps margin from [0, ambiguity_thresh] → [~0.5, ~0.98].
-    # Ambiguous matches are penalised smoothly rather than hard-clipped.
-    margin_factor = _sigmoid((margin / _AMBIGUITY_THRESHOLD - 1.0) * 4.0)
-    confidence    = round(float(best_score * margin_factor), 4)
-
-    # ── Three-zone decision ───────────────────────────────────────────────────
-    if best_score < _FLOOR_THRESHOLD:
-        return "Insufficient Signal", round(float(best_score), 4)
-
-    if margin < _AMBIGUITY_THRESHOLD:
-        # Both candidates are too similar — report ambiguity rather than guess
-        return "Pattern Ambiguous", round(float(best_score), 4)
-
-    pattern_label = _SIGNATURES[best_name]["fault_mode"]
-    return pattern_label, confidence
+    return fault_label, round(similarity, 4)
 
 def _fetch_thresholds(supabase) -> tuple[float, float]:
     """

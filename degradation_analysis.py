@@ -18,6 +18,7 @@ import os
 import base64
 import traceback
 from datetime import datetime
+from pathlib import Path
 from assets.components import (build_sidebar, build_topbar, icon_shap)
 
 # ─────────────────────────────────────────────
@@ -49,11 +50,31 @@ _DA_SIGNATURES:  dict = {}
 _DA_REF_VECS:    dict = {}
 
 def _load_da_signatures() -> None:
-    """Load reference signatures into module-level caches for this page."""
+    """
+    Load reference signatures into module-level caches for this page.
+
+    Resolution order:
+      1. Local  data/shap_signatures.json
+      2. Supabase Storage bucket "SHAP"
+    """
     global _DA_SIGNATURES, _DA_REF_VECS
-    sig_path = os.path.join(os.path.dirname(__file__), "data", "shap_signatures.json")
-    if not os.path.exists(sig_path):
+    sig_path = Path(os.path.join(os.path.dirname(__file__), "data", "shap_signatures.json"))
+
+    if not sig_path.exists():
+        try:
+            from storage_utils import _get_supabase_admin
+            sb = _get_supabase_admin()
+            if sb:
+                data = sb.storage.from_("SHAP").download("shap_signatures.json")
+                sig_path.parent.mkdir(parents=True, exist_ok=True)
+                sig_path.write_bytes(data)
+                print(f"[DEGRAD] Downloaded shap_signatures.json from Storage → {sig_path}")
+        except Exception as e:
+            print(f"[DEGRAD] Could not download shap_signatures.json: {e}")
+
+    if not sig_path.exists():
         return
+
     try:
         with open(sig_path, encoding="utf-8") as f:
             _DA_SIGNATURES = _json.load(f)
@@ -685,10 +706,6 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
         deg_color = "#ff4d4d"
         deg_dot_color = "#ff4d4d"
         deg_dot_shadow = "0 0 8px rgba(255,77,77,0.6)"
-    elif degradation_type == "Pattern Ambiguous":
-        deg_color = "#f5a623"
-        deg_dot_color = "#f5a623"
-        deg_dot_shadow = "0 0 8px rgba(245,166,35,0.6)"
     else:
         deg_color = "rgba(168,212,255,0.5)"
         deg_dot_color = "rgba(168,212,255,0.3)"
@@ -1183,9 +1200,9 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 break
         rul_display = str(int(round(latest_rul))) if latest_rul is not None else "—"
 
-        # ── Fault mode label — surface ambiguous/insufficient states clearly ──
-        if degradation_type in ("Pattern Ambiguous", "Insufficient Signal"):
-            fault_label = degradation_type.upper()
+        # ── Fault mode label — surface insufficient state clearly ──
+        if degradation_type == "Insufficient Signal":
+            fault_label = "INSUFFICIENT SIGNAL"
         elif degradation_type:
             fault_label = degradation_type.upper()
         else:
@@ -1258,16 +1275,11 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             pass
 
         # Don't generate if pattern is ambiguous, insufficient, or absent
-        if not degradation_type or degradation_type in ("Pattern Ambiguous", "Insufficient Signal"):
-            if degradation_type == "Pattern Ambiguous":
-                return (
-                    "The SHAP importance pattern is similar to both HPC-only and "
-                    "HPC + Fan degradation profiles. Continue monitoring for 5–10 "
-                    "more cycles to allow the pattern to become more distinct."
-                )
+        if not degradation_type or degradation_type == "Insufficient Signal":
             return (
                 "No degradation pattern has been identified for this engine. "
-                "The engine is operating within normal parameters."
+                "The engine is operating within normal parameters or the signal "
+                "is not yet strong enough to report."
             )
 
         if not latest_shap:
