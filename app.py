@@ -750,12 +750,20 @@ def filter_dev_orgs(search_value, filter_value, org_data):
                 "background": "#0d1e3a",
                 "border": "1px solid rgba(74,158,255,0.2)",
                 "borderRadius": "14px",
-                "padding": "20px",
+                "padding": "20px 20px 12px 20px",
                 "marginBottom": "20px",
+                "minWidth": "0",
+                "width": "100%",
+                "boxSizing": "border-box",
+                "overflow": "hidden",
             },
             children=[
                 html.Div(
-                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "14px"},
+                    style={
+                        "display": "flex", "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "marginBottom": "12px",
+                    },
                     children=[
                         html.Div(
                             style={"display": "flex", "alignItems": "center", "gap": "10px"},
@@ -768,7 +776,16 @@ def filter_dev_orgs(search_value, filter_value, org_data):
                     ]
                 ),
                 html.Div(
-                    style={"display": "flex", "gap": "14px", "overflowX": "auto", "paddingBottom": "8px"},
+                    className="engine-card-row",
+                    style={
+                        "display": "flex",
+                        "flexWrap": "nowrap",
+                        "gap": "14px",
+                        "overflowX": "auto",
+                        "overflowY": "hidden",
+                        "paddingBottom": "8px",
+                        "WebkitOverflowScrolling": "touch",
+                    },
                     children=[engine_card(e) for e in org["engines"]] if org.get("engines") else [
                         html.Div("No engines registered.", style={"color": "rgba(255,255,255,0.5)", "fontSize": "13px", "padding": "10px 0"})
                     ]

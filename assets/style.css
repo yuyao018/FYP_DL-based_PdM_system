@@ -554,3 +554,19 @@ input[type="number"] {
 ::-webkit-scrollbar-corner {
     background: transparent;
 }
+
+/* ── Horizontal scrollbar for engine card rows (dev dashboard) ── */
+.engine-card-row::-webkit-scrollbar {
+  height: 6px;
+}
+.engine-card-row::-webkit-scrollbar-track {
+  background: rgba(74, 158, 255, 0.05);
+  border-radius: 3px;
+}
+.engine-card-row::-webkit-scrollbar-thumb {
+  background: rgba(74, 158, 255, 0.3);
+  border-radius: 3px;
+}
+.engine-card-row::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 158, 255, 0.55);
+}

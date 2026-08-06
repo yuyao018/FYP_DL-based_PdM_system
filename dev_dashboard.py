@@ -226,15 +226,26 @@ def create_dev_dashboard_layout(supabase):
                 "background": "#0d1e3a",
                 "border": "1px solid rgba(74,158,255,0.2)",
                 "borderRadius": "14px",
-                "padding": "20px 20px 8px 20px",
+                "padding": "20px 20px 12px 20px",
                 "marginBottom": "20px",
+                "minWidth": "0",        # prevent flex child from overflowing its parent
+                "width": "100%",        # stay within the page column
+                "boxSizing": "border-box",
+                "overflow": "hidden",   # clip anything that escapes
             },
             children=[
+                # ── Org header (never scrolls) ──
                 html.Div(
-                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "14px"},
+                    style={
+                        "display": "flex", "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "marginBottom": "12px",
+                    },
                     children=[
-                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"},
-                                 children=[org_icon(), html.Span(org["name"], style={"color": "white", "fontWeight": "700", "fontSize": "17px"})]),
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                            children=[org_icon(), html.Span(org["name"], style={"color": "white", "fontWeight": "700", "fontSize": "17px"})]
+                        ),
                         html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px"}, children=[
                             html.Span(f"{org.get('user_count', 0)} user{'s' if org.get('user_count', 0) != 1 else ''}",
                                       style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
@@ -243,10 +254,21 @@ def create_dev_dashboard_layout(supabase):
                         ]),
                     ]
                 ),
+                # ── Engine card strip — scrolls horizontally inside the fixed-width container ──
                 html.Div(
-                    style={"display": "flex", "gap": "14px", "overflowX": "auto", "paddingBottom": "8px"},
+                    className="engine-card-row",
+                    style={
+                        "display": "flex",
+                        "flexWrap": "nowrap",
+                        "gap": "14px",
+                        "overflowX": "auto",
+                        "overflowY": "hidden",
+                        "paddingBottom": "8px",
+                        "WebkitOverflowScrolling": "touch",
+                    },
                     children=[engine_card(e) for e in org["engines"]] if org["engines"] else [
-                        html.Div("No engines registered.", style={"color": "rgba(255,255,255,0.5)", "fontSize": "13px", "padding": "10px 0"})
+                        html.Div("No engines registered.",
+                                 style={"color": "rgba(255,255,255,0.5)", "fontSize": "13px", "padding": "10px 0"})
                     ]
                 ),
             ]
@@ -383,11 +405,11 @@ def create_dev_dashboard_layout(supabase):
 
                             # ── Main content: Organizations + Recent Activities ──
                             html.Div(
-                                style={"display": "flex", "gap": "24px"},
+                                style={"display": "flex", "gap": "24px", "minWidth": "0"},
                                 children=[
                                     # Left: Organizations list
                                     html.Div(
-                                        style={"flex": "3"},
+                                        style={"flex": "3", "minWidth": "0", "overflow": "hidden"},
                                         children=[
                                             html.Div(
                                                 style={"display": "flex", "alignItems": "center", "gap": "12px", "marginBottom": "20px"},
@@ -426,6 +448,7 @@ def create_dev_dashboard_layout(supabase):
                                             ),
                                             html.Div(
                                                 id="dev-org-list",
+                                                style={"minWidth": "0", "width": "100%"},
                                                 children=[org_row(o) for o in org_data] if org_data else [
                                                     html.Div("No organizations found.", style={
                                                         "color": "rgba(255,255,255,0.5)", "fontSize": "14px",
