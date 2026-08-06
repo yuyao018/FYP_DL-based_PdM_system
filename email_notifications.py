@@ -12,7 +12,7 @@ Configuration (add to .env):
     EMAIL_SENDER=your-sender@gmail.com
     EMAIL_PASSWORD=your-app-password          # Gmail App Password
     EMAIL_RECIPIENTS=a@co.com,b@co.com        # comma-separated
-    DASHBOARD_URL=http://localhost:8050        # base URL for the Open Dashboard button
+    DASHBOARD_URL=https://fyp-dl-based-pdm-system.onrender.com  # base URL for the Open Dashboard button
     EMAIL_DAILY_HOUR=9                        # hour (0-23) for daily report, default 9
     SMTP_HOST=smtp.gmail.com                  # optional, default smtp.gmail.com
     SMTP_PORT=587                             # optional, default 587
@@ -191,7 +191,7 @@ def _fmt_date(dt: Optional[datetime] = None) -> str:
 
 
 def _daily_report_html(summary: dict) -> str:
-    login_url = _cfg("DASHBOARD_URL", "http://localhost:8050") + "/login"
+    login_url = _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com") + "/login"
     date_str = _fmt_date()
 
     return f"""<!DOCTYPE html>
@@ -262,7 +262,7 @@ def _threshold_alert_html(
     triggered_at: Optional[datetime] = None,
 ) -> str:
     dashboard_url = (
-        _cfg("DASHBOARD_URL", "http://localhost:8050")
+        _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com")
         + "/login"
     )
     date_str = _fmt_date(triggered_at)
