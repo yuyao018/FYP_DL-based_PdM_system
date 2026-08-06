@@ -743,85 +743,196 @@ def _compute_feature_importance(model, X: np.ndarray) -> list[dict]:
 THRESHOLD_REFRESH_CYCLES = 10
 
 # ─────────────────────────────────────────────
-#  DEGRADATION TYPE DETECTION (Rule-based + SHAP)
+#  DEGRADATION PATTERN MATCHING (SHAP cosine similarity)
 # ─────────────────────────────────────────────
+#
+# Replaces the old rule-based sign-matching approach.
+#
+# Method
+# ──────
+# At startup (and after each model retrain), generate_shap_signatures.py
+# writes data/shap_signatures.json, which contains one mean |SHAP| vector
+# per C-MAPSS dataset, computed only from degraded-phase predictions
+# (predicted_rul ≤ warn_threshold).
+#
+# At inference, the current window's |SHAP| importance vector is compared
+# against the candidate reference vectors using cosine similarity.  The
+# closest match determines the degradation profile label; the similarity
+# score becomes the confidence value.
+#
+# Three-zone decision
+# ───────────────────
+#  best_similarity < FLOOR_THRESHOLD   → "Insufficient Signal"
+#  margin < AMBIGUITY_THRESHOLD        → "Pattern Ambiguous"
+#  otherwise                           → label of best-matching reference
+#
+# The result is stored as (pattern_label, pattern_similarity) where
+# pattern_similarity is the cosine similarity to the best-matching reference.
+# Neither value claims that a fault has been detected; the terminology
+# deliberately reflects that we are identifying similarity to a known
+# degradation profile, not classifying a confirmed fault.
 
-# Sensor groups for fault isolation
-_HPC_SENSORS = {"T30", "P30", "phi", "Ps30", "htBleed", "T24"}
-_FAN_SENSORS = {"Nf", "NRf", "BPR", "Nc", "NRc"}
+# Sensor ordering — must match SENSOR_SHORT in _compute_feature_importance
+_PATTERN_SENSORS = [
+    "T24", "T30", "T50", "P30", "Nf",  "Nc",
+    "Ps30", "phi", "NRf", "NRc", "BPR", "htBleed", "W31", "W32",
+]
+
+# Similarity thresholds (tunable)
+_FLOOR_THRESHOLD     = 0.65   # below this → "Insufficient Signal"
+_AMBIGUITY_THRESHOLD = 0.08   # margin below this → "Pattern Ambiguous"
+
+# Runtime caches populated by _load_shap_signatures()
+_SIGNATURES:  dict = {}   # raw JSON content
+_REF_VECS:    dict = {}   # pre-L2-normalised numpy vectors keyed by dataset name
+
+_SIGNATURES_PATH = Path(os.path.join(_BASE_DIR, "data", "shap_signatures.json"))
 
 
-def _detect_degradation_type(model_type: str, shap_data: list, pred_rul: float,
-                              warn_thresh: float) -> str | None:
+def _load_shap_signatures(path: Path = _SIGNATURES_PATH) -> None:
     """
-    Determine degradation fault mode using SHAP-based confidence scoring.
-
-    Logic:
-    - For each candidate fault mode, compute a confidence score based on how
-      well the SHAP sign pattern matches the expected sensor signature.
-    - Report the fault mode with the highest confidence, as long as it exceeds
-      a minimum confidence threshold (30%).
-    - This allows early degradation detection BEFORE RUL drops to warning level.
-
-    FD001/FD003 → only HPC degradation possible (check HPC confidence)
-    FD002/FD004 → HPC, Fan, or both; pick whichever has highest confidence
-
-    Returns: "HPC Degradation", "Fan Degradation", "HPC + Fan Degradation", or None
+    Load reference SHAP signatures from JSON into module-level caches.
+    Called once at module import.  Safe to call again after retraining
+    (re-loads the file and refreshes the cache).
     """
-    if not shap_data:
-        # No SHAP data yet — can't determine fault mode
-        return None
+    global _SIGNATURES, _REF_VECS
+    if not path.exists():
+        print(
+            f"[SIM][WARN] shap_signatures.json not found at {path}. "
+            "Degradation pattern matching is unavailable until "
+            "generate_shap_signatures.py has been run."
+        )
+        _SIGNATURES = {}
+        _REF_VECS   = {}
+        return
 
-    MIN_CONFIDENCE = 0.30  # minimum confidence to report a fault mode
+    try:
+        with open(path, encoding="utf-8") as f:
+            _SIGNATURES = json.load(f)
+    except Exception:
+        print(f"[SIM][ERROR] Failed to load {path}:\n{traceback.format_exc(limit=2)}")
+        _SIGNATURES = {}
+        _REF_VECS   = {}
+        return
 
-    # Expected SHAP sign patterns per fault mode (negative = drives RUL down)
-    hpc_expected = {"T30": -1, "P30": -1, "phi": -1, "Ps30": -1, "htBleed": -1, "T24": -1}
-    fan_expected = {"Nf": -1, "NRf": -1, "BPR": -1, "Nc": -1, "NRc": -1}
+    _REF_VECS = {}
+    for name, sig in _SIGNATURES.items():
+        mean_map = sig.get("mean_abs_shap", {})
+        vec = np.array([mean_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64)
+        norm = np.linalg.norm(vec)
+        _REF_VECS[name] = vec / (norm + 1e-9)
 
-    def _compute_confidence(expected_signs: dict) -> float:
-        """Compute confidence for a given fault signature against current SHAP data."""
-        shap_map = {s["sensor"]: s["score"] for s in shap_data}
-        weighted_matches = 0.0
-        total_weight = 0.0
-        for sensor, expected_sign in expected_signs.items():
-            score = shap_map.get(sensor, 0.0)
-            magnitude = abs(score)
-            total_weight += magnitude
-            if magnitude > 0.01:
-                actual_sign = -1 if score < 0 else 1
-                if actual_sign == expected_sign:
-                    weighted_matches += magnitude
-        if total_weight == 0:
-            return 0.0
-        return weighted_matches / total_weight
+    print(f"[SIM] Loaded SHAP reference signatures for: {list(_SIGNATURES.keys())}")
 
+
+# Load at module import
+_load_shap_signatures()
+
+
+def _sigmoid(x: float) -> float:
+    """Numerically stable sigmoid."""
+    if x >= 0:
+        return 1.0 / (1.0 + np.exp(-x))
+    e = np.exp(x)
+    return e / (1.0 + e)
+
+
+def _detect_degradation_type(
+    model_type: str,
+    shap_data: list,
+    pred_rul: float,
+    warn_thresh: float,
+) -> tuple[str | None, float | None]:
+    """
+    Identify which known degradation profile the current SHAP importance
+    pattern most closely resembles, using cosine similarity against
+    dataset-specific reference signatures.
+
+    Parameters
+    ----------
+    model_type  : one of "FD001", "FD002", "FD003", "FD004"
+    shap_data   : list of {"sensor": str, "score": float} dicts (current cycle)
+    pred_rul    : predicted RUL for this cycle (not used in matching, kept for
+                  API compatibility)
+    warn_thresh : warning threshold (not used in matching, kept for API
+                  compatibility)
+
+    Returns
+    -------
+    (pattern_label, pattern_similarity)
+
+    pattern_label : str or None
+        One of:
+          "HPC Degradation"       – pattern closely matches HPC-only reference
+          "HPC + Fan Degradation" – pattern closely matches HPC+Fan reference
+          "Pattern Ambiguous"     – two candidates are too close to distinguish
+          "Insufficient Signal"   – overall similarity below reliable threshold
+          None                    – no SHAP data or signatures not loaded
+    pattern_similarity : float or None
+        Cosine similarity to the best-matching reference (0–1).
+
+    Notes
+    ─────
+    This method identifies similarity to a known degradation profile.
+    It does NOT directly detect or classify a confirmed fault.  A high
+    similarity score indicates the model is attending to sensor groups
+    consistent with a known degradation mode; physical confirmation
+    requires inspection.
+    """
+    if not shap_data or not _REF_VECS:
+        return None, None
+
+    # ── Build current importance vector (use |score| — magnitude only) ──────
+    shap_map = {d["sensor"]: abs(d["score"]) for d in shap_data}
+    current_vec = np.array(
+        [shap_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64
+    )
+    norm = np.linalg.norm(current_vec)
+    if norm < 1e-9:
+        return "Insufficient Signal", 0.0
+    current_vec_norm = current_vec / norm
+
+    # ── Select candidate references for this model_type ──────────────────────
+    # Single-condition datasets compare against FD001/FD003 signatures only.
+    # Multi-condition datasets compare against FD002/FD004 signatures only.
+    # Comparing across groups is not meaningful because the SHAP magnitude
+    # distributions differ structurally between single and multi-condition data.
     if model_type in ("FD001", "FD003"):
-        # Only HPC fault possible — check confidence
-        hpc_conf = _compute_confidence(hpc_expected)
-        if hpc_conf >= MIN_CONFIDENCE:
-            return "HPC Degradation"
-        return None
+        candidates = [k for k in _REF_VECS if k in ("FD001", "FD003")]
+    else:
+        candidates = [k for k in _REF_VECS if k in ("FD002", "FD004")]
 
-    if model_type in ("FD002", "FD004"):
-        # Both fault modes possible — compute confidence for each
-        hpc_conf = _compute_confidence(hpc_expected)
-        fan_conf = _compute_confidence(fan_expected)
-        combined_expected = {**hpc_expected, **fan_expected}
-        combined_conf = _compute_confidence(combined_expected)
+    if not candidates:
+        # Signatures for this group not loaded — fall back gracefully
+        print(f"[SIM][WARN] No reference signatures available for {model_type} group.")
+        return None, None
 
-        # Pick the highest confidence mode
-        best_conf = max(hpc_conf, fan_conf, combined_conf)
-        if best_conf < MIN_CONFIDENCE:
-            return None
+    # ── Cosine similarity to each candidate ──────────────────────────────────
+    similarities = {
+        name: float(np.dot(current_vec_norm, _REF_VECS[name]))
+        for name in candidates
+    }
+    ranked = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+    best_name,   best_score   = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin       = best_score - second_score
 
-        if combined_conf >= hpc_conf and combined_conf >= fan_conf and hpc_conf >= 0.25 and fan_conf >= 0.25:
-            return "HPC + Fan Degradation"
-        elif hpc_conf >= fan_conf:
-            return "HPC Degradation"
-        else:
-            return "Fan Degradation"
+    # ── Confidence: similarity weighted by decisiveness of margin ─────────────
+    # sigmoid maps margin from [0, ambiguity_thresh] → [~0.5, ~0.98].
+    # Ambiguous matches are penalised smoothly rather than hard-clipped.
+    margin_factor = _sigmoid((margin / _AMBIGUITY_THRESHOLD - 1.0) * 4.0)
+    confidence    = round(float(best_score * margin_factor), 4)
 
-    return None
+    # ── Three-zone decision ───────────────────────────────────────────────────
+    if best_score < _FLOOR_THRESHOLD:
+        return "Insufficient Signal", round(float(best_score), 4)
+
+    if margin < _AMBIGUITY_THRESHOLD:
+        # Both candidates are too similar — report ambiguity rather than guess
+        return "Pattern Ambiguous", round(float(best_score), 4)
+
+    pattern_label = _SIGNATURES[best_name]["fault_mode"]
+    return pattern_label, confidence
 
 def _fetch_thresholds(supabase) -> tuple[float, float]:
     """
@@ -1051,8 +1162,8 @@ def _simulation_loop(
                     None
                 )
 
-                # Detect specific degradation type via model_type + SHAP
-                degradation_type = _detect_degradation_type(
+                # ── Degradation pattern matching (cosine similarity vs. reference signatures) ──
+                pattern_label, pattern_similarity = _detect_degradation_type(
                     model_type, shap_data, pred_rul, warn_thresh
                 )
 
@@ -1075,9 +1186,16 @@ def _simulation_loop(
                     _supabase_execute(
                         lambda _d=row_data: supabase.table("rul_predictions").insert(_d).execute()
                     )
-                    _eng_update = {"condition_status": new_status}
-                    if degradation_type:
-                        _eng_update["degradation_type"] = degradation_type
+
+                    # Write pattern label and similarity score to engines table.
+                    # "Pattern Ambiguous" and "Insufficient Signal" are stored as-is
+                    # so the dashboard can display them with appropriate visual cues.
+                    _eng_update: dict = {"condition_status": new_status}
+                    if pattern_label is not None:
+                        _eng_update["degradation_type"]    = pattern_label
+                    if pattern_similarity is not None:
+                        _eng_update["degradation_confidence"] = round(float(pattern_similarity), 4)
+
                     _supabase_execute(
                         lambda _u=_eng_update: supabase.table("engines")
                             .update(_u)
@@ -1109,7 +1227,8 @@ def _simulation_loop(
 
                     print(
                         f"[SIM] engine={engine_db_id} cycle={cycle_num} "
-                        f"pred_rul={pred_rul:.1f} status={new_status}"
+                        f"pred_rul={pred_rul:.1f} status={new_status} "
+                        f"pattern={pattern_label!r} similarity={pattern_similarity}"
                     )
                 except Exception:
                     print(f"[SIM][ERROR] Insert/update failed at cycle {cycle_num}:\n{traceback.format_exc(limit=2)}")

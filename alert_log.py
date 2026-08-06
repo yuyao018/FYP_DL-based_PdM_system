@@ -15,23 +15,23 @@ def _sample_alerts(engine_id="09"):
     base_time = datetime(2026, 4, 26, 14, 36)
     rows = [
         {"alert_no": "05", "timestamp": base_time, "severity": "critical", "rul": 20,
-         "fault_type": "HPC Degradation",
+         "degradation_pattern": "HPC Degradation",
          "shap": [("T30", -0.54), ("phi", -0.42), ("P30", -0.30), ("Nf", 0.15)],
          "rul_progression": [80, 60, 45, 30, 20]},
         {"alert_no": "05", "timestamp": base_time, "severity": "warning", "rul": 45,
-         "fault_type": "HPC Degradation",
+         "degradation_pattern": "HPC Degradation",
          "shap": [("T30", -0.41), ("phi", -0.31), ("P30", -0.22), ("Nf", 0.10)],
          "rul_progression": [90, 75, 60, 45]},
         {"alert_no": "05", "timestamp": base_time, "severity": "warning", "rul": 50,
-         "fault_type": "HPC Degradation",
+         "degradation_pattern": "HPC Degradation",
          "shap": [("T30", -0.38), ("phi", -0.28), ("P30", -0.20), ("Nf", 0.09)],
          "rul_progression": [95, 80, 65, 50]},
         {"alert_no": "05", "timestamp": base_time, "severity": "warning", "rul": 55,
-         "fault_type": "HPC Degradation",
+         "degradation_pattern": "HPC Degradation",
          "shap": [("T30", -0.35), ("phi", -0.26), ("P30", -0.18), ("Nf", 0.08)],
          "rul_progression": [100, 85, 70, 55]},
         {"alert_no": "05", "timestamp": base_time, "severity": "warning", "rul": 60,
-         "fault_type": "HPC Degradation",
+         "degradation_pattern": "HPC Degradation",
          "shap": [("T30", -0.33), ("phi", -0.24), ("P30", -0.16), ("Nf", 0.07)],
          "rul_progression": [105, 90, 75, 60]},
     ]
@@ -291,8 +291,8 @@ def alert_detail_panel(alert):
             style={"display": "flex", "justifyContent": "space-between",
                    "padding": "8px 0", "marginBottom": "22px"},
             children=[
-                html.Span("Fault Type", style={"color": "#a8d4ff", "fontSize": "13px"}),
-                html.Span(alert["fault_type"], style={"color": "white", "fontSize": "13px",
+                html.Span("Degradation Pattern", style={"color": "#a8d4ff", "fontSize": "13px"}),
+                html.Span(alert["degradation_pattern"], style={"color": "white", "fontSize": "13px",
                                                         "fontWeight": "700"}),
             ]
         ),
@@ -587,7 +587,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                 alert_status = (log.get("status") or "active").lower().strip()
 
                 current_cycle = eng.get("current_cycle") or 0
-                fault_type = eng.get("degradation_type") or "Unknown"
+                degradation_pattern = eng.get("degradation_type") or "Unknown"
                 llm_explanation = eng.get("llm_explanation") or ""
 
                 triggered_at = log.get("triggered_at")
@@ -627,7 +627,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                     "severity": severity,
                     "status": alert_status,
                     "rul": latest_rul,
-                    "fault_type": fault_type,
+                    "degradation_pattern": degradation_pattern,
                     "llm_explanation": llm_explanation,
                     "shap": [],
                     "rul_progression": rul_progression,

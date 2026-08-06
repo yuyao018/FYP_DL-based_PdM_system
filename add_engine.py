@@ -674,6 +674,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 "model_type":       model_type,
                 "current_cycle":    0,
                 "condition_status": "healthy",
+                "is_deleted":       True,   # True = active (convention matches rest of codebase)
                 "created_at":       "now()",
             }
             if org_id:

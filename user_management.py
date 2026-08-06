@@ -8,7 +8,7 @@ from assets.components import (build_admin_sidebar, build_topbar)
 PERMISSION_MATRIX = [
     {"page": "Overview", "desc": "Engine status, RUL cards, alerts", "sme": True, "admin": True},
     {"page": "Sensor Trends", "desc": "Multi-sensor chart, normalize toggle", "sme": True, "admin": True},
-    {"page": "Degradation Analysis", "desc": "SHAP charts, fault mode detection", "sme": True, "admin": True},
+    {"page": "Degradation Analysis", "desc": "SHAP charts, degradation pattern matching", "sme": True, "admin": True},
     {"page": "Alert Log", "desc": "View alerts", "sme": True, "admin": True},
     {"page": "Acknowledge / Resolve Alerts", "desc": "Change alert status", "sme": True, "admin": True},
     {"page": "Upload .h5 Model", "desc": "Replace active prediction model", "sme": False, "admin": True},

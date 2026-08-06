@@ -646,7 +646,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                             style={"display": "flex", "alignItems": "center", "justifyContent": "center",
                                    "gap": "6px", "marginTop": "6px"},
                             children=[
-                                html.Span("Confidence:", style={
+                                html.Span("Similarity:", style={
                                     "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
                                 }),
                                 html.Span(id="overview-confidence-score", children="—", style={
@@ -923,7 +923,7 @@ def register_overview_callbacks(app, supabase=None):
     def refresh_rul_chart(n_intervals, engine_db_id):
         import json as _json
         from engine_simulation_manager import WINDOW_SIZES, is_running as _sim_is_running
-        from degradation_analysis import compute_confidence_score
+        from degradation_analysis import compute_pattern_similarity
         MAX_LIFE = 130
         WARN_THRESH = 62
         CRIT_THRESH = 30
@@ -1053,24 +1053,36 @@ def register_overview_callbacks(app, supabase=None):
         rul_display = str(int(round(latest_pred_rul)))
         degradation = max(0, min(100, round((1 - latest_pred_rul / MAX_LIFE) * 100)))
 
-        # Fetch degradation_type from engine for live display
+        # Fetch degradation_type and stored similarity from engine for live display
         _deg_type = None
+        _stored_similarity = None
         if supabase and engine_db_id:
             try:
                 _dt_resp = supabase.table("engines") \
-                    .select("degradation_type") \
+                    .select("degradation_type, degradation_confidence") \
                     .eq("id", engine_db_id) \
                     .single() \
                     .execute()
                 if _dt_resp.data:
                     _deg_type = _dt_resp.data.get("degradation_type")
+                    _stored_similarity = _dt_resp.data.get("degradation_confidence")
             except Exception:
                 pass
 
         label_text  = _deg_type if _deg_type else "No Degradation Detected"
+        # Tone down ambiguous/insufficient states — show them without alarming colour
         label_color = "#4a9eff"
         label_bg    = "rgba(74,158,255,0.12)"
         label_bdr   = "#4a9eff"
+        if _deg_type == "Pattern Ambiguous":
+            label_color = "#f5a623"
+            label_bg    = "rgba(245,166,35,0.10)"
+            label_bdr   = "#f5a623"
+        elif _deg_type == "Insufficient Signal":
+            label_text  = "Monitoring…"
+            label_color = "rgba(168,212,255,0.5)"
+            label_bg    = "rgba(74,158,255,0.06)"
+            label_bdr   = "rgba(74,158,255,0.2)"
 
         # Color for RUL number and degradation % based on thresholds
         if latest_pred_rul > WARN_THRESH:
@@ -1107,8 +1119,10 @@ def register_overview_callbacks(app, supabase=None):
         else:
             live_status = "healthy"
 
-        # Compute confidence score for display
-        _confidence = compute_confidence_score(_deg_type, latest_shap) if latest_shap and _deg_type else None
+        # Pattern similarity score for display
+        _confidence = compute_pattern_similarity(
+            _deg_type, latest_shap, stored_similarity=_stored_similarity
+        ) if _deg_type else None
         _confidence_display = f"{_confidence:.0%}" if _confidence is not None else "—"
 
         return (

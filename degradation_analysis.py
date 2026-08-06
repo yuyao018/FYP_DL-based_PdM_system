@@ -2,7 +2,7 @@
 Degradation Analysis page — SHAP beeswarm, LLM explanation, SHAP trend over cycles.
 
 Replaces the former "Explainability AI" page.  Provides:
-  • Header: engine selector, detected degradation type, confidence score
+  • Header: engine selector, detected degradation pattern, pattern similarity score
   • Row 1 col 1: SHAP beeswarm-style horizontal bar chart (feature impact on RUL)
   • Row 1 col 2: LLM-generated natural language explanation (Groq Llama)
   • Row 2: SHAP value trend line chart for top sensors over cycles
@@ -21,86 +21,123 @@ from datetime import datetime
 from assets.components import (build_sidebar, build_topbar, icon_shap)
 
 # ─────────────────────────────────────────────
-#  CONFIDENCE SCORE COMPUTATION
+#  PATTERN SIMILARITY SCORE (cosine-based)
 # ─────────────────────────────────────────────
-# NOTE — Open Item:
-# The fault-mode detector is rule-based (rolling slope + reversal detection
-# across s7, s9, s12, s14, BPR), not a classifier with native probability
-# output.  The confidence_score below is a *derived heuristic*:
 #
-#   confidence = proportion of fault-defining sensors whose slope direction
-#                and SHAP sign match the expected signature for that fault mode,
-#                weighted by how far each SHAP score deviates from zero.
+# The simulation loop now stores both the pattern label ("HPC Degradation",
+# "HPC + Fan Degradation", "Pattern Ambiguous", "Insufficient Signal") and
+# the cosine similarity score (pattern_similarity) in the engines table.
 #
-# This is a V1 approximation.  Future work should consider:
-#   - Rolling-slope magnitude vs. threshold ratio (continuous signal)
-#   - Reversal timing consistency across correlated sensors
-#   - Ensemble voting across multiple cycle windows
+# compute_pattern_similarity() prefers the stored value that was computed at
+# inference time.  It recomputes from SHAP data only when the stored value is
+# absent (e.g. for predictions made before the pipeline upgrade).
 #
-# The function below operates on the SHAP data already computed per cycle
-# (available in rul_predictions.shap_values).  A more robust implementation
-# would also consume the raw sensor time-series slopes, which requires
-# fetching additional history and computing rolling regressions.  That is
-# flagged as a follow-on design task.
+# Terminology note:
+#   "pattern_similarity" / "similarity score" is used throughout instead of
+#   "confidence" or "fault detection confidence" because this method identifies
+#   similarity to a known degradation profile — it does not confirm a fault.
 
-# Expected SHAP sign patterns per fault mode (negative = drives RUL down)
-_HPC_EXPECTED_SIGNS = {
-    "T30": -1, "P30": -1, "phi": -1, "Ps30": -1, "htBleed": -1, "T24": -1,
-}
-_FAN_EXPECTED_SIGNS = {
-    "Nf": -1, "NRf": -1, "BPR": -1, "Nc": -1, "NRc": -1,
-}
+# Sensor ordering must match _PATTERN_SENSORS in engine_simulation_manager.py
+_PATTERN_SENSORS = [
+    "T24", "T30", "T50", "P30", "Nf",  "Nc",
+    "Ps30", "phi", "NRf", "NRc", "BPR", "htBleed", "W31", "W32",
+]
 
-_HPC_SENSORS = set(_HPC_EXPECTED_SIGNS.keys())
-_FAN_SENSORS = set(_FAN_EXPECTED_SIGNS.keys())
+# Reference signatures are shared via the same JSON file used by the sim loop.
+# Load them once here for the fallback recompute path.
+_DA_SIGNATURES:  dict = {}
+_DA_REF_VECS:    dict = {}
+
+def _load_da_signatures() -> None:
+    """Load reference signatures into module-level caches for this page."""
+    global _DA_SIGNATURES, _DA_REF_VECS
+    sig_path = os.path.join(os.path.dirname(__file__), "data", "shap_signatures.json")
+    if not os.path.exists(sig_path):
+        return
+    try:
+        with open(sig_path, encoding="utf-8") as f:
+            _DA_SIGNATURES = _json.load(f)
+        for name, sig in _DA_SIGNATURES.items():
+            mean_map = sig.get("mean_abs_shap", {})
+            vec = np.array([mean_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64)
+            norm = np.linalg.norm(vec)
+            _DA_REF_VECS[name] = vec / (norm + 1e-9)
+    except Exception as e:
+        print(f"[DEGRAD] Could not load shap_signatures.json: {e}")
+
+_load_da_signatures()
 
 
-def compute_confidence_score(degradation_type: str | None, shap_data: list[dict]) -> float | None:
+def compute_pattern_similarity(
+    pattern_label: str | None,
+    shap_data: list[dict],
+    stored_similarity: float | None = None,
+    model_type: str | None = None,
+) -> float | None:
     """
-    Derive a confidence score (0–1) for the detected fault mode from SHAP data.
+    Return the pattern similarity score (cosine similarity, 0–1) for the
+    current degradation pattern label.
 
-    Method: For each sensor in the expected fault signature, check whether its
-    SHAP sign matches expectation.  Weight each match by |shap_score| so that
-    stronger attributions contribute more.  Normalise by the maximum possible
-    weighted sum (if all sensors matched perfectly at their actual magnitudes).
+    Prefers *stored_similarity* written by the simulation loop at inference time.
+    Falls back to recomputing cosine similarity from shap_data when the stored
+    value is absent (e.g. legacy predictions before the pipeline upgrade).
 
-    Returns None if no degradation is detected or SHAP data is unavailable.
+    Returns None if the pattern label indicates no actionable pattern
+    ("Insufficient Signal", None) or if SHAP data is unavailable.
     """
-    if not degradation_type or not shap_data:
+    # No pattern — nothing to score
+    if not pattern_label or pattern_label == "Insufficient Signal":
         return None
 
-    # Determine which expected-sign map(s) to use
-    if "HPC" in degradation_type and "Fan" in degradation_type:
-        expected = {**_HPC_EXPECTED_SIGNS, **_FAN_EXPECTED_SIGNS}
-    elif "HPC" in degradation_type:
-        expected = _HPC_EXPECTED_SIGNS
-    elif "Fan" in degradation_type:
-        expected = _FAN_EXPECTED_SIGNS
-    else:
+    # Prefer the value already computed at inference time
+    if stored_similarity is not None:
+        return round(float(stored_similarity), 4)
+
+    # Fallback: recompute from SHAP data
+    if not shap_data or not _DA_REF_VECS:
         return None
 
-    shap_map = {s["sensor"]: s["score"] for s in shap_data}
-
-    weighted_matches = 0.0
-    total_weight = 0.0
-
-    for sensor, expected_sign in expected.items():
-        score = shap_map.get(sensor, 0.0)
-        magnitude = abs(score)
-        total_weight += magnitude
-
-        # Sign match check
-        if magnitude > 0.01:  # ignore negligible scores
-            actual_sign = -1 if score < 0 else 1
-            if actual_sign == expected_sign:
-                weighted_matches += magnitude
-
-    if total_weight == 0:
+    shap_map = {d["sensor"]: abs(d["score"]) for d in shap_data}
+    current_vec = np.array(
+        [shap_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64
+    )
+    norm = np.linalg.norm(current_vec)
+    if norm < 1e-9:
         return 0.0
+    current_vec_norm = current_vec / norm
 
-    confidence = weighted_matches / total_weight
-    # Clamp to [0, 1]
-    return round(min(1.0, max(0.0, confidence)), 3)
+    # Select candidate group based on model_type (or pattern label as fallback)
+    if model_type in ("FD001", "FD003"):
+        candidates = [k for k in _DA_REF_VECS if k in ("FD001", "FD003")]
+    elif model_type in ("FD002", "FD004"):
+        candidates = [k for k in _DA_REF_VECS if k in ("FD002", "FD004")]
+    else:
+        candidates = list(_DA_REF_VECS.keys())
+
+    if not candidates:
+        return None
+
+    best_score = max(
+        float(np.dot(current_vec_norm, _DA_REF_VECS[name]))
+        for name in candidates
+    )
+    return round(min(best_score, 1.0), 4)
+
+
+# Keep backward-compatible alias so any external caller using the old name
+# does not break immediately.
+def compute_confidence_score(
+    degradation_type: str | None,
+    shap_data: list[dict],
+    stored_similarity: float | None = None,
+    model_type: str | None = None,
+) -> float | None:
+    """Backward-compatible alias for compute_pattern_similarity."""
+    return compute_pattern_similarity(
+        degradation_type, shap_data,
+        stored_similarity=stored_similarity,
+        model_type=model_type,
+    )
 
 
 # ─────────────────────────────────────────────
@@ -469,16 +506,20 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
         f"2. Why these specific sensors are the strongest indicators\n"
         f"3. What the engineer should inspect or monitor next\n\n"
         f"ANALYSIS RESULTS:\n"
-        f"- Detected fault mode: {degradation_type}\n"
-        f"- Confidence score: {confidence:.1%}\n"
+        f"- Detected degradation profile: {degradation_type}\n"
+        f"- Pattern similarity score: {confidence:.1%} "
+        f"(cosine similarity to the {degradation_type} reference profile)\n"
         f"- Top contributing sensors (SHAP attribution — negative = drives predicted RUL down):\n"
         f"{features_str}\n"
         f"{trend_str}\n\n"
         f"RULES:\n"
-        f"- You MUST mention the fault mode '{degradation_type}' and confidence '{confidence:.1%}' verbatim.\n"
+        f"- You MUST mention the degradation profile '{degradation_type}' and "
+        f"pattern similarity '{confidence:.1%}' verbatim.\n"
+        f"- Clarify that this identifies similarity to a known degradation profile, "
+        f"not a confirmed fault diagnosis.\n"
         f"- Explain the physical meaning: what is likely happening inside the engine.\n"
         f"- Be specific to the sensors listed — don't give generic advice.\n"
-        f"- Suggest 1-2 concrete inspection actions relevant to the fault mode.\n"
+        f"- Suggest 1-2 concrete inspection actions relevant to the degradation profile.\n"
         f"- Keep it to 4-6 sentences. Professional tone, no hedging.\n"
     )
     return prompt
@@ -487,14 +528,14 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
 def _validate_llm_output(text: str, degradation_type: str, confidence: float) -> bool:
     """
     Lightweight validation: confirm that the LLM output contains the
-    fault-mode label and confidence value that were passed in.
+    degradation profile label and pattern similarity value that were passed in.
     """
     if not text:
         return False
-    # Check fault mode label present (case-insensitive)
+    # Check degradation profile label present (case-insensitive)
     if degradation_type.lower() not in text.lower():
         return False
-    # Check confidence value appears (allow ±1% formatting variance)
+    # Check similarity value appears (allow ±1% formatting variance)
     conf_pct = f"{confidence * 100:.0f}%"
     conf_pct_1 = f"{confidence * 100:.1f}%"
     conf_decimal = f"{confidence:.2f}"
@@ -533,7 +574,14 @@ def _fallback_explanation(degradation_type: str, confidence: float,
 
     details_str = "; ".join(details)
 
-    if "HPC" in degradation_type:
+    if "HPC" in degradation_type and "Fan" in degradation_type:
+        mechanism = (
+            "The sensor importance pattern is consistent with combined HPC and fan degradation, "
+            "suggesting simultaneous compressor blade erosion and fan aerodynamic efficiency loss. "
+            "Recommend borescope inspection of HPC stages, fan blade visual inspection, and "
+            "vibration signature analysis."
+        )
+    elif "HPC" in degradation_type:
         mechanism = (
             "This pattern is consistent with high-pressure compressor blade erosion "
             "or fouling, leading to reduced compression efficiency and increased fuel consumption. "
@@ -547,13 +595,16 @@ def _fallback_explanation(degradation_type: str, confidence: float,
         )
     else:
         mechanism = (
-            "Multiple degradation pathways are active simultaneously. "
+            "Multiple degradation pathways may be active. "
             "Recommend comprehensive inspection of both HPC and fan sections."
         )
 
     return (
-        f"Detected fault mode: {degradation_type} (confidence: {confidence:.1%}). "
-        f"Key indicators: {details_str}. {mechanism}"
+        f"Degradation profile: {degradation_type} "
+        f"(pattern similarity: {confidence:.1%}). "
+        f"Key indicators: {details_str}. {mechanism} "
+        f"Note: this identifies similarity to a known degradation profile; "
+        f"physical confirmation requires inspection."
     )
 
 
@@ -605,6 +656,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     # ── Fetch engine metadata ──
     engine_label = "No engine selected"
     degradation_type = None
+    degradation_confidence = None
     model_type = None
     cached_explanation = None
     cached_explanation_ts = None
@@ -612,13 +664,14 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     if supabase and engine_db_id:
         try:
             resp = supabase.table("engines") \
-                .select("engine_id, degradation_type, model_type, llm_explanation, llm_explanation_updated_at") \
+                .select("engine_id, degradation_type, degradation_confidence, model_type, llm_explanation, llm_explanation_updated_at") \
                 .eq("id", engine_db_id) \
                 .single() \
                 .execute()
             if resp.data:
                 engine_label = f"Engine #{resp.data.get('engine_id', engine_db_id)}"
                 degradation_type = resp.data.get("degradation_type")
+                degradation_confidence = resp.data.get("degradation_confidence")
                 model_type = resp.data.get("model_type", "")
                 cached_explanation = resp.data.get("llm_explanation")
                 cached_explanation_ts = resp.data.get("llm_explanation_updated_at")
@@ -626,8 +679,20 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
             pass
 
     # ── Display values ──
-    deg_type_display = degradation_type or "No degradation detected"
-    deg_color = "#ff4d4d" if degradation_type else "rgba(168,212,255,0.5)"
+    deg_type_display = degradation_type or "No pattern detected"
+    # Colour coding: confirmed patterns = red, ambiguous = amber, none = dim blue
+    if degradation_type in ("HPC Degradation", "HPC + Fan Degradation"):
+        deg_color = "#ff4d4d"
+        deg_dot_color = "#ff4d4d"
+        deg_dot_shadow = "0 0 8px rgba(255,77,77,0.6)"
+    elif degradation_type == "Pattern Ambiguous":
+        deg_color = "#f5a623"
+        deg_dot_color = "#f5a623"
+        deg_dot_shadow = "0 0 8px rgba(245,166,35,0.6)"
+    else:
+        deg_color = "rgba(168,212,255,0.5)"
+        deg_dot_color = "rgba(168,212,255,0.3)"
+        deg_dot_shadow = "none"
 
     # ── Header section (simplified - just page title + engine label) ──
     header = html.Div(
@@ -669,7 +734,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                             "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
                             "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "4px",
                         }),
-                        html.Div("DETECTED FAULT MODE", style={
+                        html.Div("DEGRADATION PATTERN", style={
                             "color": "rgba(168,212,255,0.6)", "fontSize": "10px",
                             "fontWeight": "600", "marginBottom": "10px",
                         }),
@@ -686,8 +751,8 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                 # Red indicator dot
                                 html.Div(style={
                                     "width": "10px", "height": "10px", "borderRadius": "50%",
-                                    "background": "#ff4d4d" if degradation_type else "rgba(168,212,255,0.3)",
-                                    "boxShadow": "0 0 8px rgba(255,77,77,0.6)" if degradation_type else "none",
+                                    "background": deg_dot_color,
+                                    "boxShadow": deg_dot_shadow,
                                 }),
                             ]
                         ),
@@ -703,7 +768,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                    "justifyContent": "space-between"},
                             children=[
                                 html.Div(children=[
-                                    html.Div("CONFIDENCE", style={
+                                    html.Div("PATTERN SIMILARITY", style={
                                         "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
                                         "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "10px",
                                     }),
@@ -908,6 +973,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     stores = html.Div([
         dcc.Store(id="da-engine-db-id", data=engine_db_id),
         dcc.Store(id="da-degradation-type", data=degradation_type),
+        dcc.Store(id="da-degradation-confidence", data=degradation_confidence),
         dcc.Store(id="da-model-type", data=model_type),
         dcc.Interval(id="da-interval", interval=5_000, n_intervals=0),  # poll every 5s (same as overview)
     ])
@@ -1006,13 +1072,15 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         Input("da-interval", "n_intervals"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
+        State("da-degradation-confidence", "data"),
         State("da-model-type", "data"),
         State("da-top-drivers-filter", "data"),
         prevent_initial_call=False,
     )
-    def update_charts(n_intervals, engine_db_id, degradation_type, model_type, top_n_filter):
+    def update_charts(n_intervals, engine_db_id, degradation_type,
+                      stored_similarity, model_type, top_n_filter):
         """
-        Poll callback: fetch SHAP history, compute confidence, update charts.
+        Poll callback: fetch SHAP history, compute pattern similarity, update charts.
         Disables the interval once the prediction cycle is complete.
         Does NOT call the LLM — that is triggered only by button click.
         """
@@ -1028,7 +1096,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 _build_confidence_ring(0),
                 "—",
                 empty_sparkline,
-                "NO DEGRADATION DETECTED",
+                "NO PATTERN DETECTED",
                 build_top_drivers_chart(None),
                 False,
             )
@@ -1078,28 +1146,34 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 _build_confidence_ring(0),
                 "—",
                 empty_sparkline,
-                "NO DEGRADATION DETECTED",
+                "NO PATTERN DETECTED",
                 build_top_drivers_chart(None),
                 not sim_active,
             )
 
-        # ── Re-fetch degradation_type (may have updated since page load) ──
+        # ── Re-fetch degradation_type and stored similarity (may have updated) ──
         if supabase and engine_db_id:
             try:
                 eng_resp = supabase.table("engines") \
-                    .select("degradation_type") \
+                    .select("degradation_type, degradation_confidence, model_type") \
                     .eq("id", engine_db_id) \
                     .single() \
                     .execute()
                 if eng_resp.data:
-                    degradation_type = eng_resp.data.get("degradation_type") or degradation_type
+                    degradation_type   = eng_resp.data.get("degradation_type") or degradation_type
+                    stored_similarity  = eng_resp.data.get("degradation_confidence") or stored_similarity
+                    model_type         = eng_resp.data.get("model_type") or model_type
             except Exception:
                 pass
 
-        # ── Compute confidence ──
-        confidence = compute_confidence_score(degradation_type, latest_shap)
-        confidence_pct = int(round(confidence * 100)) if confidence is not None else 0
-        confidence_display = f"{confidence_pct}%"
+        # ── Pattern similarity score ──────────────────────────────────────────
+        similarity = compute_pattern_similarity(
+            degradation_type, latest_shap,
+            stored_similarity=stored_similarity,
+            model_type=model_type,
+        )
+        similarity_pct = int(round(similarity * 100)) if similarity is not None else 0
+        similarity_display = f"{similarity_pct}%" if similarity is not None else "—"
 
         # ── Latest RUL value ──
         latest_rul = None
@@ -1109,20 +1183,25 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 break
         rul_display = str(int(round(latest_rul))) if latest_rul is not None else "—"
 
-        # ── Fault mode label ──
-        fault_label = degradation_type.upper() if degradation_type else "NO DEGRADATION DETECTED"
+        # ── Fault mode label — surface ambiguous/insufficient states clearly ──
+        if degradation_type in ("Pattern Ambiguous", "Insufficient Signal"):
+            fault_label = degradation_type.upper()
+        elif degradation_type:
+            fault_label = degradation_type.upper()
+        else:
+            fault_label = "NO PATTERN DETECTED"
 
         # ── Build charts ──
-        beeswarm_fig = build_shap_beeswarm(latest_shap, shap_history=shap_history)
-        trend_fig = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
-        sparkline_fig = _build_rul_sparkline([v for v in predicted_ruls if v is not None])
-        top_drivers_fig = build_top_drivers_chart(latest_shap, top_n=top_n_filter or "all")
+        beeswarm_fig     = build_shap_beeswarm(latest_shap, shap_history=shap_history)
+        trend_fig        = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
+        sparkline_fig    = _build_rul_sparkline([v for v in predicted_ruls if v is not None])
+        top_drivers_fig  = build_top_drivers_chart(latest_shap, top_n=top_n_filter or "all")
 
         return (
             beeswarm_fig,
             trend_fig,
-            confidence_display,
-            _build_confidence_ring(confidence_pct),
+            similarity_display,
+            _build_confidence_ring(similarity_pct),
             rul_display,
             sparkline_fig,
             fault_label,
@@ -1146,8 +1225,10 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         if not n_clicks or not supabase or not engine_db_id:
             raise dash.exceptions.PreventUpdate
 
-        # Fetch latest SHAP + degradation type
+        # Fetch latest SHAP + degradation type + stored similarity
         latest_shap = []
+        stored_similarity = None
+        model_type_fetched = None
         try:
             resp = supabase.table("rul_predictions") \
                 .select("shap_values") \
@@ -1162,36 +1243,49 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         except Exception as e:
             return f"Error fetching SHAP data: {e}"
 
-        # Re-fetch degradation_type
+        # Re-fetch degradation_type, stored similarity and model_type
         try:
             eng_resp = supabase.table("engines") \
-                .select("degradation_type") \
+                .select("degradation_type, degradation_confidence, model_type") \
                 .eq("id", engine_db_id) \
                 .single() \
                 .execute()
             if eng_resp.data:
-                degradation_type = eng_resp.data.get("degradation_type") or degradation_type
+                degradation_type   = eng_resp.data.get("degradation_type") or degradation_type
+                stored_similarity  = eng_resp.data.get("degradation_confidence")
+                model_type_fetched = eng_resp.data.get("model_type")
         except Exception:
             pass
 
-        if not degradation_type:
+        # Don't generate if pattern is ambiguous, insufficient, or absent
+        if not degradation_type or degradation_type in ("Pattern Ambiguous", "Insufficient Signal"):
+            if degradation_type == "Pattern Ambiguous":
+                return (
+                    "The SHAP importance pattern is similar to both HPC-only and "
+                    "HPC + Fan degradation profiles. Continue monitoring for 5–10 "
+                    "more cycles to allow the pattern to become more distinct."
+                )
             return (
-                "No degradation pattern has been detected for this engine. "
+                "No degradation pattern has been identified for this engine. "
                 "The engine is operating within normal parameters."
             )
 
         if not latest_shap:
             return "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles."
 
-        confidence = compute_confidence_score(degradation_type, latest_shap)
-        if confidence is None:
-            confidence = 0.0
+        similarity = compute_pattern_similarity(
+            degradation_type, latest_shap,
+            stored_similarity=stored_similarity,
+            model_type=model_type_fetched,
+        )
+        if similarity is None:
+            similarity = 0.0
 
         explanation = generate_llm_explanation(
             degradation_type=degradation_type,
-            confidence=confidence,
+            confidence=similarity,
             top_features=latest_shap[:5],
-            sensor_trends=None,  # TODO: compute rolling slopes from sensor data
+            sensor_trends=None,
         )
 
         # ── Cache to engines table ──
