@@ -183,13 +183,9 @@ def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(10,20,45,0.6)",
-        margin=dict(l=10, r=20, t=30, b=40),
+        margin=dict(l=10, r=20, t=30, b=10),
         height=420,
-        legend=dict(
-            orientation="h", x=0, y=-0.18,
-            font=dict(color="#a8d4ff", size=11),
-            bgcolor="rgba(0,0,0,0)",
-        ),
+        showlegend=False,
         xaxis=dict(
             title=dict(text="Operational Cycles", font=dict(color="#a8d4ff", size=11)),
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
@@ -205,10 +201,12 @@ def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
             color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
         ),
-        hovermode="x unified",
+        hovermode="closest",
         hoverlabel=dict(
-            bgcolor="#0d1e3a", font_color="white",
+            bgcolor="#0d1e3a",
+            font=dict(color="white", size=12),
             bordercolor="rgba(74,158,255,0.4)",
+            namelength=0,
         ),
     )
 
@@ -397,7 +395,7 @@ def build_sensor_trends_body(engine_id="01", status="healthy"):
                             id="sensor-chart",
                             figure=build_sensor_chart(DEFAULT_SELECTED, sensor_history=None, normalize=True),
                             config={"displayModeBar": False},
-                            style={"flex": "1"},
+                            style={"flex": "1", "minHeight": "0"},
                         ),
                         html.Div(id="chart-legend",
                                  style={"display": "flex", "flexWrap": "wrap", "gap": "16px",
@@ -560,8 +558,26 @@ def register_sensor_callbacks(app, supabase=None):
             for i, vals in enumerate(check_values)
             if vals
         ]
+
+        # No sensor selected — return empty placeholder chart and empty legend
         if not selected:
-            selected = [all_ids[0]]
+            fig = go.Figure()
+            fig.add_annotation(
+                text="Select a sensor from the checklist to view its trend",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False,
+                font=dict(color="rgba(168,212,255,0.4)", size=14),
+            )
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(10,20,45,0.6)",
+                margin=dict(l=10, r=20, t=30, b=10),
+                height=420,
+                showlegend=False,
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+            )
+            return fig, []
 
         # Pull live sensor rows from the simulation ring buffer
         sensor_history = None

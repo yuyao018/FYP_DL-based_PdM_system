@@ -1288,6 +1288,7 @@ def register_overview_callbacks(app, supabase=None):
                 mode="lines", name=sid,
                 line=dict(color=_SENSOR_COLORS.get(sid, "#4a9eff"), width=1.2),
                 connectgaps=True,
+                hovertemplate=f"<b>{sid}</b><br>Cycle: %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
             ))
         fig.update_layout(**_mini_chart_layout())
         return fig
