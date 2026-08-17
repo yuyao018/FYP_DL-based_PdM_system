@@ -951,7 +951,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     # ── Row 2: SHAP trend chart (5:1 ratio) + AI explanation ──
     row2 = html.Div(
         style={"display": "flex", "gap": "20px", "padding": "0 28px 28px",
-               "alignItems": "stretch"},
+               "alignItems": "stretch", "height": "440px"},
         children=[
             # SHAP trend chart (flex: 5)
             html.Div(
@@ -959,14 +959,19 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "flex": "5", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
-                    "borderRadius": "12px", "padding": "16px", "height": "auto",
+                    "borderRadius": "12px", "padding": "16px",
+                    "display": "flex", "flexDirection": "column",
+                    "height": "440px",
+                    "boxSizing": "border-box",
                 },
                 children=[
                     html.Div("SHAP Value Trend Over Cycles", style={
                                 "color": "white", "fontSize": "16px", "fontWeight": "700",
+                                "flexShrink": "0",
                             }),
                     dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
-                              figure=build_shap_trend_chart([], [])),
+                            figure=build_shap_trend_chart([], []),
+                            style={"flex": "1", "minHeight": "0"}),
                 ]
             ),
             # AI Explanation (flex: 1) — matches chart height, content scrolls
@@ -977,7 +982,9 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "20px",
                     "display": "flex", "flexDirection": "column",
-                    "overflow": "hidden", "height": "350px",
+                    "overflow": "hidden",
+                    "height": "440px",
+                    "boxSizing": "border-box",
                 },
                 children=[
                     html.Div(style={"display": "flex", "flexDirection": "column", "gap": "8px",
@@ -1012,14 +1019,18 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                         color="#4a9eff",
                         style={"flex": "1", "minHeight": "0", "overflow": "hidden",
                                "display": "flex", "flexDirection": "column"},
+                        parent_style={"flex": "1", "minHeight": "0", "display": "flex",
+                                      "flexDirection": "column", "overflow": "hidden"},
                         children=[
                             html.Div(
                                 id="da-llm-explanation",
                                 style={
                                     "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
                                     "lineHeight": "1.7",
+                                    "flex": "1",
                                     "overflowY": "auto",
-                                    "maxHeight": "200px",
+                                    "minHeight": "0",
+                                    "paddingRight": "8px",
                                 },
                                 children=[
                                     html.Div(cached_explanation, style={"marginBottom": "8px"})
