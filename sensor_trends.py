@@ -480,7 +480,7 @@ def create_sensor_trends_layout(supabase=None, engine_db_id=None):
 #  CALLBACKS  (register on the app object)
 # ─────────────────────────────────────────────
 
-def register_sensor_callbacks(app):
+def register_sensor_callbacks(app, supabase=None):
     all_ids = list(ALL_SENSORS.keys())
 
     # ── Toggle visual state (knob position + label colours) ──
@@ -569,13 +569,17 @@ def register_sensor_callbacks(app):
         if engine_db_id:
             try:
                 from engine_simulation_manager import (
-                    get_sensor_history, get_engine_model_type, _CLUSTER_CACHE
+                    get_sensor_history, get_engine_model_type, _CLUSTER_CACHE, _load_model
                 )
                 sensor_history = get_sensor_history(engine_db_id) or None
                 # Get cluster info for FD002/FD004 per-cluster normalization
                 _mt = get_engine_model_type(engine_db_id)
                 if _mt:
                     _ci = _CLUSTER_CACHE.get(_mt, (None, None, None))
+                    # If cache is empty (race condition on startup), try loading the model now
+                    if _ci[0] is None:
+                        _load_model(_mt, supabase=supabase)
+                        _ci = _CLUSTER_CACHE.get(_mt, (None, None, None))
                     if _ci and _ci[0] is not None:
                         cluster_info = _ci
             except Exception:

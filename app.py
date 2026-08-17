@@ -46,7 +46,7 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
-register_sensor_callbacks(app)
+register_sensor_callbacks(app, supabase=supabase_admin)
 register_alert_log_callbacks(app, supabase=supabase_admin)
 register_user_management_callbacks(app, supabase=supabase_admin)
 register_add_user_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)

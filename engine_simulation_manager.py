@@ -1541,7 +1541,21 @@ def resume_all_simulations(supabase):
 
         if current_cycle >= total_cycles:
             print(f"[SIM] Engine {engine_db_id} already completed all {total_cycles} cycles — skipping resume")
-            # Still pre-load sensor rows into the ring buffer for display
+            # Register in _RUNNING_SIMULATIONS so get_engine_model_type() works for
+            # completed engines (needed by sensor_trends to resolve cluster_info).
+            # Use a no-op dead thread as placeholder.
+            with _LOCK:
+                if engine_db_id not in _RUNNING_SIMULATIONS:
+                    _dead = threading.Thread(target=lambda: None, daemon=True)
+                    _dead.start(); _dead.join()  # start + immediately finish
+                    _RUNNING_SIMULATIONS[engine_db_id] = {
+                        "thread": _dead,
+                        "stop": threading.Event(),
+                        "model_type": model_type,
+                    }
+            # Ensure model is loaded so _CLUSTER_CACHE is populated for FD002/FD004.
+            _load_model(model_type, supabase=supabase)
+            # Pre-load sensor rows into the ring buffer for display
             try:
                 cycles_data = _json.loads(open(json_path).read()) if isinstance(d, str) else d
                 if isinstance(cycles_data, dict):
