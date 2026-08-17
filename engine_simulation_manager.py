@@ -691,51 +691,154 @@ SENSOR_SHORT = [
 ]
 
 
-def _compute_feature_importance(model, X: np.ndarray) -> list[dict]:
+def _compute_feature_importance(model, X: np.ndarray, num_features: int, background: np.ndarray = None,
+                                pred_raw: float = None, bias: float = 0.0,
+                                rul_cap: float = None, sensor_labels=None) -> tuple[list[dict], float]:
     """
-    Compute per-sensor importance scores using input × gradient attribution.
-
-    X: numpy array shape (1, W, 42) — the same tensor fed to model.predict()
-       Features are ordered [raw(14) | roll_mean(14) | roll_std(14)]
-
-    Returns a list of dicts sorted by |score| descending:
-        [{"sensor": "T30", "score": -0.38}, ...]
-
-    Only the raw sensor block (first 14 columns) is attributed — rolling
-    features carry the same signal so aggregating the raw block is sufficient
-    and avoids triple-counting.
+    Compute per-sensor SHAP values using shap.GradientExplainer.
+    Returns:
+        (shap_list, base_value) both in the post-processed RUL space.
     """
     try:
+        import shap
         import torch
 
-        t = torch.tensor(X, dtype=torch.float32, requires_grad=True)
-        output = model(t)           # calls SBiTransformer.forward() directly
-        output.backward()           # backprop to get dOutput/dInput
+        # Background: zero baseline (neutral reference)
+        if background is not None:
+            bg = background
+        else:
+            bg = np.zeros_like(X)
 
-        # grad shape: (1, W, 42) — take mean over time axis, raw block only
-        grad = t.grad.detach().numpy()[0]   # (W, 42)
-        raw_grad = grad[:, :14]             # (W, 14)
+        bg_t  = torch.tensor(bg,  dtype=torch.float32)
+        inp_t = torch.tensor(X,   dtype=torch.float32)
 
-        # Input × gradient attribution (mean over time window)
-        inp_raw = X[0, :, :14]             # (W, 14)
-        attr = (inp_raw * raw_grad).mean(axis=0)   # (14,)
+        # model.train()
+        model.eval()
+        explainer   = shap.GradientExplainer(model, bg_t)
+        shap_values = explainer.shap_values(inp_t)
+        # model.eval()
+        print(f"[SIM] GradientExplainer succeeded, shap_values type={type(shap_values)}, "
+              f"shape={np.array(shap_values).shape if not isinstance(shap_values, list) else len(shap_values)}")
 
-        # Normalise so the largest absolute value = 1
-        max_abs = np.abs(attr).max()
-        if max_abs > 0:
-            attr = attr / max_abs
+        if isinstance(shap_values, list):
+            shap_arr = np.array(shap_values[0])
+        else:
+            shap_arr = np.array(shap_values)
 
+        # Squeeze trailing dim if shape is (1, W, 42, 1)
+        if shap_arr.ndim == 4:
+            shap_arr = shap_arr.squeeze(-1)
+
+        # Aggregate over time window, raw sensor block only → (14,)
+        # raw_shap = shap_arr[0, :, :14].mean(axis=0)
+        n = num_features
+        raw_shap = shap_arr[0, :, :n]
+        mean_shap = shap_arr[0, :, n:2*n]
+        std_shap = shap_arr[0, :, 2*n:3*n]
+
+        sensor_shap = (raw_shap + mean_shap + std_shap).sum(axis=0) # total contribution
+
+        # Base value E[f(background)] in raw model output space
+        with torch.no_grad():
+            model.eval()
+            base_raw = float(model(bg_t).mean().item())
+
+        full_shap_sum = float(shap_arr.sum())
+
+        print("========== SHAP DEBUG ==========")
+        print(f"FULL SHAP SUM     = {full_shap_sum:.6f}")
+        print(f"BASE              = {base_raw:.6f}")
+        print(f"BASE + FULL SHAP  = {base_raw + full_shap_sum:.6f}")
+        print(f"MODEL OUTPUT      = {pred_raw:.6f}")
+        print(f"DIFFERENCE        = {(base_raw + full_shap_sum) - pred_raw:.6f}")
+        print("================================")
+
+        sensor_shap_sum = float(sensor_shap.sum())
+
+        print("========== SENSOR SHAP DEBUG ==========")
+        print(f"SENSOR SHAP SUM     = {sensor_shap_sum:.6f}")
+        print(f"FULL SHAP SUM       = {full_shap_sum:.6f}")
+        print(f"BASE + SENSOR SHAP = {base_raw + sensor_shap_sum:.6f}")
+        print(f"MODEL OUTPUT       = {pred_raw:.6f}")
+        print(f"DIFFERENCE         = {(base_raw + sensor_shap_sum) - pred_raw:.6f}")
+        print("=======================================")
+
+        # print("SHAP ARRAY SHAPE =", shap_arr.shape)
+
+        # print("========== SHAP FEATURE CHECK ==========")
+
+        # for i, value in enumerate(shap_arr[0].sum(axis=0)):
+        #     print(f"Feature {i:02d}: {value:.6f}")
+
+        # print("========================================")
+
+        # Apply bias correction to the base value
+        base_corrected = base_raw - bias
+        if rul_cap is not None:
+            base_corrected = max(0.0, min(rul_cap, base_corrected))
+
+        # Diagnostic only — DO NOT rescale SHAP values
+        # predicted_rul_exact = pred_raw - bias if pred_raw is not None else base_raw - bias
+        # if rul_cap is not None:
+        #     predicted_rul_exact = max(0.0, min(rul_cap, predicted_rul_exact))
+
+        if pred_raw is not None:
+            shap_sum = sensor_shap.sum()
+
+            print("base =", base_raw)
+            print("sum SHAP =", shap_sum)
+            print("base + SHAP =", base_raw + shap_sum)
+            print("model output =", pred_raw)
+            # raw_sum = float(raw_shap.sum())
+            # target_sum = predicted_rul_exact - base_corrected
+            # if abs(raw_sum) > 1e-8:
+            #     scale = target_sum / raw_sum
+            #     raw_shap = raw_shap * scale
+
+        # Store full float precision — rounding to 4dp across 14 sensors
+        # accumulates ~0.5–1 cycle error in sum(scores). Use 6dp instead.
+        labels = sensor_labels if sensor_labels is not None else SENSOR_SHORT
         result = [
-            {"sensor": SENSOR_SHORT[i], "score": round(float(attr[i]), 4)}
-            for i in range(14)
+            {"sensor": labels[i], "score": round(float(sensor_shap[i]), 6)}
+            for i in range(n)
         ]
-        # Sort by absolute contribution descending
         result.sort(key=lambda x: abs(x["score"]), reverse=True)
-        return result
+
+        actual_sum = sum(r["score"] for r in result)
+        all_scores = [(r['sensor'], round(r['score'], 6)) for r in result]
+        print(f"[SIM] SHAP base_value={base_corrected:.6f}")
+        print(f"[SIM] SHAP scores (all): {all_scores}")
+        # print(f"[SIM] base_corrected={base_corrected:.6f} sum(scores)={actual_sum:.6f} "
+        #       f"f(x)={base_corrected + actual_sum:.6f} predicted_rul={predicted_rul_exact:.6f} "
+        #       f"gap={abs(base_corrected + actual_sum - predicted_rul_exact):.6f}")
+        return result, base_corrected
 
     except Exception:
-        print(f"[SIM][WARN] SHAP attribution failed: {traceback.format_exc(limit=2)}")
-        return []
+        print(f"[SIM][WARN] SHAP GradientExplainer failed, falling back to input×gradient:\n"
+              f"{traceback.format_exc(limit=3)}")
+        try:
+            import torch
+            model.train()
+            t = torch.tensor(X, dtype=torch.float32, requires_grad=True)
+            output = model(t)
+            output.backward()
+            model.eval()
+            grad     = t.grad.detach().numpy()[0]
+            raw_grad = grad[:, :n]
+            inp_raw  = X[0, :, :n]
+            attr = (inp_raw * raw_grad).mean(axis=0)
+            max_abs = np.abs(attr).max()
+            if max_abs > 0:
+                attr = attr / max_abs
+            result = [
+                {"sensor": SENSOR_SHORT[i], "score": round(float(attr[i]), 4)}
+                for i in range(n)
+            ]
+            result.sort(key=lambda x: abs(x["score"]), reverse=True)
+            return result, 0.0
+        except Exception:
+            model.eval()
+            return [], 0.0
 
 # How often (in simulation cycles) each thread re-fetches thresholds from
 # Supabase so that changes saved on the Alert Thresholds page take effect
@@ -1144,20 +1247,32 @@ def _simulation_loop(
             if model is not None:
                 try:
                     pred_raw = model.predict(X, verbose=0)
-                    pred_rul = float(np.squeeze(pred_raw))
+                    pred_rul_raw = float(np.squeeze(pred_raw))
                     # Apply bias correction if stored in model metadata
                     _bias = _BIAS_CACHE.get(model_type, 0.0)
-                    pred_rul = pred_rul - _bias
+                    pred_rul = pred_rul_raw - _bias
                     pred_rul = max(0.0, min(float(RUL_CAP), pred_rul))
-                    # Compute feature importance on the same window
-                    shap_data = _compute_feature_importance(model, X)
+                    # Log the transform for tracing
+                    print(f"[SIM] pred_raw={pred_rul_raw:.4f} bias={_bias:.4f} "
+                          f"bias_corrected={pred_rul_raw - _bias:.4f} "
+                          f"clamped={pred_rul:.4f} RUL_CAP={RUL_CAP}")
+                    # Compute SHAP values using GradientExplainer on the same window
+                    shap_data, shap_base_value = _compute_feature_importance(
+                        model, X, _num_features,
+                        pred_raw=pred_rul_raw,
+                        bias=_bias,
+                        rul_cap=float(RUL_CAP),
+                        sensor_labels=(SENSOR_SHORT + ["OS1","OS2","OS3"]) if _include_os else SENSOR_SHORT,
+                    )
                 except Exception:
                     print(f"[SIM][ERROR] model.predict failed at cycle {cycle_num}:\n{traceback.format_exc()}")
-                    pred_rul = None
-                    shap_data = []
+                    pred_rul        = None
+                    shap_data       = []
+                    shap_base_value = 0.0
             else:
-                pred_rul  = None
-                shap_data = []
+                pred_rul       = None
+                shap_data      = []
+                shap_base_value = 0.0
                 if not _no_model_warned:
                     print(f"[SIM][INFO] engine={engine_db_id} — window ready, waiting for model upload")
                     _no_model_warned = True
@@ -1189,6 +1304,8 @@ def _simulation_loop(
                         row_data["model_version_id"] = model_version_id
                     if shap_data:
                         row_data["shap_values"] = _json.dumps(shap_data)
+                    if shap_base_value != 0.0:
+                        row_data["shap_base_value"] = round(shap_base_value, 4)
 
                     # Use default-arg capture to avoid late-binding closure issues
                     _supabase_execute(

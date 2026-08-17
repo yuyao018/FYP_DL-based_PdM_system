@@ -245,18 +245,13 @@ def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "al
 #  SHAP BEESWARM CHART
 # ─────────────────────────────────────────────
 
-def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = None) -> go.Figure:
+def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest",
+                         base_value: float = None) -> go.Figure:
     """
-    Build a SHAP beeswarm plot.
-
-    If shap_history is provided (list of SHAP snapshots across cycles), renders
-    a true beeswarm: one dot per cycle per sensor, jittered vertically, colored
-    by feature value (blue=low, purple=mid, red/magenta=high).
-
-    If only shap_data (single latest snapshot) is available, falls back to a
-    strip plot using just that one point per sensor.
+    SHAP waterfall — arrow-tipped bars, hover to see values, no overlapping labels.
+    Blue = negative SHAP, Red = positive. Cumulative from E[f(x)] to f(x).
     """
-    if not shap_data and not shap_history:
+    if not shap_data:
         fig = go.Figure()
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -267,120 +262,145 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
         )
         return fig
 
-    # Determine sensor order by mean |score| (top impact at top of chart)
-    sensor_scores_agg = {}
-    source = shap_history if shap_history else [shap_data]
-    for snapshot in source:
-        if not snapshot:
-            continue
-        for entry in snapshot:
-            sensor_scores_agg.setdefault(entry["sensor"], []).append(entry["score"])
+    sorted_data = sorted(shap_data, key=lambda d: abs(d["score"]), reverse=True)
+    sensors = [d["sensor"] for d in sorted_data]
+    scores  = [d["score"]  for d in sorted_data]
+    n = len(sensors)
 
-    # Sort sensors so highest mean |impact| is at the top (y-axis reversed)
-    sensor_order = sorted(
-        sensor_scores_agg.keys(),
-        key=lambda s: np.mean(np.abs(sensor_scores_agg[s])),
-        reverse=True,
-    )
-    sensor_to_y = {s: i for i, s in enumerate(sensor_order)}
+    base = base_value if base_value is not None else 0.0
+    final_value = base + sum(scores)
 
-    # Collect all points
-    x_vals = []
-    y_vals = []
-    feature_values = []  # normalized feature values for coloring
+    # Cumulative offsets
+    offsets = []
+    running = base
+    for s in scores:
+        offsets.append(running)
+        running += s
 
-    # Compute per-sensor min/max for feature value normalization
-    sensor_all_scores = {}
-    for snapshot in source:
-        if not snapshot:
-            continue
-        for entry in snapshot:
-            sensor_all_scores.setdefault(entry["sensor"], []).append(entry["score"])
+    tips = [offsets[i] + scores[i] for i in range(n)]
 
-    sensor_min = {s: min(vals) for s, vals in sensor_all_scores.items()}
-    sensor_max = {s: max(vals) for s, vals in sensor_all_scores.items()}
+    # X axis: cluster around where most bars are (tips + offsets for large bars only)
+    # Exclude the base offset since it can be far from the action (e.g. base=94, f(x)=27)
+    # The largest bar's full extent (offset→tip) must always be visible
+    max_abs_score = max(abs(s) for s in scores)
+    x_candidates = list(tips) + [final_value]
+    for o, s in zip(offsets, scores):
+        # Only include offset if it's not the isolated base outlier
+        # i.e. include offset only for bars where tip is near the cluster
+        x_candidates.append(o)
+    # Remove extreme outliers: any value more than 3x range away from the median tip
+    import statistics as _stats
+    med = _stats.median(tips)
+    spread = max(abs(t - med) for t in tips) or 1.0
+    x_candidates = [x for x in x_candidates if abs(x - med) <= spread * 4 + max_abs_score]
+    x_min_data = min(x_candidates) if x_candidates else min(tips)
+    x_max_data = max(x_candidates) if x_candidates else max(tips)
+    x_span = max(x_max_data - x_min_data, 1.0)
+    x_pad  = x_span * 0.08
+    x_min  = x_min_data - x_pad
+    x_max  = x_max_data + x_pad
 
-    for snapshot in source:
-        if not snapshot:
-            continue
-        for entry in snapshot:
-            sensor = entry["sensor"]
-            score = entry["score"]
-            if sensor not in sensor_to_y:
-                continue
-            x_vals.append(score)
-            # Add jitter to y position to spread dots (beeswarm effect)
-            jitter = np.random.uniform(-0.25, 0.25)
-            y_vals.append(sensor_to_y[sensor] + jitter)
-            # Normalize feature value to [0, 1] for color mapping
-            s_min = sensor_min.get(sensor, 0)
-            s_max = sensor_max.get(sensor, 1)
-            if s_max - s_min > 1e-8:
-                norm_val = (score - s_min) / (s_max - s_min)
-            else:
-                norm_val = 0.5
-            feature_values.append(norm_val)
+    bar_colors = ["#ff4d4d" if s > 0 else "#4a9eff" for s in scores]
+    bar_half_h = 0.28
+    arrow_base = x_span * 0.018
 
-    # Color scale: blue (low) → purple (mid) → red/magenta (high)
-    beeswarm_colorscale = [
-        [0.0, "#0066ff"],
-        [0.25, "#6633cc"],
-        [0.5, "#9933cc"],
-        [0.75, "#cc3399"],
-        [1.0, "#ff0066"],
-    ]
+    fig = go.Figure()
 
-    fig = go.Figure(go.Scatter(
-        x=x_vals,
-        y=y_vals,
-        mode="markers",
-        marker=dict(
-            size=6,
-            color=feature_values,
-            colorscale=beeswarm_colorscale,
-            cmin=0,
-            cmax=1,
-            opacity=0.8,
-            line=dict(width=0),
-            colorbar=dict(
-                title=dict(text="Feature value", font=dict(color="rgba(168,212,255,0.7)", size=10)),
-                tickvals=[0, 1],
-                ticktext=["Low", "High"],
-                tickfont=dict(color="rgba(168,212,255,0.6)", size=9),
-                thickness=12, len=0.6,
-                bgcolor="rgba(0,0,0,0)",
-                borderwidth=0,
+    for i, (sensor, score, offset, tip, color) in enumerate(
+            zip(sensors, scores, offsets, tips, bar_colors)):
+        y = i
+        bar_width = abs(score)
+        a = min(max(arrow_base, abs(score) * 0.10), bar_width * 0.6)
+
+        if score >= 0:
+            x0, x1 = offset, tip - a
+            px = [x0, x1, tip, x1,  x0, x0]
+            py = [y - bar_half_h, y - bar_half_h, y,
+                  y + bar_half_h, y + bar_half_h, y - bar_half_h]
+        else:
+            x0, x1 = tip + a, offset
+            px = [x1, x0, tip, x0,  x1, x1]
+            py = [y - bar_half_h, y - bar_half_h, y,
+                  y + bar_half_h, y + bar_half_h, y - bar_half_h]
+
+        cum_val = tip  # running model output after this feature
+        fig.add_trace(go.Scatter(
+            x=px, y=py,
+            fill="toself",
+            fillcolor=color,
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            mode="none",
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+        # Invisible hover marker at bar center — this is what triggers the tooltip
+        bar_center_x = (offset + tip) / 2
+        fig.add_trace(go.Scatter(
+            x=[bar_center_x],
+            y=[y],
+            mode="markers",
+            marker=dict(size=max(12, abs(score) * 0.5), color="rgba(0,0,0,0)",
+                        line=dict(width=0)),
+            hovertemplate=(
+                f"<b>{sensor}</b><br>"
+                f"SHAP: <b>{score:+.4f}</b><br>"
+                f"Running output: <b>{cum_val:.2f}</b>"
+                f"<extra></extra>"
             ),
-        ),
-        hovertemplate="<b>%{customdata}</b><br>SHAP value: %{x:.4f}<extra></extra>",
-        customdata=[sensor_order[int(round(y))] if 0 <= int(round(y)) < len(sensor_order) else ""
-                    for y in y_vals],
-    ))
+            showlegend=False,
+        ))
+
+    # f(x) annotation
+    fig.add_annotation(
+        x=final_value, xref="x", y=1.06, yref="paper",
+        text=f"f(x) = {round(final_value):.0f}",
+        showarrow=False,
+        font=dict(color="white", size=11, family="monospace"),
+        xanchor="center",
+    )
+
+    # E[f(x)] annotation — place near the final_value since base may be off-screen
+    fig.add_annotation(
+        x=final_value, xref="x", y=-0.07, yref="paper",
+        text=f"E[f(x)] = {base:.2f}",
+        showarrow=False,
+        font=dict(color="rgba(168,212,255,0.55)", size=9, family="monospace"),
+        xanchor="center",
+    )
+
+    # Dotted line at f(x)
+    fig.add_vline(x=final_value, line_width=1, line_dash="dot",
+                  line_color="rgba(255,255,255,0.2)")
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=80, r=60, t=35, b=40),
+        margin=dict(l=10, r=20, t=35, b=45),
         height=380,
         xaxis=dict(
-            title="SHAP value (impact on model output)",
+            title="Model output (cumulative SHAP)",
             title_font=dict(color="rgba(168,212,255,0.7)", size=11),
             tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
             gridcolor="rgba(74,158,255,0.08)",
-            zeroline=True, zerolinecolor="rgba(74,158,255,0.3)", zerolinewidth=1,
+            zeroline=False,
+            showline=False,
+            range=[x_min, x_max],
         ),
         yaxis=dict(
             tickmode="array",
-            tickvals=list(range(len(sensor_order))),
-            ticktext=sensor_order,
-            tickfont=dict(color="rgba(168,212,255,0.8)", size=11),
-            gridcolor="rgba(74,158,255,0.05)",
-            range=[len(sensor_order) - 0.5, -0.5],  # top sensor at top
+            tickvals=list(range(n)),
+            ticktext=sensors,
+            tickfont=dict(color="rgba(168,212,255,0.85)", size=10),
+            showgrid=False,
+            zeroline=False,
+            range=[n - 0.5, -0.5],
         ),
-        title=dict(
-            text="SHAP Beeswarm",
-            font=dict(color="white", size=13),
-            x=0.01, y=0.98,
+        hovermode="closest",
+        hoverlabel=dict(
+            bgcolor="#0d1e3a",
+            bordercolor="rgba(74,158,255,0.4)",
+            font=dict(color="white", size=12),
         ),
     )
     return fig
@@ -390,10 +410,11 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
 #  SHAP TREND LINE CHART
 # ─────────────────────────────────────────────
 
-def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int = 5) -> go.Figure:
+def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int = None) -> go.Figure:
     """
-    Line chart showing SHAP values over cycles for the top N contributing sensors.
+    Line chart showing SHAP values over cycles for all contributing sensors.
     shap_history: list of shap_data per cycle (same order as cycles list).
+    top_n is kept for backwards compatibility but ignored — all sensors are shown.
     """
     if not shap_history or not cycles:
         fig = go.Figure()
@@ -406,7 +427,7 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
         )
         return fig
 
-    # Identify top N sensors by average |score| across history
+    # Collect all sensors, ordered by average |score| descending
     sensor_scores = {}
     for snapshot in shap_history:
         if not snapshot:
@@ -416,11 +437,15 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
             sensor_scores.setdefault(name, []).append(abs(entry["score"]))
 
     avg_scores = {s: np.mean(vals) for s, vals in sensor_scores.items()}
-    top_sensors = sorted(avg_scores.keys(), key=lambda s: avg_scores[s], reverse=True)[:top_n]
+    top_sensors = sorted(avg_scores.keys(), key=lambda s: avg_scores[s], reverse=True)
 
     # Build time-series per sensor
-    color_palette = ["#4a9eff", "#ff4d4d", "#ffd93d", "#00c875", "#7b61ff",
-                     "#ff9f43", "#a8d4ff", "#ff6b6b", "#54e0c7", "#c084fc"]
+    color_palette = [
+        "#4a9eff", "#ff4d4d", "#ffd93d", "#00c875", "#7b61ff",
+        "#ff9f43", "#a8d4ff", "#ff6b6b", "#54e0c7", "#c084fc",
+        "#f9ca24", "#6ab04c", "#e056fd", "#22a6b3", "#eb4d4b",
+        "#be2edd", "#4834d4", "#f0932b", "#badc58", "#30336b",
+    ]
 
     fig = go.Figure()
     for idx, sensor in enumerate(top_sensors):
@@ -446,8 +471,8 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=50, r=20, t=40, b=40),
-        height=300,
+        margin=dict(l=50, r=20, t=60, b=40),
+        height=380,
         legend=dict(
             font=dict(color="rgba(168,212,255,0.8)", size=11),
             bgcolor="rgba(0,0,0,0)",
@@ -465,11 +490,6 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
             tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
             gridcolor="rgba(74,158,255,0.1)",
             zeroline=True, zerolinecolor="rgba(74,158,255,0.2)", zerolinewidth=1,
-        ),
-        title=dict(
-            text="SHAP Value Trend Over Cycles (Top Sensors)",
-            font=dict(color="white", size=16),
-            x=0.01, y=0.98,
         ),
     )
     return fig
@@ -742,7 +762,8 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "background": "rgba(13,32,69,0.6)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "20px",
-                    "display": "flex", "flexDirection": "column", "gap": "16px",
+                    "display": "flex", "flexDirection": "column",
+                    "justifyContent": "space-between", "gap": "12px",
                 },
                 children=[
                     # Section 1: Status Overview + Fault Mode
@@ -881,17 +902,47 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     ),
                 ]
             ),
-            # Column 3: SHAP beeswarm chart (flex: 2)
+            # Column 3: SHAP waterfall chart (flex: 2)
             html.Div(
                 style={
                     "flex": "2", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "16px",
+                    "display": "flex", "flexDirection": "column",
                 },
                 children=[
-                    dcc.Graph(id="da-shap-beeswarm", config={"displayModeBar": False},
-                              figure=build_shap_beeswarm([])),
+                    # Header: title + cycle selector
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "justifyContent": "space-between", "marginBottom": "10px"},
+                        children=[
+                            html.Div("SHAP Waterfall", style={
+                                "color": "white", "fontSize": "16px", "fontWeight": "700",
+                            }),
+                            dcc.Dropdown(
+                                id="da-cycle-selector",
+                                options=[{"label": "Latest", "value": "latest"}],
+                                value="latest",
+                                clearable=False,
+                                className="dark-dropdown",
+                                style={
+                                    "width": "130px",
+                                    "background": "rgba(10,20,45,0.8)",
+                                    "border": "1.5px solid rgba(74,158,255,0.4)",
+                                    "borderRadius": "8px",
+                                    "color": "white",
+                                    "fontSize": "12px",
+                                },
+                            ),
+                        ]
+                    ),
+                    dcc.Graph(
+                        id="da-shap-waterfall",
+                        config={"displayModeBar": False},
+                        figure=build_shap_waterfall([]),
+                        style={"flex": "1", "minHeight": "0", "height": "380px"},
+                    ),
                 ]
             ),
         ]
@@ -911,6 +962,9 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "borderRadius": "12px", "padding": "16px", "height": "auto",
                 },
                 children=[
+                    html.Div("SHAP Value Trend Over Cycles", style={
+                                "color": "white", "fontSize": "16px", "fontWeight": "700",
+                            }),
                     dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
                               figure=build_shap_trend_chart([], [])),
                 ]
@@ -992,6 +1046,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
         dcc.Store(id="da-degradation-type", data=degradation_type),
         dcc.Store(id="da-degradation-confidence", data=degradation_confidence),
         dcc.Store(id="da-model-type", data=model_type),
+        dcc.Store(id="da-shap-history-store", data={"cycles": [], "history": []}),
         dcc.Interval(id="da-interval", interval=5_000, n_intervals=0),  # poll every 5s (same as overview)
     ])
 
@@ -1077,7 +1132,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         return fig
 
     @app.callback(
-        Output("da-shap-beeswarm", "figure"),
+        Output("da-shap-waterfall", "figure"),
         Output("da-shap-trend", "figure"),
         Output("da-confidence-value", "children"),
         Output("da-confidence-ring", "children"),
@@ -1086,6 +1141,8 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         Output("da-fault-mode-label", "children"),
         Output("da-top-drivers-chart", "figure"),
         Output("da-interval", "disabled"),
+        Output("da-shap-history-store", "data"),
+        Output("da-cycle-selector", "options"),
         Input("da-interval", "n_intervals"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
@@ -1107,7 +1164,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
 
         if not supabase or not engine_db_id:
             return (
-                build_shap_beeswarm([]),
+                build_shap_waterfall([]),
                 build_shap_trend_chart([], []),
                 "—",
                 _build_confidence_ring(0),
@@ -1116,6 +1173,8 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 "NO PATTERN DETECTED",
                 build_top_drivers_chart(None),
                 False,
+                {"cycles": [], "history": []},
+                [{"label": "Latest", "value": "latest"}],
             )
 
         # ── Check if simulation is still running ──
@@ -1126,15 +1185,20 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         shap_history = []
         latest_shap = []
         predicted_ruls = []
+        shap_base_values = []
 
         try:
             resp = supabase.table("rul_predictions") \
-                .select("cycle, predicted_rul, shap_values") \
+                .select("cycle, predicted_rul, shap_values, shap_base_value") \
                 .eq("engine_id", engine_db_id) \
                 .order("cycle", desc=False) \
                 .execute()
 
             for row in (resp.data or []):
+                shap = _json.loads(row["shap_values"]) if isinstance(row["shap_values"], str) else row["shap_values"]
+                total_shap = sum(d["score"] for d in shap) if shap else None
+                # print(f"cycle={row['cycle']:>3}  predicted_rul={row['predicted_rul']:>8}  "
+                    #   f"base={row['shap_base_value']:>8}  sum(shap)={total_shap}")
                 cycle = row.get("cycle")
                 raw_shap = row.get("shap_values")
                 parsed_shap = []
@@ -1147,6 +1211,13 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 shap_history.append(parsed_shap)
                 pred_rul = row.get("predicted_rul")
                 predicted_ruls.append(float(pred_rul) if pred_rul is not None else None)
+                base_val = row.get("shap_base_value")
+                shap_base_values.append(float(base_val) if base_val is not None else 0.0)
+
+            # Debug: show how many rows have shap_values populated
+            rows_with_shap = sum(1 for s in shap_history if s)
+            print(f"[DEGRAD] engine={engine_db_id}: {len(cycles_list)} prediction rows, "
+                  f"{rows_with_shap} with shap_values")
 
             # Latest valid SHAP snapshot
             for snapshot in reversed(shap_history):
@@ -1154,10 +1225,17 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                     latest_shap = snapshot
                     break
 
+            # Latest base value
+            latest_base = 0.0
+            for bv in reversed(shap_base_values):
+                if bv != 0.0:
+                    latest_base = bv
+                    break
+
         except Exception as e:
             print(f"[DEGRAD] Error fetching SHAP data: {e}")
             return (
-                build_shap_beeswarm([]),
+                build_shap_waterfall([]),
                 build_shap_trend_chart([], []),
                 "—",
                 _build_confidence_ring(0),
@@ -1166,6 +1244,8 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 "NO PATTERN DETECTED",
                 build_top_drivers_chart(None),
                 not sim_active,
+                {"cycles": [], "history": []},
+                [{"label": "Latest", "value": "latest"}],
             )
 
         # ── Re-fetch degradation_type and stored similarity (may have updated) ──
@@ -1209,13 +1289,19 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             fault_label = "NO PATTERN DETECTED"
 
         # ── Build charts ──
-        beeswarm_fig     = build_shap_beeswarm(latest_shap, shap_history=shap_history)
+        waterfall_fig    = build_shap_waterfall(latest_shap, cycle_label="Latest", base_value=latest_base)
         trend_fig        = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
         sparkline_fig    = _build_rul_sparkline([v for v in predicted_ruls if v is not None])
         top_drivers_fig  = build_top_drivers_chart(latest_shap, top_n=top_n_filter or "all")
 
+        # ── Build cycle selector options ──
+        cycle_options = [{"label": "Latest", "value": "latest"}] + [
+            {"label": f"Cycle {c}", "value": str(i)}
+            for i, c in enumerate(cycles_list) if c is not None
+        ]
+
         return (
-            beeswarm_fig,
+            waterfall_fig,
             trend_fig,
             similarity_display,
             _build_confidence_ring(similarity_pct),
@@ -1224,6 +1310,8 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             fault_label,
             top_drivers_fig,
             not sim_active,
+            {"cycles": cycles_list, "history": shap_history, "base_values": shap_base_values},
+            cycle_options,
         )
 
     @app.callback(
@@ -1374,3 +1462,40 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             pass
 
         return build_top_drivers_chart(None), top_n, *styles
+
+    @app.callback(
+        Output("da-shap-waterfall", "figure", allow_duplicate=True),
+        Input("da-cycle-selector", "value"),
+        State("da-shap-history-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_waterfall_on_cycle_select(selected_value, store_data):
+        """Re-render the waterfall chart when the user picks a specific cycle."""
+        if not store_data:
+            return build_shap_waterfall([])
+
+        cycles      = store_data.get("cycles", [])
+        history     = store_data.get("history", [])
+        base_values = store_data.get("base_values", [])
+
+        if selected_value == "latest" or not selected_value:
+            # Show latest valid snapshot
+            latest_shap = []
+            latest_base = 0.0
+            for i, snapshot in enumerate(reversed(history)):
+                if snapshot:
+                    latest_shap = snapshot
+                    idx = len(history) - 1 - i
+                    latest_base = base_values[idx] if idx < len(base_values) else 0.0
+                    break
+            return build_shap_waterfall(latest_shap, cycle_label="Latest", base_value=latest_base)
+
+        # Selected value is the index into cycles/history
+        try:
+            idx = int(selected_value)
+            shap_data   = history[idx] if idx < len(history) else []
+            base_val    = base_values[idx] if idx < len(base_values) else 0.0
+            cycle_label = f"Cycle {cycles[idx]}" if idx < len(cycles) else f"Cycle {idx}"
+            return build_shap_waterfall(shap_data, cycle_label=cycle_label, base_value=base_val)
+        except (ValueError, IndexError):
+            return build_shap_waterfall([])
