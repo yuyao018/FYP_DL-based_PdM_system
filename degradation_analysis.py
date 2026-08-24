@@ -974,17 +974,16 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                             style={"flex": "1", "minHeight": "0"}),
                 ]
             ),
-            # AI Explanation (flex: 1) — matches chart height, content scrolls
+            # AI Explanation — fixed 440px, same as chart, text scrolls inside
             html.Div(
                 style={
                     "flex": "1", "minWidth": "200px",
+                    "height": "440px", "boxSizing": "border-box",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "20px",
                     "display": "flex", "flexDirection": "column",
                     "overflow": "hidden",
-                    "height": "440px",
-                    "boxSizing": "border-box",
                 },
                 children=[
                     html.Div(style={"display": "flex", "flexDirection": "column", "gap": "8px",
@@ -1017,20 +1016,17 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                         id="da-llm-loading",
                         type="circle",
                         color="#4a9eff",
-                        style={"flex": "1", "minHeight": "0", "overflow": "hidden",
-                               "display": "flex", "flexDirection": "column"},
-                        parent_style={"flex": "1", "minHeight": "0", "display": "flex",
-                                      "flexDirection": "column", "overflow": "hidden"},
+                        style={"flex": "1", "overflow": "hidden"},
+                        parent_style={"flex": "1", "overflow": "hidden"},
                         children=[
                             html.Div(
                                 id="da-llm-explanation",
                                 style={
                                     "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
                                     "lineHeight": "1.7",
-                                    "flex": "1",
                                     "overflowY": "auto",
-                                    "minHeight": "0",
-                                    "paddingRight": "8px",
+                                    "height": "100%",
+                                    "paddingRight": "6px",
                                 },
                                 children=[
                                     html.Div(cached_explanation, style={"marginBottom": "8px"})
