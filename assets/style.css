@@ -729,3 +729,28 @@ input[type="number"] {
    SCHEDULE MAINTENANCE MODAL — DATE INPUT (native)
    colorScheme: dark is set inline; no extra CSS needed.
    ============================================ */
+
+/* ============================================
+   SCHEDULE MAINTENANCE — sidebar toggle hidden
+   ============================================ */
+#sidebar-toggle {
+    display: none !important;
+}
+
+/* ============================================
+   DASHBOARD NAVBAR — user menu dropdown items
+   ============================================ */
+
+.user-dropdown-item {
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.user-dropdown-item:hover {
+    background: rgba(74,158,255,0.12) !important;
+    color: white !important;
+}
+
+.user-dropdown-item-danger:hover {
+    background: rgba(255,77,77,0.1) !important;
+    color: #ff4d4d !important;
+}

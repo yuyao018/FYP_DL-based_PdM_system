@@ -149,7 +149,8 @@ def display_page(pathname, session):
     if pathname.startswith("/schedule-maintenance/"):
         engine_db_id = pathname.split("/")[-1]
         return create_schedule_maintenance_layout(sb, engine_db_id=engine_db_id,
-                                                  org_id=org_id, role=user_role)
+                                                  org_id=org_id, role=user_role,
+                                                  user_id=(session or {}).get("user_id"))
 
     if pathname.startswith("/edit-user/"):
         user_id = pathname.split("/")[-1]
@@ -161,7 +162,7 @@ def display_page(pathname, session):
 
     # ── Exact routes ──
     routes = {
-        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role),
+        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role, username=(session or {}).get("username"), first_name=(session or {}).get("first_name")),
         "/overview":          lambda: create_overview_layout(sb),
         "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
         "/alert-log":         lambda: create_alert_log_layout(sb),
@@ -211,24 +212,48 @@ app.clientside_callback(
         if (!data) {
             return window.dash_clientside.no_update;
         }
-        // Extract message (ignore timestamp suffix)
         var msg = data.split('|')[0];
-        // Show toast
         var el = document.getElementById('global-toast');
         if (el) {
             el.innerText = msg;
             el.style.top = '20px';
-            // Auto-hide after 2.5 seconds
-            setTimeout(function() {
-                el.style.top = '-60px';
-            }, 2500);
+            setTimeout(function() { el.style.top = '-60px'; }, 2500);
         }
-        // Clear the store so it doesn't re-trigger on navigation
         return null;
     }
     """,
     Output("toast-store", "data"),
     Input("toast-store", "data"),
+    prevent_initial_call=True,
+)
+
+# User menu toggle — click to open/close, click outside to close
+app.clientside_callback(
+    """
+    function(n) {
+        var menu = document.querySelector('.user-dropdown-menu');
+        var trigger = document.getElementById('user-menu-trigger');
+        if (!menu) return window.dash_clientside.no_update;
+
+        var isOpen = menu.style.display === 'block';
+        menu.style.display = isOpen ? 'none' : 'block';
+
+        if (!isOpen) {
+            function handleOutside(e) {
+                if (trigger && !trigger.contains(e.target)) {
+                    menu.style.display = 'none';
+                    document.removeEventListener('click', handleOutside);
+                }
+            }
+            setTimeout(function() {
+                document.addEventListener('click', handleOutside);
+            }, 0);
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("user-menu-trigger", "id"),
+    Input("user-menu-trigger", "n_clicks"),
     prevent_initial_call=True,
 )
 

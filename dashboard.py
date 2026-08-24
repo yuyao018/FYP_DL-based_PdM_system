@@ -78,7 +78,7 @@ def logout_icon():
     return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}', style={'width': '28px', 'height': '28px'})
 
 
-def create_dashboard_layout(supabase, org_id=None, role=None):
+def create_dashboard_layout(supabase, org_id=None, role=None, username=None, first_name=None):
     engine_data = []
     maintenance_alerts = []
     total_count = 0
@@ -193,54 +193,80 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 
             # ── Fetch maintenance alerts scoped to this org's engines ──
+            # One alert per engine: critical beats warning, latest wins within same severity.
             if org_id and not engine_ids:
-                # Organization has no engines — no alerts to show
                 pass
             else:
                 alert_query = supabase.table("alert_logs") \
-                    .select("*") \
+                    .select("engine_id, severity, triggered_at") \
                     .in_("severity", ["warning", "critical"]) \
                     .eq("status", "active") \
-                    .order("triggered_at", desc=True) \
-                    .limit(10)
+                    .order("triggered_at", desc=True)
 
-                # If org_id present, only fetch alerts for this org's engines
                 if org_id and engine_ids:
                     alert_query = alert_query.in_("engine_id", engine_ids)
 
                 alerts_resp = alert_query.execute()
 
+                # Deduplicate: keep one per engine, critical > warning, then latest
+                best: dict = {}  # engine_id → alert row
                 for alert in (alerts_resp.data or []):
-                    alert_engine_id = alert.get("engine_id")   # this is engines.id (PK), per your FK
-                    if alert_engine_id is None:
+                    eid = alert.get("engine_id")
+                    if not eid:
                         continue
-
-                    # Look up the engine row for this alert
-                    eng_resp = supabase.table("engines") \
-                        .select("id, engine_id, current_cycle") \
-                        .eq("id", alert_engine_id) \
-                        .single() \
-                        .execute()
-                    eng = eng_resp.data or {}
-
-                    eng_db_id = eng.get("id")
-                    eng_display_id = str(eng.get("engine_id", "?")).zfill(2)
-
-                    # Use predicted_rul if available, else cycle-based fallback
-                    if eng_db_id in latest_rul_map:
-                        rul = int(round(latest_rul_map[eng_db_id]))
+                    sev = (alert.get("severity") or "warning").lower()
+                    if eid not in best:
+                        best[eid] = alert
                     else:
-                        current_cycle = eng.get("current_cycle") or 0
-                        rul = max(0, int(max_life - current_cycle))
+                        existing_sev = best[eid].get("severity", "warning").lower()
+                        # Replace if new alert is critical and existing is only warning
+                        if sev == "critical" and existing_sev != "critical":
+                            best[eid] = alert
 
+                from datetime import datetime as _dt, timezone as _tz
+
+                def _relative_time(ts_str: str) -> str:
+                    """Convert ISO timestamp to relative label like '12m ago'."""
+                    if not ts_str:
+                        return ""
+                    try:
+                        ts = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        now = _dt.now(_tz.utc)
+                        delta = int((now - ts).total_seconds())
+                        if delta < 60:
+                            return f"{delta}s ago"
+                        elif delta < 3600:
+                            return f"{delta // 60}m ago"
+                        elif delta < 86400:
+                            return f"{delta // 3600}h ago"
+                        else:
+                            return f"{delta // 86400}d ago"
+                    except Exception:
+                        return ""
+
+                for eid, alert in best.items():
+                    # Fetch engine display info
+                    try:
+                        eng_resp = supabase.table("engines") \
+                            .select("id, engine_id") \
+                            .eq("id", eid) \
+                            .single().execute()
+                        eng = eng_resp.data or {}
+                    except Exception:
+                        eng = {}
+
+                    eng_db_id = eng.get("id") or eid
+                    eng_display_id = str(eng.get("engine_id", "?")).zfill(2)
                     severity = (alert.get("severity") or "warning").lower()
+                    rul = int(round(latest_rul_map.get(eng_db_id, 0)))
+                    rel_time = _relative_time(alert.get("triggered_at", ""))
 
                     maintenance_alerts.append({
-                        "db_id": eng_db_id,
-                        "engine_id": eng_display_id,
-                        "severity": severity,
-                        "rul": rul,
-                        "action_text": "Immediate Maintenance" if severity == "critical" else "Schedule Maintenance",
+                        "db_id":      eng_db_id,
+                        "engine_id":  eng_display_id,
+                        "severity":   severity,
+                        "rul":        rul,
+                        "rel_time":   rel_time,
                     })
 
             print(f"[DEBUG] Maintenance alerts: {maintenance_alerts}")
@@ -270,7 +296,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                                 "background": "#101a2f",
                                 "border": "1px solid rgba(74, 158, 255, 0.2)",
                                 "borderRadius": "12px",
-                                "padding": "16px 16px 8px",
+                                "padding": "16px",
                                 "display": "flex",
                                 "flexDirection": "column",
                                 "gap": "8px",
@@ -331,6 +357,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                                         )
                                     ]
                                 ),
+                                # Footer row — spacer keeps height consistent for healthy cards
                                 html.Div(
                                     style={
                                         "borderTop": "1px solid rgba(74,158,255,0.15)",
@@ -340,7 +367,6 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                                         "alignItems": "center",
                                     },
                                     children=[
-                                        # Spacer that matches the button size to keep height consistent
                                         html.Span(
                                             "Schedule Maintenance",
                                             style={
@@ -364,14 +390,14 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                         )
                     ]
                 ),
-                # Schedule Maintenance button — absolutely positioned over the card footer,
-                # outside dcc.Link so it navigates to its own page without triggering overview.
+                # Schedule Maintenance — sits at same position as the spacer span above,
+                # outside dcc.Link so clicking it goes to a different page.
                 html.A(
                     "Schedule Maintenance",
                     href=f"/schedule-maintenance/{engine['db_id']}",
                     style={
                         "position": "absolute",
-                        "bottom": "8px",
+                        "bottom": "16px",
                         "left": "16px",
                         "visibility": "visible" if show_maintenance else "hidden",
                         "background": "rgba(74,158,255,0.12)",
@@ -392,47 +418,74 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
     # ── Maintenance alert card builder ──
     def maintenance_alert_card(alert):
         is_critical = alert["severity"] == "critical"
-        icon = critical_icon() if is_critical else warning_icon()
-        color = "#ff4d4d" if is_critical else "#ffd93d"
-        bg = "rgba(255,77,77,0.08)" if is_critical else "rgba(255,217,61,0.08)"
+        color  = "#ff4d4d" if is_critical else "#ffd93d"
+        bg     = "rgba(255,77,77,0.08)" if is_critical else "rgba(255,217,61,0.06)"
+        border = "rgba(255,77,77,0.35)" if is_critical else "rgba(255,217,61,0.25)"
+        label  = "Escalated to critical" if is_critical else "Warning threshold reached"
+        rel    = alert.get("rel_time", "")
+        sub    = f"{label} · {rel}" if rel else label
+
+        # Triangle warning icon in matching colour
+        tri_svg = (
+            f'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" '
+            f'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+            f'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>'
+            f'<line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'
+            f'</svg>'
+        )
+        import base64 as _b64
+        tri_src = "data:image/svg+xml;base64," + _b64.b64encode(tri_svg.encode()).decode()
 
         return dcc.Link(
             href=f"/overview/{alert['db_id']}",
-            style={"textDecoration": "none"},
+            style={"textDecoration": "none", "display": "block"},
             children=[
                 html.Div(
                     style={
                         "background": bg,
-                        "border": f"2px solid {color}",
-                        "borderRadius": "12px",
-                        "padding": "16px",
+                        "border": f"1px solid {border}",
+                        "borderLeft": f"3px solid {color}",
+                        "borderRadius": "10px",
+                        "padding": "12px 14px",
+                        "display": "flex",
+                        "alignItems": "center",
+                        "gap": "12px",
                         "cursor": "pointer",
                     },
                     children=[
+                        # Triangle icon
+                        html.Img(src=tri_src, style={"width": "20px", "height": "20px", "flexShrink": "0"}),
+                        # Text block
                         html.Div(
-                            style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "8px"},
+                            style={"minWidth": "0"},
                             children=[
+                                # Engine name + RUL on same line
                                 html.Div(
-                                    style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                                    style={"display": "flex", "alignItems": "baseline", "gap": "8px", "marginBottom": "2px"},
                                     children=[
-                                        icon,
-                                        html.Span(f"ENGINE-{alert['engine_id']}", style={"color": color, "fontSize": "18px", "fontWeight": "700"})
+                                        html.Span(
+                                            f"ENGINE-{alert['engine_id']}",
+                                            style={"color": "white", "fontWeight": "700", "fontSize": "14px"}
+                                        ),
+                                        html.Span(
+                                            f"RUL {alert['rul']}",
+                                            style={"color": color, "fontWeight": "700", "fontSize": "13px"}
+                                        ),
                                     ]
                                 ),
-                                html.Span(alert["severity"].upper(), style={
-                                    "background": f"rgba({'255,77,77' if is_critical else '255,217,61'},0.2)",
-                                    "color": color, "border": f"1px solid {color}",
-                                    "borderRadius": "8px", "padding": "4px 10px",
-                                    "fontSize": "10px", "fontWeight": "700",
-                                })
+                                # Subtitle
+                                html.Div(
+                                    sub,
+                                    style={
+                                        "color": "rgba(168,212,255,0.55)",
+                                        "fontSize": "12px",
+                                        "whiteSpace": "nowrap",
+                                        "overflow": "hidden",
+                                        "textOverflow": "ellipsis",
+                                    }
+                                ),
                             ]
                         ),
-                        html.Div(style={"marginBottom": "4px"}, children=[
-                            html.Span(f"RUL = {alert['rul']} cycles", style={"color": "white", "fontSize": "16px"})
-                        ]),
-                        html.Div(children=[
-                            html.Span(alert["action_text"], style={"color": "rgba(255,255,255,0.7)", "fontSize": "14px"})
-                        ])
                     ]
                 )
             ]
@@ -440,11 +493,13 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
 
     return html.Div(
         style={
-            "minHeight": "100vh",
+            "height": "100vh",
+            "overflow": "hidden",
             "fontFamily": "'Segoe UI', sans-serif",
             "background": "#0a1628",
             "color": "white",
-            "padding": "0px",
+            "display": "flex",
+            "flexDirection": "column",
         },
         children=[
             dcc.Location(id='url-dashboard', refresh=False),
@@ -466,44 +521,181 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "gap": "20px"},
                         children=[
-                            dcc.Link(
-                                href="/user-management",
-                                style={"textDecoration": "none",
-                                       "display": "block" if role == "admin" else "none"},
+                            # ── Bell + badge ──
+                            html.Div(
+                                style={"position": "relative", "display": "flex",
+                                       "alignItems": "center", "cursor": "pointer"},
                                 children=[
-                                    html.Div(
+                                    html.Img(
+                                        src="data:image/svg+xml;base64," + base64.b64encode(
+                                            b'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4a9eff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>'
+                                        ).decode(),
+                                        style={"width": "22px", "height": "22px"},
+                                    ),
+                                    html.Span(
+                                        str(alert_count),
                                         style={
-                                            "background": "rgba(74, 158, 255, 0.15)",
-                                            "border": "1px solid rgba(74, 158, 255, 0.5)",
-                                            "borderRadius": "12px", "padding": "6px 16px",
-                                            "display": "flex", "alignItems": "center", "gap": "8px", "cursor": "pointer",
-                                        },
-                                        children=[html.Span("Admin Control", style={"color": "#a8d4ff", "fontSize": "14px", "fontWeight": "600"})]
-                                    )
+                                            "display": "flex" if alert_count > 0 else "none",
+                                            "position": "absolute",
+                                            "bottom": "-5px", "right": "-7px",
+                                            "background": "#ff4d4d",
+                                            "color": "white",
+                                            "fontSize": "9px", "fontWeight": "700",
+                                            "borderRadius": "50%",
+                                            "width": "16px", "height": "16px",
+                                            "alignItems": "center", "justifyContent": "center",
+                                            "lineHeight": "1",
+                                            "border": "1.5px solid #0a1628",
+                                        }
+                                    ),
                                 ]
                             ),
+
+                            # ── User avatar + name/role + click dropdown ──
                             html.Div(
-                                style={"display": "flex", "alignItems": "center", "gap": "8px"},
+                                id="user-menu-trigger",
+                                n_clicks=0,
+                                style={
+                                    "position": "relative",
+                                    "display": "flex",
+                                    "alignItems": "center",
+                                    "gap": "10px",
+                                    "cursor": "pointer",
+                                    "padding": "4px 6px",
+                                    "borderRadius": "10px",
+                                },
+                                className="user-menu-trigger",
                                 children=[
-                                    bell_icon(),
-                                    html.Span(f"{str(alert_count)} alerts", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "700"})
+                                    # Circular avatar with first initial
+                                    html.Div(
+                                        (first_name or username or "U")[0].upper(),
+                                        style={
+                                            "width": "36px", "height": "36px",
+                                            "borderRadius": "50%",
+                                            "background": "linear-gradient(135deg, #1e5fa8, #4a9eff)",
+                                            "display": "flex", "alignItems": "center",
+                                            "justifyContent": "center",
+                                            "color": "white", "fontWeight": "700",
+                                            "fontSize": "15px", "flexShrink": "0",
+                                            "border": "2px solid rgba(74,158,255,0.35)",
+                                        }
+                                    ),
+                                    # Name + role stacked
+                                    html.Div(
+                                        style={"display": "flex", "flexDirection": "column",
+                                               "alignItems": "flex-start"},
+                                        children=[
+                                            html.Span(
+                                                first_name or username or "User",
+                                                style={"color": "white", "fontSize": "13px",
+                                                       "fontWeight": "600", "lineHeight": "1.3",
+                                                       "whiteSpace": "nowrap"}
+                                            ),
+                                            html.Span(
+                                                (role or "user").capitalize(),
+                                                style={"color": "rgba(168,212,255,0.6)",
+                                                       "fontSize": "11px", "lineHeight": "1.3"}
+                                            ),
+                                        ]
+                                    ),
+
+                                    # Hover dropdown menu
+                                    html.Div(
+                                        className="user-dropdown-menu",
+                                        style={
+                                            "display": "none",
+                                            "position": "absolute",
+                                            "top": "calc(100% + 10px)",
+                                            "right": "0",
+                                            "minWidth": "185px",
+                                            "background": "linear-gradient(135deg, #0d1e3a, #071530)",
+                                            "border": "1px solid rgba(74,158,255,0.22)",
+                                            "borderRadius": "12px",
+                                            "boxShadow": "0 8px 32px rgba(0,0,0,0.55)",
+                                            "zIndex": "9999",
+                                            "padding": "6px 0",
+                                        },
+                                        children=[
+                                            # Dashboard
+                                            dcc.Link(href="/dashboard", style={"textDecoration": "none", "display": "block"},
+                                                children=[html.Div(
+                                                    className="user-dropdown-item",
+                                                    style={"display": "flex", "alignItems": "center",
+                                                           "gap": "10px", "padding": "10px 16px",
+                                                           "color": "rgba(168,212,255,0.85)", "fontSize": "13px",
+                                                           "fontWeight": "500"},
+                                                    children=[
+                                                        html.Img(src="data:image/svg+xml;base64," + base64.b64encode(b'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>').decode(), style={"width": "15px", "height": "15px"}),
+                                                        "Dashboard",
+                                                    ]
+                                                )]
+                                            ),
+                                            # My Schedule
+                                            dcc.Link(href="/schedule-maintenance/none", style={"textDecoration": "none", "display": "block"},
+                                                children=[html.Div(
+                                                    className="user-dropdown-item",
+                                                    style={"display": "flex", "alignItems": "center",
+                                                           "gap": "10px", "padding": "10px 16px",
+                                                           "color": "rgba(168,212,255,0.85)", "fontSize": "13px",
+                                                           "fontWeight": "500"},
+                                                    children=[
+                                                        html.Img(src="data:image/svg+xml;base64," + base64.b64encode(b'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>').decode(), style={"width": "15px", "height": "15px"}),
+                                                        "My Schedule",
+                                                    ]
+                                                )]
+                                            ),
+                                            # Admin Control (admin only)
+                                            *([
+                                                dcc.Link(href="/user-management", style={"textDecoration": "none", "display": "block"},
+                                                    children=[html.Div(
+                                                        className="user-dropdown-item",
+                                                        style={"display": "flex", "alignItems": "center",
+                                                               "gap": "10px", "padding": "10px 16px",
+                                                               "color": "rgba(168,212,255,0.85)", "fontSize": "13px",
+                                                               "fontWeight": "500"},
+                                                        children=[
+                                                            html.Img(src="data:image/svg+xml;base64," + base64.b64encode(b'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#a8d4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/><circle cx="19" cy="8" r="2"/><line x1="19" y1="11" x2="19" y2="13"/></svg>').decode(), style={"width": "15px", "height": "15px"}),
+                                                            "Admin Control",
+                                                        ]
+                                                    )]
+                                                ),
+                                            ] if role == "admin" else []),
+                                            # Divider
+                                            html.Div(style={"borderTop": "1px solid rgba(74,158,255,0.15)", "margin": "4px 0"}),
+                                            # Logout
+                                            html.Div(
+                                                id="logout-btn", n_clicks=0,
+                                                className="user-dropdown-item-danger",
+                                                style={"display": "flex", "alignItems": "center",
+                                                       "gap": "10px", "padding": "10px 16px",
+                                                       "color": "#ff6b6b", "fontSize": "13px",
+                                                       "fontWeight": "500", "cursor": "pointer"},
+                                                children=[
+                                                    html.Img(src="data:image/svg+xml;base64," + base64.b64encode(b'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#ff4d4d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>').decode(), style={"width": "15px", "height": "15px"}),
+                                                    "Logout",
+                                                ]
+                                            ),
+                                        ]
+                                    ),
                                 ]
                             ),
-                            html.Div(
-                                id="logout-btn", n_clicks=0,
-                                style={"cursor": "pointer", "display": "flex", "alignItems": "center"},
-                                children=[logout_icon()]
-                            )
                         ]
                     )
                 ]
             ),
             html.Div(
-                style={"padding": "24px 32px"},
+                style={
+                    "flex": "1",
+                    "minHeight": "0",
+                    "display": "flex",
+                    "flexDirection": "column",
+                    "padding": "24px 32px",
+                    "overflow": "hidden",
+                },
                 children=[
                     # ... status cards unchanged ...
                     html.Div(
-                        style={"display": "flex", "gap": "20px", "marginBottom": "32px", "justifyContent": "center"},
+                        style={"display": "flex", "gap": "20px", "marginBottom": "24px", "justifyContent": "center", "flexShrink": "0"},
                         children=[
                             html.Div(style={"background": "linear-gradient(135deg, #2a354a 0%, #1a2335 100%)", "border": "1px solid rgba(255,255,255,0.2)", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
                                      children=[html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(total_count), style={"color": "white", "fontSize": "36px", "fontWeight": "700"})]),
@@ -516,13 +708,13 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                         ]
                     ),
                     html.Div(
-                        style={"display": "flex", "gap": "24px"},
+                        style={"display": "flex", "gap": "24px", "flex": "1", "minHeight": "0"},
                         children=[
                             html.Div(
-                                style={"flex": "3"},
+                                style={"flex": "3", "display": "flex", "flexDirection": "column", "minHeight": "0"},
                                 children=[
                                     html.Div(
-                                        style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "16px"},
+                                        style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "16px", "flexShrink": "0"},
                                         children=[
                                             html.H2("All Engines", style={"margin": "0", "color": "white", "fontSize": "22px", "fontWeight": "700"}),
                                             html.Div(
@@ -550,7 +742,15 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                                     ),
                                     html.Div(
                                         id="engines-grid",
-                                        style={"display": "grid", "gridTemplateColumns": "repeat(3, 1fr)", "gap": "16px"},
+                                        style={
+                                            "display": "grid",
+                                            "gridTemplateColumns": "repeat(3, 1fr)",
+                                            "gap": "16px",
+                                            "overflowY": "auto",
+                                            "flex": "1",
+                                            "minHeight": "0",
+                                            "paddingRight": "4px",
+                                        },
                                         children=[engine_card(engine) for engine in engine_data] if engine_data else [
                                             html.Div("No data.", style={"color": "rgba(255,255,255,0.7)", "fontSize": "16px", "textAlign": "center", "padding": "40px 0", "gridColumn": "1 / -1"})
                                         ]
@@ -559,11 +759,27 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
                             ),
                             # ── Maintenance alerts (now from Supabase) ──
                             html.Div(
-                                style={"flex": "1", "background": "#101a2f", "border": "1px solid rgba(74,158,255,0.3)", "borderRadius": "16px", "padding": "20px"},
+                                style={
+                                    "flex": "1",
+                                    "minHeight": "0",
+                                    "display": "flex",
+                                    "flexDirection": "column",
+                                    "background": "#101a2f",
+                                    "border": "1px solid rgba(74,158,255,0.3)",
+                                    "borderRadius": "16px",
+                                    "padding": "20px",
+                                },
                                 children=[
-                                    html.H2("Maintenance alerts", style={"margin": "0 0 16px 0", "color": "white", "fontSize": "22px", "fontWeight": "700"}),
+                                    html.H2("Maintenance alerts", style={"margin": "0 0 16px 0", "color": "white", "fontSize": "22px", "fontWeight": "700", "flexShrink": "0"}),
                                     html.Div(
-                                        style={"display": "flex", "flexDirection": "column", "gap": "16px"},
+                                        style={
+                                            "display": "flex",
+                                            "flexDirection": "column",
+                                            "gap": "16px",
+                                            "overflowY": "auto",
+                                            "flex": "1",
+                                            "minHeight": "0",
+                                        },
                                         children=[maintenance_alert_card(a) for a in maintenance_alerts] if maintenance_alerts else [
                                             html.Div("No active maintenance alerts.",
                                                      style={"color": "rgba(255,255,255,0.5)", "fontSize": "14px", "textAlign": "center", "padding": "20px 0"})

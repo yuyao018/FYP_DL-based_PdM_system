@@ -179,16 +179,14 @@ def _build_calendar(events: list[dict], offset: int = 0) -> html.Div:
             row_span = 1
 
             for ev_idx, ev in enumerate(slot_events):
-                color = _STATUS_COLORS.get(ev.get("status", "healthy"), "#4a9eff")
+                # Use user_color if set (admin view), otherwise fall back to status colour
+                user_color = ev.get("user_color", "")
+                color = user_color if user_color else _STATUS_COLORS.get(ev.get("status", "healthy"), "#4a9eff")
                 ev_key = ev.get("_idx", f"{day}-{hour}-{ev_idx}")
-
-                # Calculate span for the first event (events are stacked in same cell)
                 span = _span(ev.get("start_time", hour), ev.get("end_time", hour))
-                # Cap span so it doesn't exceed remaining rows
                 span = min(span, len(HOURS) - h_idx)
                 row_span = max(row_span, span)
 
-                # Calculate exact pixel height from actual start→end minutes
                 try:
                     sh, sm_ = int(ev.get("start_time","00:00")[:2]), int(ev.get("start_time","00:00")[3:5])
                     eh, em  = int(ev.get("end_time","00:00")[:2]),   int(ev.get("end_time","00:00")[3:5])
@@ -196,6 +194,8 @@ def _build_calendar(events: list[dict], offset: int = 0) -> html.Div:
                     card_height = max(int(duration_min * ROW_HEIGHT / 60) - 6, ROW_HEIGHT - 6)
                 except Exception:
                     card_height = ROW_HEIGHT * span - 6
+
+                cb_name = ev.get("created_by_name", "")
 
                 cell_children.append(
                     html.Div(
@@ -208,7 +208,7 @@ def _build_calendar(events: list[dict], offset: int = 0) -> html.Div:
                                     "fontWeight": "700",
                                     "fontSize": "12px",
                                     "color": "white",
-                                    "marginBottom": "4px",
+                                    "marginBottom": "2px",
                                     "overflow": "hidden",
                                     "textOverflow": "ellipsis",
                                     "whiteSpace": "nowrap",
@@ -219,6 +219,20 @@ def _build_calendar(events: list[dict], offset: int = 0) -> html.Div:
                                 style={
                                     "fontSize": "10px",
                                     "color": "rgba(255,255,255,0.65)",
+                                    "marginBottom": "2px" if cb_name else "0",
+                                }
+                            ),
+                            # Show username only in admin view
+                            html.Div(
+                                cb_name,
+                                style={
+                                    "fontSize": "10px",
+                                    "color": color,
+                                    "fontWeight": "600",
+                                    "overflow": "hidden",
+                                    "textOverflow": "ellipsis",
+                                    "whiteSpace": "nowrap",
+                                    "display": "block" if cb_name else "none",
                                 }
                             ),
                         ],
@@ -759,7 +773,8 @@ def _build_edit_modal(engine_options: list[dict]) -> html.Div:
 # ─────────────────────────────────────────────
 
 def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
-                                       org_id: str = None, role: str = None):
+                                       org_id: str = None, role: str = None,
+                                       user_id: str = None):
     """Build the Schedule Maintenance page."""
 
     # ── Fetch engines for dropdown, scoped by role ─────────────────────────
@@ -789,21 +804,97 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 
     if supabase:
         try:
-            sched_resp = supabase.table("maintenance_schedules") \
-                .select("id, engine_id, scheduled_date, start_time, end_time, notes, status") \
-                .order("scheduled_date", desc=False) \
-                .execute()
+            q = supabase.table("maintenance_schedules") \
+                .select("id, engine_id, scheduled_date, start_time, end_time, notes, status, created_by") \
+                .order("scheduled_date", desc=False)
+
+            print(f"[SM] Loading schedules: role={role}, org_id={org_id}, user_id={user_id}")
+
+            if role == "admin":
+                # Admin sees all schedules for any engine in their org
+                if org_id:
+                    try:
+                        e_resp = supabase.table("engines") \
+                            .select("id") \
+                            .eq("organization_id", org_id) \
+                            .eq("is_deleted", True) \
+                            .execute()
+                        org_engine_ids = [str(r["id"]) for r in (e_resp.data or [])]
+                        print(f"[SM] Admin org engine IDs: {org_engine_ids}")
+                    except Exception as e:
+                        org_engine_ids = []
+                        print(f"[SM] Failed to fetch org engines: {e}")
+
+                    if org_engine_ids:
+                        q = q.in_("engine_id", org_engine_ids)
+                    else:
+                        print(f"[SM] No engines found for org_id={org_id}, showing all schedules")
+                        # org has no engines — nothing to show
+                        q = q.eq("id", "00000000-0000-0000-0000-000000000000")
+                else:
+                    # No org_id for admin — show everything (super-admin)
+                    print("[SM] Admin with no org_id — showing all schedules")
+            else:
+                # Regular users only see their own schedules
+                if user_id:
+                    q = q.eq("created_by", user_id)
+                else:
+                    q = q.eq("created_by", "00000000-0000-0000-0000-000000000000")
+
+            sched_resp = q.execute()
+
+            # ── For admin: batch-fetch usernames for all created_by IDs ──────
+            user_name_map: dict[str, str] = {}  # user_id → display name
+            if role == "admin":
+                created_by_ids = list({
+                    str(r["created_by"]) for r in (sched_resp.data or [])
+                    if r.get("created_by")
+                })
+                if created_by_ids:
+                    try:
+                        u_resp = supabase.table("users") \
+                            .select("id, username, first_name, last_name") \
+                            .in_("id", created_by_ids) \
+                            .execute()
+                        for u in (u_resp.data or []):
+                            uid = str(u["id"])
+                            first = u.get("first_name") or ""
+                            last  = u.get("last_name") or ""
+                            name  = f"{first} {last}".strip() or u.get("username") or uid[:8]
+                            user_name_map[uid] = name
+                    except Exception as e:
+                        print(f"[SM] Could not fetch usernames: {e}")
+
+            # Assign a stable colour per user_id (palette of 8 distinct colours)
+            _USER_COLORS = [
+                "#4a9eff",  # blue
+                "#00c875",  # green
+                "#ffd93d",  # yellow
+                "#c084fc",  # purple
+                "#f97316",  # orange
+                "#22d3ee",  # cyan
+                "#f43f5e",  # rose
+                "#a3e635",  # lime
+            ]
+            user_color_map: dict[str, str] = {}
+            _color_idx = 0
+
+            def _user_color(uid: str) -> str:
+                nonlocal _color_idx
+                if uid not in user_color_map:
+                    user_color_map[uid] = _USER_COLORS[_color_idx % len(_USER_COLORS)]
+                    _color_idx += 1
+                return user_color_map[uid]
 
             for idx, row in enumerate(sched_resp.data or []):
                 sel_date = (row.get("scheduled_date") or "")[:10]
-                if sel_date not in week_date_strs:
-                    continue
+                # Store ALL dates — the calendar builder filters by displayed week
 
                 try:
                     dt = datetime.strptime(sel_date, "%Y-%m-%d")
                     day_name = DAYS[dt.weekday()] if dt.weekday() < 5 else None
                     if not day_name:
-                        continue
+                        continue  # skip weekends
                 except Exception:
                     continue
 
@@ -816,19 +907,24 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 
                 eid = str(row.get("engine_id", ""))
                 engine_label = engine_label_map.get(eid, f"ENGINE-{eid[:6]}")
+                cb_id = str(row.get("created_by") or "")
+                cb_name = user_name_map.get(cb_id, "") if role == "admin" else ""
+                cb_color = _user_color(cb_id) if role == "admin" and cb_id else ""
 
                 initial_events.append({
-                    "_idx":       f"loaded-{idx}",
-                    "day":        day_name,
-                    "hour":       hour_str,
-                    "date":       sel_date,
-                    "start_time": start_time,
-                    "end_time":   end_time,
-                    "label":      engine_label,
-                    "engine_id":  eid,
-                    "status":     row.get("status", "scheduled"),
-                    "notes":      row.get("notes", ""),
-                    "db_id":      str(row.get("id", "")),
+                    "_idx":             f"loaded-{idx}",
+                    "day":              day_name,
+                    "hour":             hour_str,
+                    "date":             sel_date,
+                    "start_time":       start_time,
+                    "end_time":         end_time,
+                    "label":            engine_label,
+                    "engine_id":        eid,
+                    "status":           row.get("status", "scheduled"),
+                    "notes":            row.get("notes", ""),
+                    "db_id":            str(row.get("id", "")),
+                    "created_by_name":  cb_name,
+                    "user_color":       cb_color,
                 })
         except Exception as e:
             print(f"[SM] Could not load existing schedules: {e}")
