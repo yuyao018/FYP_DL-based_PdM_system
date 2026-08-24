@@ -122,18 +122,22 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
             engine_ids = [e.get("id") for e in (response.data or []) if e.get("id")]
 
-            # Alert count scoped to org engines
-            if org_id and engine_ids:
-                alert_count = (
-                    supabase.table("alert_logs")
-                    .select("*", count="exact")
-                    .in_("engine_id", engine_ids)
-                    .execute().count or 0
-                )
-            elif org_id and not engine_ids:
+            # Alert count — one per engine (latest active warning/critical only)
+            if org_id and not engine_ids:
                 alert_count = 0
             else:
-                alert_count = supabase.table("alert_logs").select("*", count="exact").execute().count or 0
+                try:
+                    ac_query = supabase.table("alert_logs") \
+                        .select("engine_id") \
+                        .in_("severity", ["warning", "critical"]) \
+                        .eq("status", "active")
+                    if org_id and engine_ids:
+                        ac_query = ac_query.in_("engine_id", engine_ids)
+                    ac_resp = ac_query.execute()
+                    # Count distinct engines with an active alert
+                    alert_count = len({r["engine_id"] for r in (ac_resp.data or []) if r.get("engine_id")})
+                except Exception:
+                    alert_count = 0
 
             # ── Batch-fetch latest predicted_rul per engine from rul_predictions ──
             latest_rul_map = {}   # engine_db_id → predicted_rul float
@@ -296,7 +300,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                 "background": "#101a2f",
                                 "border": "1px solid rgba(74, 158, 255, 0.2)",
                                 "borderRadius": "12px",
-                                "padding": "16px",
+                                "padding": "16px 16px 12px",
                                 "display": "flex",
                                 "flexDirection": "column",
                                 "gap": "8px",
@@ -437,7 +441,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
         tri_src = "data:image/svg+xml;base64," + _b64.b64encode(tri_svg.encode()).decode()
 
         return dcc.Link(
-            href=f"/overview/{alert['db_id']}",
+            href=f"/alert-log/{alert['db_id']}",
             style={"textDecoration": "none", "display": "block"},
             children=[
                 html.Div(
