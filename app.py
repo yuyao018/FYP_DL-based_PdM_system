@@ -16,6 +16,7 @@ from alert_thresholds import create_alert_thresholds_layout, register_alert_thre
 from engine_management import create_engine_management_layout, register_engine_management_callbacks
 from add_engine import create_add_engine_layout, register_add_engine_callbacks
 from degradation_analysis import create_degradation_analysis_layout, register_degradation_analysis_callbacks
+from schedule_maintenance import create_schedule_maintenance_layout, register_schedule_maintenance_callbacks
 from change_password import create_change_password_layout, register_change_password_callbacks
 import os
 from dotenv import load_dotenv
@@ -58,6 +59,7 @@ register_overview_callbacks(app, supabase=supabase_admin)
 register_degradation_analysis_callbacks(app, supabase=supabase_admin)
 register_new_organization_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
 register_change_password_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
+register_schedule_maintenance_callbacks(app, supabase=supabase_admin)
 
 # Resume simulations for any engines that already have data on disk
 from engine_simulation_manager import resume_all_simulations
@@ -143,6 +145,11 @@ def display_page(pathname, session):
     if pathname.startswith("/degradation-analysis/"):
         engine_db_id = pathname.split("/")[-1]
         return create_degradation_analysis_layout(sb, engine_db_id=engine_db_id)
+
+    if pathname.startswith("/schedule-maintenance/"):
+        engine_db_id = pathname.split("/")[-1]
+        return create_schedule_maintenance_layout(sb, engine_db_id=engine_db_id,
+                                                  org_id=org_id, role=user_role)
 
     if pathname.startswith("/edit-user/"):
         user_id = pathname.split("/")[-1]

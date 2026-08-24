@@ -108,9 +108,21 @@ input[type="number"] {
 /* Input text (when typing/searching) */
 .dark-dropdown .Select-input input,
 .dark-dropdown [class*="-input"] input,
+.dark-dropdown [class*="Input"] input,
 .dark-dropdown input {
     color: white !important;
-    background: transparent !important;
+    background: rgba(13,32,69,0.9) !important;
+    border-radius: 6px !important;
+}
+
+/* Search container inside the open menu */
+.dark-dropdown [class*="-Input"],
+.dark-dropdown [class*="input-container"] {
+    background: rgba(13,32,69,0.9) !important;
+    border: 1px solid rgba(74,158,255,0.2) !important;
+    border-radius: 6px !important;
+    margin: 6px 8px !important;
+    padding: 0 !important;
 }
 
 /* Dropdown arrow / indicator */
@@ -149,6 +161,29 @@ input[type="number"] {
     background: #0d1e3a !important;
     max-height: 240px !important;
     padding: 4px 0 !important;
+}
+
+/* Search input inside the open menu */
+.dark-dropdown [class*="-menu"] input,
+.dark-dropdown [class*="-menu"] [class*="-Input"] input,
+.dark-dropdown [class*="-menu"] [class*="input"] {
+    background-color: rgba(13,32,69,0.95) !important;
+    background: rgba(13,32,69,0.95) !important;
+    color: rgba(168,212,255,0.9) !important;
+    border: 1px solid rgba(74,158,255,0.2) !important;
+    border-radius: 6px !important;
+    padding: 6px 10px !important;
+    font-size: 13px !important;
+    width: calc(100% - 16px) !important;
+    box-sizing: border-box !important;
+    margin: 6px 8px !important;
+    outline: none !important;
+}
+
+.dark-dropdown [class*="-menu"] [class*="-Input"],
+.dark-dropdown [class*="-menu"] [class*="input-container"] {
+    background: #0d1e3a !important;
+    padding: 4px 0 0 0 !important;
 }
 
 /* ── Options (each item in the list) ── */
@@ -570,3 +605,127 @@ input[type="number"] {
 .engine-card-row::-webkit-scrollbar-thumb:hover {
   background: rgba(74, 158, 255, 0.55);
 }
+
+/* ============================================
+   SCHEDULE MAINTENANCE MODAL — ENGINE DROPDOWN
+   (applies to both new-event and edit modals)
+   ============================================ */
+
+/* Override the white control box */
+#sm-modal-engine [class*="-control"],
+#sm-modal-engine .Select-control,
+#sm-edit-engine [class*="-control"],
+#sm-edit-engine .Select-control {
+    background-color: rgba(13,32,69,0.9) !important;
+    background:       rgba(13,32,69,0.9) !important;
+    border: 1px solid rgba(74,158,255,0.25) !important;
+    border-radius: 8px !important;
+    min-height: 40px !important;
+    box-shadow: none !important;
+    cursor: pointer !important;
+}
+
+#sm-modal-engine [class*="-control"]:hover,
+#sm-edit-engine  [class*="-control"]:hover {
+    border-color: rgba(74,158,255,0.55) !important;
+}
+
+#sm-modal-engine [class*="-singleValue"],
+#sm-modal-engine [class*="-placeholder"],
+#sm-modal-engine .Select-value-label,
+#sm-modal-engine .Select-placeholder,
+#sm-edit-engine  [class*="-singleValue"],
+#sm-edit-engine  [class*="-placeholder"],
+#sm-edit-engine  .Select-value-label,
+#sm-edit-engine  .Select-placeholder {
+    color: rgba(168,212,255,0.85) !important;
+    font-size: 13px !important;
+}
+
+#sm-modal-engine [class*="-indicatorSeparator"],
+#sm-edit-engine  [class*="-indicatorSeparator"] { display: none !important; }
+
+#sm-modal-engine [class*="-indicatorContainer"],
+#sm-edit-engine  [class*="-indicatorContainer"] { color: rgba(168,212,255,0.5) !important; }
+
+#sm-modal-engine [class*="-indicatorContainer"] svg,
+#sm-edit-engine  [class*="-indicatorContainer"] svg { fill: rgba(168,212,255,0.5) !important; }
+
+/* Menu panel */
+#sm-modal-engine [class*="-menu"],
+#sm-modal-engine .Select-menu-outer,
+#sm-edit-engine  [class*="-menu"],
+#sm-edit-engine  .Select-menu-outer {
+    background-color: #0d1e3a !important;
+    background: #0d1e3a !important;
+    border: 1px solid rgba(74,158,255,0.3) !important;
+    border-radius: 8px !important;
+    z-index: 9999 !important;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+}
+
+#sm-modal-engine [class*="-menuList"],
+#sm-modal-engine .Select-menu,
+#sm-edit-engine  [class*="-menuList"],
+#sm-edit-engine  .Select-menu {
+    background-color: #0d1e3a !important;
+    background: #0d1e3a !important;
+    padding: 0 !important;
+}
+
+/* Search box inside menu */
+#sm-modal-engine [class*="-Input"] input,
+#sm-modal-engine [class*="input"] input,
+#sm-edit-engine  [class*="-Input"] input,
+#sm-edit-engine  [class*="input"] input {
+    color: white !important;
+    background: rgba(13,32,69,0.9) !important;
+    border: 1px solid rgba(74,158,255,0.2) !important;
+    border-radius: 6px !important;
+    padding: 6px 10px !important;
+    margin: 6px 8px !important;
+    width: calc(100% - 16px) !important;
+    box-sizing: border-box !important;
+}
+
+/* Options */
+#sm-modal-engine [class*="-option"],
+#sm-modal-engine .Select-option,
+#sm-edit-engine  [class*="-option"],
+#sm-edit-engine  .Select-option {
+    background-color: #0d1e3a !important;
+    background: #0d1e3a !important;
+    color: rgba(168,212,255,0.85) !important;
+    font-size: 13px !important;
+    padding: 10px 14px !important;
+    cursor: pointer !important;
+    border-bottom: 1px solid rgba(74,158,255,0.07) !important;
+}
+
+#sm-modal-engine [class*="option--is-focused"],
+#sm-modal-engine [class*="-option"]:hover,
+#sm-edit-engine  [class*="option--is-focused"],
+#sm-edit-engine  [class*="-option"]:hover {
+    background-color: rgba(74,158,255,0.15) !important;
+    background: rgba(74,158,255,0.15) !important;
+    color: white !important;
+}
+
+#sm-modal-engine [class*="option--is-selected"],
+#sm-edit-engine  [class*="option--is-selected"] {
+    background-color: rgba(74,158,255,0.25) !important;
+    background: rgba(74,158,255,0.25) !important;
+    color: #7ab8ff !important;
+    font-weight: 700 !important;
+}
+
+#sm-modal-engine input,
+#sm-edit-engine  input {
+    color: white !important;
+    background: transparent !important;
+}
+
+/* ============================================
+   SCHEDULE MAINTENANCE MODAL — DATE INPUT (native)
+   colorScheme: dark is set inline; no extra CSS needed.
+   ============================================ */

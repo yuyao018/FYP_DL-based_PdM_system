@@ -256,97 +256,137 @@ def create_dashboard_layout(supabase, org_id=None, role=None):
     }
 
     def engine_card(engine):
-        # ... unchanged ...
         colors = status_colors[engine["status"]]
+        show_maintenance = engine["status"] in ("warning", "critical")
         return html.Div(
-            dcc.Link(
-                href=f"/overview/{engine['db_id']}",
-                style={"textDecoration": "none"},
-                children=[
-                    html.Div(
-                        style={
-                            "background": "#101a2f",
-                            "border": "1px solid rgba(74, 158, 255, 0.2)",
-                            "borderRadius": "12px",
-                            "padding": "16px",
-                            "display": "flex",
-                            "flexDirection": "column",
-                            "gap": "8px",
-                            "cursor": "pointer",
-                            "transition": "border 0.2s, background 0.2s",
-                        },
-                        id={"type": "engine-card", "index": engine["db_id"]},
-                        children=[
-                            html.Div(
-                                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "paddingBottom": "8px"},
-                                children=[
-                                    html.Div(
-                                        style={"display": "flex", "alignItems": "center", "gap": "8px"},
-                                        children=[
-                                            gear_icon(),
-                                            html.Span(f"# ENGINE-{engine['id']}", style={"color": "white", "fontWeight": "700", "fontSize": "14px"})
-                                        ]
-                                    ),
-                                    html.Span(
-                                        engine["status"].upper(),
-                                        style={
-                                            "background": colors["bg"],
-                                            "color": colors["text"],
-                                            "border": f"1px solid {colors['border']}",
-                                            "borderRadius": "8px",
-                                            "padding": "4px 10px",
-                                            "fontSize": "10px",
-                                            "fontWeight": "700",
-                                        }
-                                    )
-                                ]
-                            ),
-                            html.Div(
-                                style={"display": "flex", "justifyContent": "space-between"},
-                                children=[
-                                    html.Span("Model", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
-                                    html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "14px"})
-                                ]
-                            ),
-                            html.Div(
-                                style={"display": "flex", "justifyContent": "space-between"},
-                                children=[
-                                    html.Span("Created", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
-                                    html.Span(engine.get("created_at", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"})
-                                ]
-                            ),
-                            html.Div(
-                                style={"display": "flex", "justifyContent": "space-between"},
-                                children=[
-                                    html.Span("Predicted cycles left", style={"color": "rgba(74, 158, 255, 0.7)", "fontSize": "11px"}),
-                                    html.Span(
-                                        f"{engine['rul']}" if engine.get("has_prediction") else "Warming up…",
-                                        style={
-                                            "color": "#4a9eff" if engine.get("has_prediction") else "rgba(168,212,255,0.5)",
-                                            "fontWeight": "700", "fontSize": "14px" if engine.get("has_prediction") else "12px",
-                                            "fontStyle": "normal" if engine.get("has_prediction") else "italic",
-                                        }
-                                    )
-                                ]
-                            ),
-                            html.Div(
-                                style={
-                                    "borderTop": "1px solid rgba(74,158,255,0.15)",
-                                    "paddingTop": "8px",
-                                    "display": "flex",
-                                    "justifyContent": "flex-end",
-                                    "alignItems": "center",
-                                    "gap": "4px",
-                                },
-                                children=[
-                                    html.Span("View details", style={"color": "rgba(74,158,255,0.6)", "fontSize": "11px"}),
-                                    html.Span("→", style={"color": "rgba(74,158,255,0.6)", "fontSize": "11px"}),
-                                ]
-                            )
-                        ]
-                    )
-                ]
-            )
+            style={"position": "relative"},
+            children=[
+                dcc.Link(
+                    href=f"/overview/{engine['db_id']}",
+                    style={"textDecoration": "none", "display": "block"},
+                    children=[
+                        html.Div(
+                            style={
+                                "background": "#101a2f",
+                                "border": "1px solid rgba(74, 158, 255, 0.2)",
+                                "borderRadius": "12px",
+                                "padding": "16px 16px 8px",
+                                "display": "flex",
+                                "flexDirection": "column",
+                                "gap": "8px",
+                                "cursor": "pointer",
+                                "transition": "border 0.2s, background 0.2s",
+                            },
+                            id={"type": "engine-card", "index": engine["db_id"]},
+                            children=[
+                                html.Div(
+                                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "paddingBottom": "8px"},
+                                    children=[
+                                        html.Div(
+                                            style={"display": "flex", "alignItems": "center", "gap": "8px"},
+                                            children=[
+                                                gear_icon(),
+                                                html.Span(f"# ENGINE-{engine['id']}", style={"color": "white", "fontWeight": "700", "fontSize": "14px"})
+                                            ]
+                                        ),
+                                        html.Span(
+                                            engine["status"].upper(),
+                                            style={
+                                                "background": colors["bg"],
+                                                "color": colors["text"],
+                                                "border": f"1px solid {colors['border']}",
+                                                "borderRadius": "8px",
+                                                "padding": "4px 10px",
+                                                "fontSize": "10px",
+                                                "fontWeight": "700",
+                                            }
+                                        )
+                                    ]
+                                ),
+                                html.Div(
+                                    style={"display": "flex", "justifyContent": "space-between"},
+                                    children=[
+                                        html.Span("Model", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
+                                        html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "14px"})
+                                    ]
+                                ),
+                                html.Div(
+                                    style={"display": "flex", "justifyContent": "space-between"},
+                                    children=[
+                                        html.Span("Created", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
+                                        html.Span(engine.get("created_at", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"})
+                                    ]
+                                ),
+                                html.Div(
+                                    style={"display": "flex", "justifyContent": "space-between"},
+                                    children=[
+                                        html.Span("Predicted cycles left", style={"color": "rgba(74, 158, 255, 0.7)", "fontSize": "11px"}),
+                                        html.Span(
+                                            f"{engine['rul']}" if engine.get("has_prediction") else "Warming up…",
+                                            style={
+                                                "color": "#4a9eff" if engine.get("has_prediction") else "rgba(168,212,255,0.5)",
+                                                "fontWeight": "700", "fontSize": "14px" if engine.get("has_prediction") else "12px",
+                                                "fontStyle": "normal" if engine.get("has_prediction") else "italic",
+                                            }
+                                        )
+                                    ]
+                                ),
+                                html.Div(
+                                    style={
+                                        "borderTop": "1px solid rgba(74,158,255,0.15)",
+                                        "paddingTop": "8px",
+                                        "display": "flex",
+                                        "justifyContent": "space-between",
+                                        "alignItems": "center",
+                                    },
+                                    children=[
+                                        # Spacer that matches the button size to keep height consistent
+                                        html.Span(
+                                            "Schedule Maintenance",
+                                            style={
+                                                "visibility": "hidden",
+                                                "fontSize": "11px",
+                                                "fontWeight": "600",
+                                                "padding": "5px 10px",
+                                                "display": "inline-block",
+                                            }
+                                        ),
+                                        html.Div(
+                                            style={"display": "flex", "alignItems": "center", "gap": "4px"},
+                                            children=[
+                                                html.Span("View details", style={"color": "rgba(74,158,255,0.6)", "fontSize": "11px"}),
+                                                html.Span("→", style={"color": "rgba(74,158,255,0.6)", "fontSize": "11px"}),
+                                            ]
+                                        ),
+                                    ]
+                                )
+                            ]
+                        )
+                    ]
+                ),
+                # Schedule Maintenance button — absolutely positioned over the card footer,
+                # outside dcc.Link so it navigates to its own page without triggering overview.
+                html.A(
+                    "Schedule Maintenance",
+                    href=f"/schedule-maintenance/{engine['db_id']}",
+                    style={
+                        "position": "absolute",
+                        "bottom": "8px",
+                        "left": "16px",
+                        "visibility": "visible" if show_maintenance else "hidden",
+                        "background": "rgba(74,158,255,0.12)",
+                        "border": "1px solid rgba(74,158,255,0.45)",
+                        "borderRadius": "8px",
+                        "color": "#7ab8ff",
+                        "fontSize": "11px",
+                        "fontWeight": "600",
+                        "padding": "5px 10px",
+                        "textDecoration": "none",
+                        "lineHeight": "1.4",
+                        "zIndex": "1",
+                    },
+                ),
+            ]
         )
 
     # ── Maintenance alert card builder ──
