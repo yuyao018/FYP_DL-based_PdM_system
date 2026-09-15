@@ -201,11 +201,12 @@ def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
             color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
         ),
-        hovermode="closest",
+        hovermode="x",
+        hoverdistance=40,
         hoverlabel=dict(
-            bgcolor="#0d1e3a",
-            font=dict(color="white", size=12),
-            bordercolor="rgba(74,158,255,0.4)",
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(0,0,0,0)",
+            font=dict(color="rgba(0,0,0,0)", size=1),
             namelength=0,
         ),
     )
@@ -391,11 +392,43 @@ def build_sensor_trends_body(engine_id="01", status="healthy"):
                         "display": "flex", "flexDirection": "column",
                     },
                     children=[
-                        dcc.Graph(
-                            id="sensor-chart",
-                            figure=build_sensor_chart(DEFAULT_SELECTED, sensor_history=None, normalize=True),
-                            config={"displayModeBar": False},
-                            style={"flex": "1", "minHeight": "0"},
+                        # ── Chart + custom hover overlay ──
+                        html.Div(
+                            style={"flex": "1", "minHeight": "0",
+                                   "position": "relative", "overflow": "hidden"},
+                            children=[
+                                dcc.Graph(
+                                    id="sensor-chart",
+                                    figure=build_sensor_chart(DEFAULT_SELECTED,
+                                                              sensor_history=None, normalize=True),
+                                    config={"displayModeBar": False},
+                                    style={"width": "100%", "height": "100%"},
+                                    clear_on_unhover=True,
+                                ),
+                                # Vertical dashed line
+                                html.Div(
+                                    id="sensor-trend-vline",
+                                    style={
+                                        "display": "none", "position": "absolute",
+                                        "top": "0", "width": "1px",
+                                        "borderLeft": "1px dashed rgba(168,212,255,0.45)",
+                                        "pointerEvents": "none", "zIndex": "10",
+                                    }
+                                ),
+                                # Floating tooltip panel
+                                html.Div(
+                                    id="sensor-trend-tooltip",
+                                    style={
+                                        "display": "none", "position": "absolute",
+                                        "background": "rgba(10,20,45,0.95)",
+                                        "border": "1px solid rgba(74,158,255,0.35)",
+                                        "borderRadius": "8px", "padding": "10px 14px",
+                                        "pointerEvents": "none", "zIndex": "20",
+                                        "minWidth": "170px",
+                                        "boxShadow": "0 4px 20px rgba(0,0,0,0.5)",
+                                    }
+                                ),
+                            ]
                         ),
                         html.Div(id="chart-legend",
                                  style={"display": "flex", "flexWrap": "wrap", "gap": "16px",
@@ -619,6 +652,197 @@ def register_sensor_callbacks(app, supabase=None):
             for sid in selected if sid in ALL_SENSORS
         ]
         return fig, legend
+
+    # ── Custom hover overlay: floating tooltip + vertical dashed line ──
+    app.clientside_callback(
+        """
+        function(hoverData, figure) {
+            var hidden = {display: 'none'};
+
+            var tooltipEl = document.getElementById('sensor-trend-tooltip');
+            var vlineEl   = document.getElementById('sensor-trend-vline');
+
+            if (!hoverData || !hoverData.points || hoverData.points.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+            if (!figure || !figure.data || figure.data.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+
+            // ── Plot geometry ─────────────────────────────────────────────
+            var layout = figure.layout || {};
+            var margin = layout.margin || {l:10, r:20, t:30, b:10};
+            var plotW = 800, plotH = 420;
+
+            var graphEl = document.getElementById('sensor-chart');
+            if (graphEl) {
+                var inner = graphEl.querySelector('.main-svg');
+                if (inner) {
+                    var rect = inner.getBoundingClientRect();
+                    plotW = rect.width  || plotW;
+                    plotH = rect.height || plotH;
+                }
+            }
+
+            var l = margin.l || 10;
+            var r = margin.r || 20;
+            var t = margin.t || 30;
+            var b = margin.b || 10;
+            var innerW = plotW - l - r;
+            var innerH = plotH - t - b;
+
+            // ── X pixel position of hovered cycle ────────────────────────
+            var hoveredX = hoverData.points[0].x;
+            var xaxis = layout.xaxis || {};
+            var xMin = xaxis.range ? xaxis.range[0] : null;
+            var xMax = xaxis.range ? xaxis.range[1] : null;
+            if (xMin === null || xMax === null) {
+                var allX = [];
+                figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
+                if (allX.length) {
+                    xMin = Math.min.apply(null, allX);
+                    xMax = Math.max.apply(null, allX);
+                }
+            }
+            var xFrac = (xMin !== null && xMax !== xMin)
+                ? (hoveredX - xMin) / (xMax - xMin) : 0.5;
+            var xPx = l + xFrac * innerW;
+
+            // ── Vertical line ─────────────────────────────────────────────
+            var vlineStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          xPx + 'px',
+                top:           t + 'px',
+                height:        innerH + 'px',
+                width:         '1px',
+                borderLeft:    '1px dashed rgba(168,212,255,0.45)',
+                pointerEvents: 'none',
+                zIndex:        '10',
+            };
+
+            // ── Collect visible trace values ──────────────────────────────
+            var rows = [];
+            figure.data.forEach(function(trace) {
+                if (!trace.x || !trace.y) return;
+                var xi = -1, bestDist = Infinity;
+                for (var i = 0; i < trace.x.length; i++) {
+                    var d = Math.abs(trace.x[i] - hoveredX);
+                    if (d < bestDist) { bestDist = d; xi = i; }
+                }
+                if (xi === -1 || bestDist > 2) return;
+                var val = trace.y[xi];
+                if (val === null || val === undefined) return;
+                var color = (trace.line && trace.line.color) ? trace.line.color : '#4a9eff';
+                rows.push({name: trace.name, color: color, val: val});
+            });
+            rows.sort(function(a, b) { return Math.abs(b.val) - Math.abs(a.val); });
+
+            if (rows.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                return [vlineStyle, hidden];
+            }
+
+            // ── Single vs two-column layout ───────────────────────────────
+            var twoCol = rows.length > 8;
+
+            function makeCell(row) {
+                var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
+                return '<span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;">'
+                     + '<span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;'
+                     + 'background:' + row.color + ';display:inline-block;"></span>'
+                     + '<span style="color:rgba(168,212,255,0.9);min-width:36px;font-size:11px;">'
+                     + row.name + '</span>'
+                     + '<span style="color:white;font-weight:600;font-size:11px;'
+                     + 'font-variant-numeric:tabular-nums;margin-left:4px;">'
+                     + valStr + '</span></span>';
+            }
+
+            var headerHtml = '<div style="font-weight:700;font-size:12px;color:white;'
+                           + 'margin-bottom:6px;padding-bottom:5px;'
+                           + 'border-bottom:1px solid rgba(74,158,255,0.25);">'
+                           + 'Cycle: ' + hoveredX + '</div>';
+
+            var bodyHtml = '';
+            if (!twoCol) {
+                rows.forEach(function(row) {
+                    bodyHtml += '<div style="display:flex;align-items:center;gap:7px;'
+                              + 'margin-bottom:3px;">' + makeCell(row) + '</div>';
+                });
+            } else {
+                var half = Math.ceil(rows.length / 2);
+                var leftRows  = rows.slice(0, half);
+                var rightRows = rows.slice(half);
+                bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;'
+                          + 'column-gap:14px;row-gap:3px;">';
+                var maxLen = Math.max(leftRows.length, rightRows.length);
+                for (var i = 0; i < maxLen; i++) {
+                    bodyHtml += '<div style="display:flex;align-items:center;">'
+                              + (i < leftRows.length  ? makeCell(leftRows[i])  : '') + '</div>';
+                    bodyHtml += '<div style="display:flex;align-items:center;'
+                              + 'padding-left:8px;border-left:1px solid rgba(74,158,255,0.15);">'
+                              + (i < rightRows.length ? makeCell(rightRows[i]) : '') + '</div>';
+                }
+                bodyHtml += '</div>';
+            }
+
+            var footerHtml = '<div style="color:rgba(168,212,255,0.35);font-size:10px;'
+                           + 'margin-top:5px;">Hover to view values</div>';
+
+            if (tooltipEl) {
+                tooltipEl.style.maxHeight = '';
+                tooltipEl.style.overflowY = '';
+                tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
+            }
+
+            // ── Sizing ────────────────────────────────────────────────────
+            var tooltipW = twoCol ? 340 : 190;
+            var offsetX  = 12;
+            var padding  = 6;
+
+            // ── Horizontal: default right, flip left near right edge ──────
+            var leftPos = xPx + offsetX;
+            if (leftPos + tooltipW > plotW - r - padding) {
+                leftPos = xPx - tooltipW - offsetX;
+            }
+            if (leftPos < l) leftPos = l;
+
+            // ── Vertical: clamp within plot area ─────────────────────────
+            var tooltipH  = tooltipEl ? tooltipEl.scrollHeight : 200;
+            var topPos    = t + padding;
+            var bottomEdge = topPos + tooltipH;
+            var plotBottom = plotH - b - padding;
+            if (bottomEdge > plotBottom) topPos = plotBottom - tooltipH;
+            if (topPos < t + padding)    topPos = t + padding;
+
+            var tooltipStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          leftPos + 'px',
+                top:           topPos + 'px',
+                background:    'rgba(10,20,45,0.95)',
+                border:        '1px solid rgba(74,158,255,0.35)',
+                borderRadius:  '8px',
+                padding:       '10px 14px',
+                pointerEvents: 'none',
+                zIndex:        '20',
+                minWidth:      tooltipW + 'px',
+                boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
+            };
+
+            return [vlineStyle, tooltipStyle];
+        }
+        """,
+        Output("sensor-trend-vline",   "style"),
+        Output("sensor-trend-tooltip", "style"),
+        Input("sensor-chart", "hoverData"),
+        State("sensor-chart", "figure"),
+        prevent_initial_call=True,
+    )
 
     # ── Sidebar toggle ──
     @app.callback(

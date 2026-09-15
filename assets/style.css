@@ -738,6 +738,104 @@ input[type="number"] {
 }
 
 /* ============================================
+   SHAP TREND CHART — suppress native Plotly hover artefacts
+   (spike line + grey label boxes) while keeping hoverData firing
+   ============================================ */
+
+#da-shap-trend .spikeline,
+#da-shap-trend .hoverlayer .hovertext,
+#da-shap-trend .hoverlayer rect,
+#sensor-chart .spikeline,
+#sensor-chart .hoverlayer .hovertext,
+#sensor-chart .hoverlayer rect {
+    display: none !important;
+    opacity: 0 !important;
+}
+
+/* ============================================
+   AI EXPLANATION — dcc.Markdown dark theme
+   ============================================ */
+
+/* Container reset */
+.ai-explanation-md {
+    color: rgba(168, 212, 255, 0.85);
+    font-size: 12px;
+    line-height: 1.75;
+    font-family: 'Segoe UI', sans-serif;
+}
+
+/* Strip default paragraph margin so sections sit tight */
+.ai-explanation-md p {
+    margin: 0 0 8px 0;
+}
+
+/* Section headings (### Why It Was Detected, etc.) */
+.ai-explanation-md h3 {
+    color: rgba(168, 212, 255, 0.6);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin: 12px 0 6px 0;
+    padding-bottom: 3px;
+    border-bottom: 1px solid rgba(74, 158, 255, 0.15);
+}
+
+.ai-explanation-md h3:first-child {
+    margin-top: 0;
+}
+
+/* Bullet lists */
+.ai-explanation-md ul {
+    margin: 0 0 8px 0;
+    padding-left: 16px;
+}
+
+.ai-explanation-md li {
+    margin-bottom: 4px;
+    color: rgba(168, 212, 255, 0.82);
+}
+
+/* Bold text — sensor names, key values */
+.ai-explanation-md strong {
+    color: white;
+    font-weight: 700;
+}
+
+/* Blockquote urgency callout (> ⚠️ CRITICAL ...) */
+.ai-explanation-md blockquote {
+    margin: 0 0 8px 0;
+    padding: 6px 10px;
+    border-left: 3px solid rgba(74, 158, 255, 0.5);
+    background: rgba(74, 158, 255, 0.06);
+    border-radius: 0 6px 6px 0;
+    font-size: 11px;
+    color: rgba(168, 212, 255, 0.9);
+}
+
+/* CRITICAL urgency blockquote */
+.ai-explanation-md blockquote:has(strong:first-child) {
+    border-left-color: rgba(255, 77, 77, 0.7);
+    background: rgba(255, 77, 77, 0.07);
+}
+
+
+
+.user-dropdown-item {
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.user-dropdown-item:hover {
+    background: rgba(74,158,255,0.12) !important;
+    color: white !important;
+}
+
+.user-dropdown-item-danger:hover {
+    background: rgba(255,77,77,0.1) !important;
+    color: #ff4d4d !important;
+}
+
+/* ============================================
    DASHBOARD NAVBAR — user menu dropdown items
    ============================================ */
 

@@ -166,7 +166,7 @@ def _push_sensor_row(engine_db_id: str, row: dict):
 # ─────────────────────────────────────────────
 
 # ─────────────────────────────────────────────
-#  MODEL ARCHITECTURE  (exact copy of train.py SBiTransformer)
+#  MODEL ARCHITECTURE  (exact copy of train.py TransformerBiGRU)
 # ─────────────────────────────────────────────
 
 def _load_state_dict_from_h5(path: str) -> dict:
@@ -187,7 +187,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
                  ff_dim: int, hidden_dim_gru: int, dropout: float,
                  window_attn: int, seq_len: int):
     """
-    Build the SBiTransformer architecture exactly as defined in train.py.
+    Build the TransformerBiGRU architecture exactly as defined in train.py.
     Returns an nn.Module with a .predict(X) convenience method.
     """
     import torch
@@ -239,7 +239,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
             f2 = self.ffn2(x + self.dropout(f1))
             return self.norm3(x + self.dropout(f2))
 
-    class SBiTransformer(nn.Module):
+    class TransformerBiGRU(nn.Module):
         def __init__(self):
             super().__init__()
             self.input_projection = nn.Linear(num_features, d_model)
@@ -268,7 +268,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
                 out = self(torch.tensor(X, dtype=torch.float32))
             return out.numpy()
 
-    return SBiTransformer()
+    return TransformerBiGRU()
 
 
 # ─────────────────────────────────────────────
@@ -391,7 +391,7 @@ def _load_model(model_type: str, supabase=None):
                     print(f"[SIM] Loaded cluster normalization: "
                           f"{kmeans_centroids.shape[0]} clusters from {model_path}")
 
-            # ── Build model architecture (exact train.py SBiTransformer) ──
+            # ── Build model architecture (exact train.py TransformerBiGRU) ──
             model = _build_model(
                 num_features   = num_features,
                 d_model        = d_model,

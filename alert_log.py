@@ -7,9 +7,72 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from assets.components import (build_sidebar, build_topbar)
 
+
+# ─────────────────────────────────────────────
+#  AI EXPLANATION HELPERS (mirrors degradation_analysis)
+# ─────────────────────────────────────────────
+
+def _alert_diagnosis_chips(
+    degradation_type: str | None,
+    rul: int | None,
+    severity: str | None,
+) -> list:
+    """
+    Build the pinned diagnosis chip row for the alert detail panel.
+    Shows: fault mode | severity chip | RUL chip.
+    """
+    fault_label = (degradation_type or "Unknown Pattern").upper()
+
+    # Map severity → chip colours
+    sev = (severity or "warning").lower()
+    if sev == "critical":
+        status_label = "CRITICAL"
+        status_bg, status_color, status_border = (
+            "rgba(255,77,77,0.18)", "#ff4d4d", "rgba(255,77,77,0.5)"
+        )
+    elif sev == "warning":
+        status_label = "WARNING"
+        status_bg, status_color, status_border = (
+            "rgba(255,217,61,0.15)", "#ffd93d", "rgba(255,217,61,0.45)"
+        )
+    else:
+        status_label = "RESOLVED"
+        status_bg, status_color, status_border = (
+            "rgba(0,200,117,0.15)", "#00c875", "rgba(0,200,117,0.4)"
+        )
+
+    rul_display = f"RUL: {rul} cycles" if rul is not None else "RUL: —"
+
+    def chip(text, bg, color, border):
+        return html.Span(text, style={
+            "background": bg, "color": color,
+            "border": f"1px solid {border}",
+            "borderRadius": "5px", "padding": "2px 8px",
+            "fontSize": "10px", "fontWeight": "700",
+            "letterSpacing": "0.5px", "whiteSpace": "nowrap",
+        })
+
+    return [
+        html.Div(fault_label, style={
+            "color": "white", "fontSize": "13px", "fontWeight": "800",
+            "marginBottom": "7px", "letterSpacing": "0.3px",
+        }),
+        html.Div(
+            style={"display": "flex", "gap": "6px", "flexWrap": "wrap", "alignItems": "center"},
+            children=[
+                chip(status_label, status_bg, status_color, status_border),
+                chip(rul_display,
+                     "rgba(123,97,255,0.15)", "#b09aff", "rgba(123,97,255,0.4)"),
+            ]
+        ),
+    ]
+
+
 # ─────────────────────────────────────────────
 #  SAMPLE / FALLBACK ALERT DATA
 # ─────────────────────────────────────────────
+
+
 
 def _sample_alerts(engine_id="09"):
     base_time = datetime(2026, 4, 26, 14, 36)
@@ -296,7 +359,7 @@ def alert_detail_panel(alert):
                                                         "fontWeight": "700"}),
             ]
         ),
-        # AI Explanation (from Degradation Analysis)
+        # AI Explanation — pinned diagnosis header + Markdown body
         html.Div(
             style={"marginBottom": "22px"} if alert.get("llm_explanation") else {"display": "none"},
             children=[
@@ -304,16 +367,32 @@ def alert_detail_panel(alert):
                     "color": "#4a9eff", "fontSize": "11px", "fontWeight": "700",
                     "letterSpacing": "1px", "marginBottom": "8px",
                 }),
+                # Pinned diagnosis chips
                 html.Div(
-                    alert.get("llm_explanation", ""),
                     style={
-                        "color": "rgba(168,212,255,0.8)", "fontSize": "11px",
-                        "lineHeight": "1.6", "maxHeight": "100px",
-                        "overflowY": "auto",
+                        "background": "rgba(10,20,45,0.55)",
+                        "border": "1px solid rgba(74,158,255,0.2)",
+                        "borderRadius": "8px", "padding": "10px 12px",
+                        "marginBottom": "8px",
+                    },
+                    children=_alert_diagnosis_chips(
+                        alert.get("degradation_pattern"),
+                        alert.get("rul"),
+                        alert.get("severity"),
+                    ),
+                ),
+                # Scrollable Markdown body
+                html.Div(
+                    style={
                         "background": "rgba(10,20,45,0.4)",
                         "borderRadius": "8px", "padding": "10px 12px",
                         "border": "1px solid rgba(74,158,255,0.1)",
-                    }
+                        "maxHeight": "220px", "overflowY": "auto",
+                    },
+                    children=dcc.Markdown(
+                        alert.get("llm_explanation", ""),
+                        className="ai-explanation-md",
+                    ),
                 ),
             ]
         ),

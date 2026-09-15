@@ -410,11 +410,11 @@ def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest",
 #  SHAP TREND LINE CHART
 # ─────────────────────────────────────────────
 
-def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int = None) -> go.Figure:
+def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int | str = None) -> go.Figure:
     """
     Line chart showing SHAP values over cycles for all contributing sensors.
     shap_history: list of shap_data per cycle (same order as cycles list).
-    top_n is kept for backwards compatibility but ignored — all sensors are shown.
+    top_n: None / "all" → show all sensors; 5 or 10 → show only the top-N by average |score|.
     """
     if not shap_history or not cycles:
         fig = go.Figure()
@@ -439,6 +439,13 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
     avg_scores = {s: np.mean(vals) for s, vals in sensor_scores.items()}
     top_sensors = sorted(avg_scores.keys(), key=lambda s: avg_scores[s], reverse=True)
 
+    # Apply top_n filter
+    if top_n is not None and str(top_n) not in ("all", "None", ""):
+        try:
+            top_sensors = top_sensors[:int(top_n)]
+        except (ValueError, TypeError):
+            pass
+
     # Build time-series per sensor
     color_palette = [
         "#4a9eff", "#ff4d4d", "#ffd93d", "#00c875", "#7b61ff",
@@ -461,11 +468,12 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
 
         fig.add_trace(go.Scatter(
             x=cycles, y=y_values,
-            mode="lines+markers",
+            mode="lines",
             name=sensor,
-            line=dict(color=color_palette[idx % len(color_palette)], width=2),
-            marker=dict(size=4),
-            hovertemplate=f"<b>{sensor}</b><br>Cycle: %{{x}}<br>Score: %{{y:.4f}}<extra></extra>",
+            line=dict(color=color_palette[idx % len(color_palette)], width=1),
+            # In unified hover mode Plotly shows each trace's name + this value.
+            # %{y:.4f} gives the score; <extra></extra> suppresses the trace-name box.
+            hovertemplate="%{y:.4f}<extra></extra>",
         ))
 
     fig.update_layout(
@@ -473,6 +481,16 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=50, r=20, t=60, b=40),
         height=380,
+        # Keep hovermode="x" so hoverData fires for the clientside callback.
+        # The native hover boxes and spike line are hidden via CSS in style.css.
+        hovermode="x",
+        hoverdistance=40,
+        hoverlabel=dict(
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(0,0,0,0)",
+            font=dict(color="rgba(0,0,0,0)", size=1),
+            namelength=0,
+        ),
         legend=dict(
             font=dict(color="rgba(168,212,255,0.8)", size=11),
             bgcolor="rgba(0,0,0,0)",
@@ -496,17 +514,19 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
 
 
 # ─────────────────────────────────────────────
-#  LLM EXPLANATION (Groq — Llama 3.3 70B)
+#  LLM EXPLANATION (Groq — GPT-OSS 120B)
 # ─────────────────────────────────────────────
 
 def _build_llm_prompt(degradation_type: str, confidence: float,
-                      top_features: list[dict], sensor_trends: dict | None = None) -> str:
+                      top_features: list[dict], sensor_trends: dict | None = None,
+                      predicted_rul: float | None = None,
+                      warn_threshold: int = 80,
+                      crit_threshold: int = 30) -> str:
     """
-    Construct a tightly-scoped prompt for Groq (Llama 3.3 70B).
-    Includes domain knowledge so the LLM can explain *why* sensor patterns
-    indicate specific degradation, rather than just restating the inputs.
+    Construct a structured Markdown prompt for Groq (GPT-OSS 120B).
+    The model is instructed to return four named Markdown sections so
+    the output renders cleanly in a dcc.Markdown component.
     """
-    # Sensor domain knowledge for contextual explanation
     sensor_context = {
         "T24": "LPC outlet temperature — rises indicate compressor inefficiency",
         "T30": "HPC outlet temperature — elevated values suggest compressor degradation or fouling",
@@ -530,39 +550,76 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
         score = f["score"]
         direction = "reducing RUL" if score < 0 else "slightly increasing RUL"
         context = sensor_context.get(name, "sensor function unknown")
-        features_detail.append(f"  • {name} (score: {score:+.3f}, {direction}): {context}")
-
+        features_detail.append(f"- **{name}** (score: {score:+.3f}, {direction}): {context}")
     features_str = "\n".join(features_detail)
 
     trend_str = ""
     if sensor_trends:
         trend_str = "\nSENSOR SLOPE DATA (recent rolling trend):\n" + "\n".join(
-            f"  • {s}: slope = {v:+.5f} per cycle" for s, v in sensor_trends.items()
+            f"- {s}: slope = {v:+.5f} per cycle" for s, v in sensor_trends.items()
         )
 
-    prompt = (
-        f"You are an aircraft engine prognostics expert writing a degradation briefing "
-        f"for a maintenance engineer. Based on the analysis below, explain:\n"
-        f"1. What physical degradation mechanism the sensor pattern suggests\n"
-        f"2. Why these specific sensors are the strongest indicators\n"
-        f"3. What the engineer should inspect or monitor next\n\n"
-        f"ANALYSIS RESULTS:\n"
-        f"- Detected degradation profile: {degradation_type}\n"
-        f"- Pattern similarity score: {confidence:.1%} "
-        f"(cosine similarity to the {degradation_type} reference profile)\n"
-        f"- Top contributing sensors (SHAP attribution — negative = drives predicted RUL down):\n"
-        f"{features_str}\n"
-        f"{trend_str}\n\n"
-        f"RULES:\n"
-        f"- You MUST mention the degradation profile '{degradation_type}' and "
-        f"pattern similarity '{confidence:.1%}' verbatim.\n"
-        f"- Clarify that this identifies similarity to a known degradation profile, "
-        f"not a confirmed fault diagnosis.\n"
-        f"- Explain the physical meaning: what is likely happening inside the engine.\n"
-        f"- Be specific to the sensors listed — don't give generic advice.\n"
-        f"- Suggest 1-2 concrete inspection actions relevant to the degradation profile.\n"
-        f"- Keep it to 4-6 sentences. Professional tone, no hedging.\n"
-    )
+    # ── RUL urgency block ──
+    if predicted_rul is not None:
+        rul_int = int(round(predicted_rul))
+        if rul_int <= crit_threshold:
+            urgency_level = "CRITICAL"
+            urgency_instruction = (
+                f"RUL of {rul_int} cycles is AT OR BELOW the critical threshold ({crit_threshold}). "
+                f"Recommend IMMEDIATE maintenance — do not defer."
+            )
+        elif rul_int <= warn_threshold:
+            urgency_level = "WARNING"
+            urgency_instruction = (
+                f"RUL of {rul_int} cycles is between the warning ({warn_threshold}) "
+                f"and critical ({crit_threshold}) thresholds. "
+                f"Schedule maintenance at the next available window."
+            )
+        else:
+            urgency_level = "HEALTHY"
+            urgency_instruction = (
+                f"RUL of {rul_int} cycles is above the warning threshold ({warn_threshold}). "
+                f"Continue monitoring; no immediate maintenance action required."
+            )
+        rul_str = (
+            f"\nPREDICTED RUL: {rul_int} cycles | URGENCY: {urgency_level} "
+            f"(critical ≤ {crit_threshold}, warning ≤ {warn_threshold})\n"
+            f"{urgency_instruction}"
+        )
+    else:
+        rul_int = None
+        urgency_level = "UNKNOWN"
+        rul_str = "\nPREDICTED RUL: not yet available"
+
+    prompt = f"""You are an aircraft engine prognostics expert writing a degradation briefing for a maintenance engineer.
+
+ANALYSIS DATA:
+- Degradation profile: {degradation_type}
+- Pattern similarity: {confidence:.1%} (cosine similarity to the {degradation_type} reference profile)
+- Top SHAP contributors (negative score = drives predicted RUL down):
+{features_str}
+{rul_str}
+{trend_str}
+
+OUTPUT INSTRUCTIONS — you MUST follow this structure exactly. Use Markdown. Do NOT produce a single paragraph.
+
+### Why It Was Detected
+Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why it points to {degradation_type}. Only use the sensors listed above — do not invent others.
+
+### Engineering Interpretation
+Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what is likely happening inside the engine. Do not repeat the sensor list.
+
+### Recommended Action
+Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, wash schedules, vibration checks, monitoring intervals, etc.
+
+RULES:
+- The degradation profile name "{degradation_type}" and similarity "{confidence:.1%}" MUST appear verbatim in the output.
+- Each section must have its ### heading exactly as shown.
+- Do not add a Diagnosis section — that is rendered separately by the UI.
+- Do not repeat information across sections.
+- No hedging phrases. Professional, engineering-focused tone.
+- Total output: no more than 180 words.
+"""
     return prompt
 
 
@@ -587,8 +644,14 @@ def _validate_llm_output(text: str, degradation_type: str, confidence: float) ->
 
 
 def _fallback_explanation(degradation_type: str, confidence: float,
-                          top_features: list[dict]) -> str:
-    """Templated fallback when LLM output fails validation or API is unavailable."""
+                          top_features: list[dict],
+                          predicted_rul: float | None = None,
+                          warn_threshold: int = 80,
+                          crit_threshold: int = 30) -> str:
+    """
+    Structured Markdown fallback when LLM output fails validation or API is unavailable.
+    Produces the same three-section format the UI expects.
+    """
     sensor_meanings = {
         "T24": "LPC outlet temperature (compressor inefficiency)",
         "T30": "HPC outlet temperature (compressor fouling/degradation)",
@@ -606,70 +669,116 @@ def _fallback_explanation(degradation_type: str, confidence: float,
         "W32": "LPT coolant bleed (downstream thermal stress)",
     }
 
-    top3 = top_features[:3]
-    details = []
-    for f in top3:
+    # ── Why It Was Detected bullets ──
+    detected_lines = []
+    for f in top_features[:5]:
         meaning = sensor_meanings.get(f["sensor"], f["sensor"])
         direction = "declining" if f["score"] < 0 else "elevated"
-        details.append(f"{f['sensor']} — {meaning}, {direction}")
+        detected_lines.append(f"- **{f['sensor']}** — {meaning}, {direction}")
+    detected_str = "\n".join(detected_lines)
 
-    details_str = "; ".join(details)
-
+    # ── Engineering Interpretation ──
     if "HPC" in degradation_type and "Fan" in degradation_type:
-        mechanism = (
-            "The sensor importance pattern is consistent with combined HPC and fan degradation, "
-            "suggesting simultaneous compressor blade erosion and fan aerodynamic efficiency loss. "
-            "Recommend borescope inspection of HPC stages, fan blade visual inspection, and "
-            "vibration signature analysis."
+        interpretation = (
+            f"The combined sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
+            f"is consistent with simultaneous HPC blade erosion and fan aerodynamic efficiency loss. "
+            f"Declining corrected speeds (NRf, NRc) and elevated HPC temperatures confirm both "
+            f"compression and fan pathway degradation. "
+            f"Note: this identifies similarity to a known degradation profile; "
+            f"physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Borescope inspection of HPC stages 1–3\n"
+            "- **[Priority 2]** Fan blade visual inspection and FOD check\n"
+            "- **[Priority 3]** Vibration signature analysis across operating range"
         )
     elif "HPC" in degradation_type:
-        mechanism = (
-            "This pattern is consistent with high-pressure compressor blade erosion "
-            "or fouling, leading to reduced compression efficiency and increased fuel consumption. "
-            "Recommend borescope inspection of HPC stages and review of compressor wash history."
+        interpretation = (
+            f"The sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
+            f"is consistent with HPC blade erosion or fouling, causing reduced compression efficiency "
+            f"and increased specific fuel consumption. "
+            f"The decline in NRc and P30 indicates the HPC is no longer delivering design pressure ratio. "
+            f"Note: this identifies similarity to a known degradation profile; "
+            f"physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Borescope inspection of HPC stages\n"
+            "- **[Priority 2]** Review compressor wash history; schedule wash if overdue\n"
+            "- **[Priority 3]** Monitor P30 and phi trend over next 5 cycles"
         )
     elif "Fan" in degradation_type:
-        mechanism = (
-            "This pattern suggests fan blade surface degradation or foreign object damage "
-            "reducing aerodynamic efficiency. "
-            "Recommend fan blade visual inspection and vibration signature analysis."
+        interpretation = (
+            f"The sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
+            f"suggests fan blade surface degradation or FOD reducing aerodynamic efficiency. "
+            f"A declining NRf indicates true fan performance loss after correcting for ambient conditions. "
+            f"Note: this identifies similarity to a known degradation profile; "
+            f"physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Fan blade visual inspection and FOD check\n"
+            "- **[Priority 2]** Vibration signature analysis\n"
+            "- **[Priority 3]** Monitor NRf trend over next 5 cycles"
         )
     else:
-        mechanism = (
-            "Multiple degradation pathways may be active. "
-            "Recommend comprehensive inspection of both HPC and fan sections."
+        interpretation = (
+            f"The sensor pattern (similarity: **{confidence:.1%}**) does not map cleanly to a single "
+            f"degradation mode. Multiple pathways may be active. "
+            f"Note: physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Comprehensive borescope inspection of HPC and fan sections\n"
+            "- **[Priority 2]** Vibration and performance trend review"
         )
 
+    # ── Urgency-scaled action prefix ──
+    if predicted_rul is not None:
+        rul_int = int(round(predicted_rul))
+        if rul_int <= crit_threshold:
+            action_note = f"> ⚠️ **CRITICAL** — RUL {rul_int} cycles ≤ critical threshold ({crit_threshold}). Immediate action required.\n\n"
+        elif rul_int <= warn_threshold:
+            action_note = f"> ⚡ **WARNING** — RUL {rul_int} cycles ≤ warning threshold ({warn_threshold}). Schedule at next window.\n\n"
+        else:
+            action_note = f"> ✅ **HEALTHY** — RUL {rul_int} cycles above warning threshold ({warn_threshold}). No immediate action.\n\n"
+    else:
+        action_note = ""
+
     return (
-        f"Degradation profile: {degradation_type} "
-        f"(pattern similarity: {confidence:.1%}). "
-        f"Key indicators: {details_str}. {mechanism} "
-        f"Note: this identifies similarity to a known degradation profile; "
-        f"physical confirmation requires inspection."
+        f"### Why It Was Detected\n\n"
+        f"{detected_str}\n\n"
+        f"### Engineering Interpretation\n\n"
+        f"{interpretation}\n\n"
+        f"### Recommended Action\n\n"
+        f"{action_note}"
+        f"{actions}\n"
     )
 
 
 def generate_llm_explanation(degradation_type: str, confidence: float,
                              top_features: list[dict],
-                             sensor_trends: dict | None = None) -> str:
+                             sensor_trends: dict | None = None,
+                             predicted_rul: float | None = None,
+                             warn_threshold: int = 80,
+                             crit_threshold: int = 30) -> str:
     """
-    Call Groq API (Llama 3.3 70B) to generate natural language explanation.
+    Call Groq API (GPT-OSS 120B) to generate natural language explanation.
     Falls back to a templated string if the API is unavailable or validation fails.
     """
     api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
-        return _fallback_explanation(degradation_type, confidence, top_features)
+        return _fallback_explanation(degradation_type, confidence, top_features,
+                                     predicted_rul, warn_threshold, crit_threshold)
 
-    prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends)
+    prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends,
+                                predicted_rul, warn_threshold, crit_threshold)
 
     try:
         from groq import Groq
         client = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=300,
+            max_tokens=500,
         )
         text = response.choices[0].message.content.strip() if response.choices else ""
 
@@ -677,14 +786,64 @@ def generate_llm_explanation(degradation_type: str, confidence: float,
             return text
         else:
             print("[DEGRAD] LLM output failed validation, using fallback.")
-            return _fallback_explanation(degradation_type, confidence, top_features)
+            return _fallback_explanation(degradation_type, confidence, top_features,
+                                         predicted_rul, warn_threshold, crit_threshold)
 
     except ImportError:
         print("[DEGRAD] groq package not installed. Using fallback.")
-        return _fallback_explanation(degradation_type, confidence, top_features)
+        return _fallback_explanation(degradation_type, confidence, top_features,
+                                     predicted_rul, warn_threshold, crit_threshold)
     except Exception as e:
         print(f"[DEGRAD] Groq API error: {e}")
-        return _fallback_explanation(degradation_type, confidence, top_features)
+        return _fallback_explanation(degradation_type, confidence, top_features,
+                                     predicted_rul, warn_threshold, crit_threshold)
+
+
+# ─────────────────────────────────────────────
+#  PAGE LAYOUT
+# ─────────────────────────────────────────────
+#  DIAGNOSIS HEADER HELPER
+# ─────────────────────────────────────────────
+
+def _build_diagnosis_header(
+    degradation_type: str | None,
+    confidence: float | None,
+    predicted_rul: float | None,
+    warn_threshold: int | None,
+    crit_threshold: int | None,
+) -> list:
+    """
+    Pinned diagnosis summary: fault mode on the left, similarity chip on the right.
+    Status and RUL are omitted — those live in the Status Overview card.
+    """
+    fault_label = (degradation_type or "No Pattern Detected").upper()
+    conf_display = f"{confidence:.1%}" if confidence is not None else "—"
+
+    return [
+        html.Div(
+            style={
+                "display": "flex", "alignItems": "center",
+                "justifyContent": "space-between",
+            },
+            children=[
+                html.Div(fault_label, style={
+                    "color": "white", "fontSize": "13px", "fontWeight": "800",
+                    "letterSpacing": "0.3px",
+                }),
+                html.Span(
+                    f"{conf_display} similarity",
+                    style={
+                        "background": "rgba(74,158,255,0.15)",
+                        "color": "#4a9eff",
+                        "border": "1px solid rgba(74,158,255,0.4)",
+                        "borderRadius": "5px", "padding": "2px 8px",
+                        "fontSize": "10px", "fontWeight": "700",
+                        "letterSpacing": "0.5px", "whiteSpace": "nowrap",
+                    }
+                ),
+            ]
+        ),
+    ]
 
 
 # ─────────────────────────────────────────────
@@ -826,9 +985,9 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     # Divider
                     html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.12)"}),
 
-                    # Section 3: Time to EOL (predicted RUL) + mini chart
+                    # Section 3: predicted RUL + mini chart
                     html.Div(children=[
-                        html.Div("TIME TO EOL (CYCLES)", style={
+                        html.Div("Predicted RUL (CYCLES)", style={
                             "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
                             "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "10px",
                         }),
@@ -953,10 +1112,10 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
         style={"display": "flex", "gap": "20px", "padding": "0 28px 28px",
                "alignItems": "stretch", "height": "440px"},
         children=[
-            # SHAP trend chart (flex: 5)
+            # SHAP trend chart (flex: 3)
             html.Div(
                 style={
-                    "flex": "5", "minWidth": "0",
+                    "flex": "3", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "16px",
@@ -965,82 +1124,192 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "boxSizing": "border-box",
                 },
                 children=[
-                    html.Div("SHAP Value Trend Over Cycles", style={
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "justifyContent": "space-between", "marginBottom": "8px",
+                               "flexShrink": "0"},
+                        children=[
+                            html.Div("SHAP Value Trend Over Cycles", style={
                                 "color": "white", "fontSize": "16px", "fontWeight": "700",
-                                "flexShrink": "0",
                             }),
-                    dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
-                            figure=build_shap_trend_chart([], []),
-                            style={"flex": "1", "minHeight": "0"}),
+                            html.Div(
+                                style={"display": "flex", "gap": "6px"},
+                                children=[
+                                    html.Div("All", id="da-trend-filter-all", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "rgba(74,158,255,0.25)", "color": "white",
+                                        "border": "1px solid rgba(74,158,255,0.5)",
+                                    }),
+                                    html.Div("Top 5", id="da-trend-filter-5", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                    }),
+                                    html.Div("Top 10", id="da-trend-filter-10", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                    }),
+                                ]
+                            ),
+                        ]
+                    ),
+                    dcc.Store(id="da-trend-filter", data="all"),
+                    # ── Chart + custom hover overlay ──
+                    html.Div(
+                        style={"flex": "1", "minHeight": "0", "position": "relative",
+                               "overflow": "hidden"},
+                        children=[
+                            dcc.Graph(
+                                id="da-shap-trend",
+                                config={"displayModeBar": False},
+                                figure=build_shap_trend_chart([], []),
+                                style={"width": "100%", "height": "100%"},
+                                clear_on_unhover=True,
+                            ),
+                            # Vertical dashed line
+                            html.Div(
+                                id="da-trend-vline",
+                                style={
+                                    "display": "none",
+                                    "position": "absolute",
+                                    "top": "0", "width": "1px",
+                                    "borderLeft": "1px dashed rgba(168,212,255,0.45)",
+                                    "pointerEvents": "none",
+                                    "zIndex": "10",
+                                }
+                            ),
+                            # Floating tooltip panel
+                            html.Div(
+                                id="da-trend-tooltip",
+                                style={
+                                    "display": "none",
+                                    "position": "absolute",
+                                    "background": "rgba(10,20,45,0.95)",
+                                    "border": "1px solid rgba(74,158,255,0.35)",
+                                    "borderRadius": "8px",
+                                    "padding": "10px 14px",
+                                    "pointerEvents": "none",
+                                    "zIndex": "20",
+                                    "minWidth": "170px",
+                                    "boxShadow": "0 4px 20px rgba(0,0,0,0.5)",
+                                },
+                                # dangerouslySetInnerHTML equivalent: use a single
+                                # child iframe trick isn't needed — we write innerHTML
+                                # directly from JS via a dummy Output on 'data-html'
+                            ),
+                        ]
+                    ),
                 ]
             ),
-            # AI Explanation — fixed 440px, same as chart, text scrolls inside
+            # AI Explanation card — pinned diagnosis header + scrollable Markdown body
             html.Div(
                 style={
-                    "flex": "1", "minWidth": "200px",
+                    "flex": "2", "minWidth": "200px",
                     "height": "440px", "boxSizing": "border-box",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
-                    "borderRadius": "12px", "padding": "20px",
+                    "borderRadius": "12px", "padding": "16px 20px",
                     "display": "flex", "flexDirection": "column",
                     "overflow": "hidden",
                 },
                 children=[
-                    html.Div(style={"display": "flex", "flexDirection": "column", "gap": "8px",
-                                    "marginBottom": "14px", "flexShrink": "0"}, children=[
-                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px"}, children=[
-                            html.Div("AI EXPLANATION", style={
-                                "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
-                                "fontWeight": "700", "letterSpacing": "1px",
-                            }),
-                            html.Span("Llama 3.3 70B", style={
-                                "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
-                                "background": "rgba(74,158,255,0.1)",
-                                "borderRadius": "4px", "padding": "2px 6px",
-                            }),
-                        ]),
-                        html.Button(
-                            "Generate",
-                            id="da-generate-btn",
-                            n_clicks=0,
-                            style={
-                                "background": "linear-gradient(135deg, #4a9eff, #7b61ff)",
-                                "border": "none", "color": "white", "fontSize": "11px",
-                                "fontWeight": "700", "padding": "6px 14px",
-                                "borderRadius": "6px", "cursor": "pointer",
-                                "letterSpacing": "0.5px", "width": "fit-content",
-                            },
+                    # ── Pinned top bar: label + model badge + generate button ──
+                    html.Div(
+                        style={
+                            "display": "flex", "alignItems": "center",
+                            "justifyContent": "space-between",
+                            "marginBottom": "10px", "flexShrink": "0",
+                        },
+                        children=[
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "8px"},
+                                children=[
+                                    html.Div("AI EXPLANATION", style={
+                                        "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
+                                        "fontWeight": "700", "letterSpacing": "1px",
+                                    }),
+                                    html.Span("GPT-OSS 120B", style={
+                                        "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
+                                        "background": "rgba(74,158,255,0.1)",
+                                        "borderRadius": "4px", "padding": "2px 6px",
+                                    }),
+                                ]
+                            ),
+                            html.Button(
+                                "Generate",
+                                id="da-generate-btn",
+                                n_clicks=0,
+                                style={
+                                    "background": "linear-gradient(135deg, #4a9eff, #7b61ff)",
+                                    "border": "none", "color": "white", "fontSize": "11px",
+                                    "fontWeight": "700", "padding": "5px 12px",
+                                    "borderRadius": "6px", "cursor": "pointer",
+                                    "letterSpacing": "0.5px",
+                                },
+                            ),
+                        ]
+                    ),
+                    # ── Pinned diagnosis summary (always visible, no scroll) ──
+                    html.Div(
+                        id="da-llm-diagnosis-header",
+                        style={
+                            "background": "rgba(10,20,45,0.6)",
+                            "border": "1px solid rgba(74,158,255,0.2)",
+                            "borderRadius": "8px", "padding": "10px 12px",
+                            "marginBottom": "10px", "flexShrink": "0",
+                        },
+                        children=_build_diagnosis_header(
+                            degradation_type, degradation_confidence,
+                            None, None, None,  # RUL/urgency unknown at layout build time
                         ),
-                    ]),
+                    ),
+                    # ── Scrollable Markdown body ──
                     dcc.Loading(
                         id="da-llm-loading",
                         type="circle",
                         color="#4a9eff",
-                        style={"flex": "1", "overflow": "hidden"},
-                        parent_style={"flex": "1", "overflow": "hidden"},
+                        style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
+                        parent_style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
                         children=[
                             html.Div(
                                 id="da-llm-explanation",
                                 style={
-                                    "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
-                                    "lineHeight": "1.7",
+                                    "flex": "1", "minHeight": "0",
                                     "overflowY": "auto",
-                                    "height": "100%",
-                                    "paddingRight": "6px",
+                                    "paddingRight": "4px",
                                 },
-                                children=[
-                                    html.Div(cached_explanation, style={"marginBottom": "8px"})
-                                    if cached_explanation else
-                                    html.Div("Click 'Generate' to request an AI-powered analysis."),
+                                children=(
+                                    dcc.Markdown(
+                                        cached_explanation,
+                                        className="ai-explanation-md",
+                                    ) if cached_explanation else
                                     html.Div(
-                                        f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
-                                        if cached_explanation_ts else "",
-                                        style={"color": "rgba(168,212,255,0.4)", "fontSize": "10px",
-                                               "marginTop": "8px"},
-                                    ) if cached_explanation else None,
-                                ]
+                                        "Click 'Generate' to request an AI-powered analysis.",
+                                        style={
+                                            "color": "rgba(168,212,255,0.45)",
+                                            "fontSize": "12px", "lineHeight": "1.7",
+                                            "fontStyle": "italic", "marginTop": "4px",
+                                        }
+                                    )
+                                ),
                             ),
                         ]
+                    ),
+                    # ── Last-generated timestamp (pinned at bottom) ──
+                    html.Div(
+                        id="da-llm-timestamp",
+                        style={
+                            "color": "rgba(168,212,255,0.35)", "fontSize": "10px",
+                            "marginTop": "6px", "flexShrink": "0", "textAlign": "right",
+                        },
+                        children=(
+                            f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
+                            if cached_explanation_ts else ""
+                        ),
                     ),
                 ]
             ),
@@ -1323,6 +1592,8 @@ def register_degradation_analysis_callbacks(app, supabase=None):
 
     @app.callback(
         Output("da-llm-explanation", "children"),
+        Output("da-llm-diagnosis-header", "children"),
+        Output("da-llm-timestamp", "children"),
         Input("da-generate-btn", "n_clicks"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
@@ -1331,31 +1602,87 @@ def register_degradation_analysis_callbacks(app, supabase=None):
     def generate_explanation_on_click(n_clicks, engine_db_id, degradation_type):
         """
         Triggered ONLY by the 'Generate Explanation' button click.
-        Calls Groq API once per click, then caches the result
-        in engines.llm_explanation to avoid repeat API calls.
+        Returns:
+          - da-llm-explanation      → dcc.Markdown with three-section body
+          - da-llm-diagnosis-header → updated pinned summary chips
+          - da-llm-timestamp        → last-generated timestamp string
         """
         if not n_clicks or not supabase or not engine_db_id:
             raise dash.exceptions.PreventUpdate
 
-        # Fetch latest SHAP + degradation type + stored similarity
+        # ── Fetch full prediction history (SHAP + RUL) ──
         latest_shap = []
+        predicted_rul = None
+        sensor_trends = None
         stored_similarity = None
         model_type_fetched = None
+
         try:
             resp = supabase.table("rul_predictions") \
-                .select("shap_values") \
+                .select("cycle, predicted_rul, shap_values") \
                 .eq("engine_id", engine_db_id) \
-                .order("cycle", desc=True) \
-                .limit(1) \
+                .order("cycle", desc=False) \
                 .execute()
-            if resp.data:
-                raw_shap = resp.data[0].get("shap_values")
-                if raw_shap:
-                    latest_shap = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
-        except Exception as e:
-            return f"Error fetching SHAP data: {e}"
 
-        # Re-fetch degradation_type, stored similarity and model_type
+            rows = resp.data or []
+            all_cycles = []
+            all_shap = []
+            all_ruls = []
+
+            for row in rows:
+                raw_shap = row.get("shap_values")
+                parsed = []
+                if raw_shap:
+                    try:
+                        parsed = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
+                    except Exception:
+                        parsed = []
+                all_cycles.append(row.get("cycle"))
+                all_shap.append(parsed)
+                rul = row.get("predicted_rul")
+                all_ruls.append(float(rul) if rul is not None else None)
+
+            # Latest valid SHAP snapshot
+            for snapshot in reversed(all_shap):
+                if snapshot:
+                    latest_shap = snapshot
+                    break
+
+            # Latest valid RUL
+            for v in reversed(all_ruls):
+                if v is not None:
+                    predicted_rul = v
+                    break
+
+            # ── Compute per-sensor slope over last 10 cycles ──
+            window = 10
+            recent_shap = [s for s in all_shap[-window:] if s]
+            if len(recent_shap) >= 3:
+                sensor_names = [e["sensor"] for e in latest_shap] if latest_shap else []
+                trends = {}
+                for sensor in sensor_names:
+                    vals = []
+                    for snapshot in recent_shap:
+                        for entry in snapshot:
+                            if entry["sensor"] == sensor:
+                                vals.append(entry["score"])
+                                break
+                    if len(vals) >= 3:
+                        import numpy as _np
+                        x = list(range(len(vals)))
+                        slope = float(_np.polyfit(x, vals, 1)[0])
+                        trends[sensor] = slope
+                if trends:
+                    sensor_trends = trends
+
+        except Exception as e:
+            err_md = dcc.Markdown(
+                f"**Error fetching prediction data:** {e}",
+                className="ai-explanation-md",
+            )
+            return err_md, dash.no_update, dash.no_update
+
+        # ── Re-fetch degradation_type, stored similarity and model_type ──
         try:
             eng_resp = supabase.table("engines") \
                 .select("degradation_type, degradation_confidence, model_type") \
@@ -1369,16 +1696,37 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         except Exception:
             pass
 
+        # ── Fetch configured thresholds ──
+        warn_threshold = 80
+        crit_threshold = 30
+        try:
+            thr_resp = supabase.table("alert_thresholds") \
+                .select("warning_threshold, critical_threshold") \
+                .order("updated_at", desc=True) \
+                .limit(1) \
+                .execute()
+            if thr_resp.data:
+                warn_threshold = thr_resp.data[0].get("warning_threshold", warn_threshold)
+                crit_threshold = thr_resp.data[0].get("critical_threshold", crit_threshold)
+        except Exception:
+            pass
+
         # Don't generate if pattern is ambiguous, insufficient, or absent
         if not degradation_type or degradation_type == "Insufficient Signal":
-            return (
+            no_pattern_md = dcc.Markdown(
                 "No degradation pattern has been identified for this engine. "
                 "The engine is operating within normal parameters or the signal "
-                "is not yet strong enough to report."
+                "is not yet strong enough to report.",
+                className="ai-explanation-md",
             )
+            return no_pattern_md, dash.no_update, dash.no_update
 
         if not latest_shap:
-            return "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles."
+            no_shap_md = dcc.Markdown(
+                "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles.",
+                className="ai-explanation-md",
+            )
+            return no_shap_md, dash.no_update, dash.no_update
 
         similarity = compute_pattern_similarity(
             degradation_type, latest_shap,
@@ -1392,22 +1740,36 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             degradation_type=degradation_type,
             confidence=similarity,
             top_features=latest_shap[:5],
-            sensor_trends=None,
+            sensor_trends=sensor_trends,
+            predicted_rul=predicted_rul,
+            warn_threshold=warn_threshold,
+            crit_threshold=crit_threshold,
         )
 
         # ── Cache to engines table ──
+        now_iso = datetime.utcnow().isoformat()
         try:
             supabase.table("engines") \
                 .update({
                     "llm_explanation": explanation,
-                    "llm_explanation_updated_at": datetime.utcnow().isoformat(),
+                    "llm_explanation_updated_at": now_iso,
                 }) \
                 .eq("id", engine_db_id) \
                 .execute()
         except Exception as e:
             print(f"[DEGRAD] Failed to cache LLM explanation: {e}")
 
-        return explanation
+        diagnosis_children = _build_diagnosis_header(
+            degradation_type, similarity,
+            predicted_rul, warn_threshold, crit_threshold,
+        )
+        timestamp_str = f"Last generated: {now_iso[:16].replace('T', ' ')}"
+
+        return (
+            dcc.Markdown(explanation, className="ai-explanation-md"),
+            diagnosis_children,
+            timestamp_str,
+        )
 
     # ── Top drivers filter callback (instant response on button click) ──
     @app.callback(
@@ -1470,6 +1832,54 @@ def register_degradation_analysis_callbacks(app, supabase=None):
 
         return build_top_drivers_chart(None), top_n, *styles
 
+    # ── SHAP trend filter callback (All / Top 5 / Top 10) ──
+    @app.callback(
+        Output("da-shap-trend", "figure", allow_duplicate=True),
+        Output("da-trend-filter", "data"),
+        Output("da-trend-filter-all", "style"),
+        Output("da-trend-filter-5", "style"),
+        Output("da-trend-filter-10", "style"),
+        Input("da-trend-filter-all", "n_clicks"),
+        Input("da-trend-filter-5", "n_clicks"),
+        Input("da-trend-filter-10", "n_clicks"),
+        State("da-shap-history-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_shap_trend_filter(n_all, n_5, n_10, store_data):
+        """Re-render SHAP trend chart when All / Top 5 / Top 10 button is clicked."""
+        from dash import callback_context as _ctx
+
+        active_style = {
+            "padding": "4px 12px", "borderRadius": "6px",
+            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+            "background": "rgba(74,158,255,0.25)", "color": "white",
+            "border": "1px solid rgba(74,158,255,0.5)",
+        }
+        inactive_style = {
+            "padding": "4px 12px", "borderRadius": "6px",
+            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+            "background": "transparent", "color": "rgba(168,212,255,0.6)",
+            "border": "1px solid rgba(74,158,255,0.25)",
+        }
+
+        triggered = _ctx.triggered[0]["prop_id"].split(".")[0] if _ctx.triggered else "da-trend-filter-all"
+        if triggered == "da-trend-filter-5":
+            top_n = 5
+            styles = (inactive_style, active_style, inactive_style)
+        elif triggered == "da-trend-filter-10":
+            top_n = 10
+            styles = (inactive_style, inactive_style, active_style)
+        else:
+            top_n = "all"
+            styles = (active_style, inactive_style, inactive_style)
+
+        if not store_data:
+            return build_shap_trend_chart([], [], top_n=top_n), str(top_n), *styles
+
+        cycles  = store_data.get("cycles", [])
+        history = store_data.get("history", [])
+        return build_shap_trend_chart(cycles, history, top_n=top_n), str(top_n), *styles
+
     @app.callback(
         Output("da-shap-waterfall", "figure", allow_duplicate=True),
         Input("da-cycle-selector", "value"),
@@ -1506,3 +1916,211 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             return build_shap_waterfall(shap_data, cycle_label=cycle_label, base_value=base_val)
         except (ValueError, IndexError):
             return build_shap_waterfall([])
+
+    # ── Custom hover overlay: floating tooltip + vertical dashed line ──
+    app.clientside_callback(
+        """
+        function(hoverData, figure) {
+            var hidden = {display: 'none'};
+
+            var tooltipEl = document.getElementById('da-trend-tooltip');
+            var vlineEl   = document.getElementById('da-trend-vline');
+
+            if (!hoverData || !hoverData.points || hoverData.points.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+            if (!figure || !figure.data || figure.data.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+
+            // ── Plot geometry ─────────────────────────────────────────────
+            var layout = figure.layout || {};
+            var margin = layout.margin || {l:50, r:20, t:60, b:40};
+            var plotW = 800, plotH = 380;
+
+            var graphEl = document.getElementById('da-shap-trend');
+            if (graphEl) {
+                var inner = graphEl.querySelector('.main-svg');
+                if (inner) {
+                    var rect = inner.getBoundingClientRect();
+                    plotW = rect.width  || plotW;
+                    plotH = rect.height || plotH;
+                }
+            }
+
+            var l = margin.l || 50;
+            var r = margin.r || 20;
+            var t = margin.t || 60;
+            var b = margin.b || 40;
+            var innerW = plotW - l - r;
+            var innerH = plotH - t - b;
+
+            // ── X pixel position of the hovered cycle ────────────────────
+            var hoveredCycle = hoverData.points[0].x;
+            var xaxis = layout.xaxis || {};
+            var xMin = xaxis.range ? xaxis.range[0] : null;
+            var xMax = xaxis.range ? xaxis.range[1] : null;
+            if (xMin === null || xMax === null) {
+                var allX = [];
+                figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
+                if (allX.length) {
+                    xMin = Math.min.apply(null, allX);
+                    xMax = Math.max.apply(null, allX);
+                }
+            }
+            var xFrac = (xMin !== null && xMax !== xMin)
+                ? (hoveredCycle - xMin) / (xMax - xMin) : 0.5;
+            var xPx = l + xFrac * innerW;
+
+            // ── Vertical line ─────────────────────────────────────────────
+            var vlineStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          xPx + 'px',
+                top:           t + 'px',
+                height:        innerH + 'px',
+                width:         '1px',
+                borderLeft:    '1px dashed rgba(168,212,255,0.45)',
+                pointerEvents: 'none',
+                zIndex:        '10',
+            };
+
+            // ── Collect visible trace values at this cycle ────────────────
+            var rows = [];
+            figure.data.forEach(function(trace) {
+                if (!trace.x || !trace.y) return;
+                var xi = -1, bestDist = Infinity;
+                for (var i = 0; i < trace.x.length; i++) {
+                    var d = Math.abs(trace.x[i] - hoveredCycle);
+                    if (d < bestDist) { bestDist = d; xi = i; }
+                }
+                if (xi === -1 || bestDist > 1) return;
+                var val = trace.y[xi];
+                if (val === null || val === undefined) return;
+                var color = (trace.line && trace.line.color) ? trace.line.color : '#4a9eff';
+                rows.push({name: trace.name, color: color, val: val});
+            });
+            rows.sort(function(a, b) { return Math.abs(b.val) - Math.abs(a.val); });
+
+            if (rows.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                return [vlineStyle, hidden];
+            }
+
+            // ── Choose layout: single column ≤8 rows, two columns otherwise ─
+            var twoCol = rows.length > 8;
+
+            // ── Build a single feature row cell ──────────────────────────
+            function makeCell(row) {
+                var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
+                return '<span style="display:inline-flex;align-items:center;gap:5px;'
+                     + 'white-space:nowrap;">'
+                     + '<span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;'
+                     + 'background:' + row.color + ';display:inline-block;"></span>'
+                     + '<span style="color:rgba(168,212,255,0.9);min-width:36px;font-size:11px;">'
+                     + row.name + '</span>'
+                     + '<span style="color:white;font-weight:600;font-size:11px;'
+                     + 'font-variant-numeric:tabular-nums;margin-left:4px;">'
+                     + valStr + '</span>'
+                     + '</span>';
+            }
+
+            // ── Header (full width in both layouts) ───────────────────────
+            var headerHtml = '<div style="font-weight:700;font-size:12px;color:white;'
+                           + 'margin-bottom:6px;padding-bottom:5px;'
+                           + 'border-bottom:1px solid rgba(74,158,255,0.25);">'
+                           + 'Cycle: ' + hoveredCycle + '</div>';
+
+            var bodyHtml = '';
+            if (!twoCol) {
+                // ── Single-column layout ──────────────────────────────────
+                rows.forEach(function(row) {
+                    bodyHtml += '<div style="display:flex;align-items:center;gap:7px;'
+                              + 'margin-bottom:3px;">' + makeCell(row) + '</div>';
+                });
+            } else {
+                // ── Two-column layout ─────────────────────────────────────
+                // Split: left column gets first half, right column gets second half
+                var half = Math.ceil(rows.length / 2);
+                var leftRows  = rows.slice(0, half);
+                var rightRows = rows.slice(half);
+
+                bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;'
+                          + 'column-gap:14px;row-gap:3px;">';
+                var maxLen = Math.max(leftRows.length, rightRows.length);
+                for (var i = 0; i < maxLen; i++) {
+                    bodyHtml += '<div style="display:flex;align-items:center;">'
+                              + (i < leftRows.length  ? makeCell(leftRows[i])  : '') + '</div>';
+                    bodyHtml += '<div style="display:flex;align-items:center;'
+                              + 'padding-left:8px;border-left:1px solid rgba(74,158,255,0.15);">'
+                              + (i < rightRows.length ? makeCell(rightRows[i]) : '') + '</div>';
+                }
+                bodyHtml += '</div>';
+            }
+
+            var footerHtml = '<div style="color:rgba(168,212,255,0.35);font-size:10px;'
+                           + 'margin-top:5px;">Hover to view values</div>';
+
+            if (tooltipEl) {
+                tooltipEl.style.maxHeight = '';
+                tooltipEl.style.overflowY = '';
+                tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
+            }
+
+            // ── Sizing: wider for two-column ──────────────────────────────
+            var tooltipW = twoCol ? 340 : 190;
+            var offsetX  = 12;
+            var padding  = 6;
+
+            // ── Horizontal: default right, flip left if near right edge ───
+            var leftPos = xPx + offsetX;
+            if (leftPos + tooltipW > plotW - r - padding) {
+                leftPos = xPx - tooltipW - offsetX;
+            }
+            // Keep inside left edge
+            if (leftPos < l) leftPos = l;
+
+            // ── Vertical: read actual rendered height, then clamp ─────────
+            var tooltipH = tooltipEl ? tooltipEl.scrollHeight : 200;
+            var availH   = innerH;          // plot area height
+
+            // Start at the top of the plot area
+            var topPos = t + padding;
+            // If it still overflows the bottom, push it up
+            var bottomEdge = topPos + tooltipH;
+            var plotBottom = plotH - b - padding;
+            if (bottomEdge > plotBottom) {
+                topPos = plotBottom - tooltipH;
+            }
+            // Never go above the top margin
+            if (topPos < t + padding) topPos = t + padding;
+
+            var tooltipStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          leftPos + 'px',
+                top:           topPos + 'px',
+                background:    'rgba(10,20,45,0.95)',
+                border:        '1px solid rgba(74,158,255,0.35)',
+                borderRadius:  '8px',
+                padding:       '10px 14px',
+                pointerEvents: 'none',
+                zIndex:        '20',
+                minWidth:      tooltipW + 'px',
+                boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
+            };
+
+            return [vlineStyle, tooltipStyle];
+        }
+        """,
+        Output("da-trend-vline",   "style"),
+        Output("da-trend-tooltip", "style"),
+        Input("da-shap-trend", "hoverData"),
+        State("da-shap-trend", "figure"),
+        prevent_initial_call=True,
+    )
+
