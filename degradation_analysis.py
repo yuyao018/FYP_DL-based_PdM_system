@@ -1110,7 +1110,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     # ── Row 2: SHAP trend chart (5:1 ratio) + AI explanation ──
     row2 = html.Div(
         style={"display": "flex", "gap": "20px", "padding": "0 28px 28px",
-               "alignItems": "stretch", "height": "440px"},
+               "marginBottom": "28px", "alignItems": "stretch", "height": "440px"},
         children=[
             # SHAP trend chart (flex: 3)
             html.Div(

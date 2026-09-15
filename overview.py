@@ -151,11 +151,11 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
             range=[0, y_max],
             title=dict(text="RUL", font=dict(color="#a8d4ff", size=11)),
         ),
-        hovermode="x unified",
+        hovermode="x",
+        hoverdistance=40,
         hoverlabel=dict(
-            bgcolor="#0d1e3a",
-            bordercolor="rgba(74,158,255,0.4)",
-            font=dict(color="white", size=12),
+            bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)",
+            font=dict(color="rgba(0,0,0,0)", size=1), namelength=0,
         ),
     )
     return fig
@@ -297,7 +297,7 @@ def card_title(text):
 
 
 # ─────────────────────────────────────────────
-#  MAIN CONTENT: OVERVIEW PAGE
+#  MAIN CONTENT: OVERVIEW PAGE (legacy/unused builder)
 # ─────────────────────────────────────────────
 
 def build_overview_content(engine_id="01", status="healthy", rul=120, degradation=80):
@@ -395,8 +395,8 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                 children=[
                                     card_title("Predicted RUL"),
                                     dcc.Graph(
-                                        figure=build_rul_chart(rul_value=rul),
-                                        config={"displayModeBar": False},
+                                        figure=build_rul_chart(),
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "200px"},
                                     )
                                 ]
@@ -479,7 +479,7 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                     card_title("Top Drivers"),
                                     dcc.Graph(
                                         figure=build_shap_chart(),
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "220px"},
                                     )
                                 ]
@@ -575,13 +575,15 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                     children=[
                         card_title("Predicted RUL"),
                         html.Div(
-                            style={"flex": "1", "minHeight": "0", "position": "relative"},
+                            style={"flex": "1", "minHeight": "0", "position": "relative",
+                                   "overflow": "hidden"},
                             children=[
                                 dcc.Graph(
                                     id="rul-line-chart",
                                     figure=build_rul_chart(),
-                                    config={"displayModeBar": False},
+                                    config={"displayModeBar": False, "responsive": True},
                                     style={"height": "100%", "width": "100%"},
+                                    clear_on_unhover=True,
                                 ),
                                 # Blur overlay (shown/hidden by callback)
                                 html.Div(
@@ -604,6 +606,9 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                         "textAlign": "center", "padding": "0 20px"}),
                                     ]
                                 ),
+                                # Hover overlays
+                                html.Div(id="rul-chart-vline",   style={"display": "none", "position": "absolute", "top": "0", "width": "1px", "borderLeft": "1px dashed rgba(168,212,255,0.45)", "pointerEvents": "none", "zIndex": "20"}),
+                                html.Div(id="rul-chart-tooltip", style={"display": "none", "position": "absolute", "background": "rgba(10,20,45,0.95)", "border": "1px solid rgba(74,158,255,0.35)", "borderRadius": "8px", "padding": "10px 14px", "pointerEvents": "none", "zIndex": "21", "minWidth": "160px", "boxShadow": "0 4px 20px rgba(0,0,0,0.5)"}),
                             ]
                         ),
                     ]
@@ -696,7 +701,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-up",
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
                                 ]),
@@ -707,7 +712,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-down",
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
                                 ]),
@@ -718,7 +723,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-all",
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
                                 ]),
@@ -856,6 +861,12 @@ def create_overview_layout(supabase, engine_db_id=None):
             dcc.Location(id="url-overview", refresh=False),
             dcc.Store(id="overview-engine-id-store", data=engine_db_id),
             dcc.Interval(id="rul-poll-interval", interval=5_000, n_intervals=0),
+            # ── Resize-trigger components: force Plotly to re-measure its
+            #    container shortly after first paint, fixing the empty-space
+            #    bug that otherwise only "resolves itself" when DevTools is
+            #    opened (which fires a native window resize event). ──
+            dcc.Interval(id="resize-trigger-interval", interval=600, n_intervals=0, max_intervals=1),
+            html.Div(id="dummy-resize-output", style={"display": "none"}),
             build_topbar(),
             html.Div(
                 style={
@@ -1174,12 +1185,7 @@ def register_overview_callbacks(app, supabase=None):
                 zeroline=False, color="#a8d4ff", tickfont=dict(size=9),
                 title=dict(text="Std. Value", font=dict(size=8, color="#5a8ab5")),
             ),
-            hovermode="closest",
-            hoverlabel=dict(
-                bgcolor="#0d1e3a", bordercolor="rgba(74,158,255,0.4)",
-                font=dict(color="white", size=10),
-                namelength=10,
-            ),
+            hovermode=False,
         )
 
     def _extract_sensor_data(history, cluster_info=None):
@@ -1361,6 +1367,182 @@ def register_overview_callbacks(app, supabase=None):
             )
         return fig_up, fig_down, fig_all, legend_items
 
+    # ── Shared clientside hover logic ────────────────────────────────────
+    _HOVER_JS = """
+    function(hoverData, figure, graphId, vlineId, tooltipId, chartH, marginL, marginR, marginT, marginB) {
+        var hidden = {display: 'none'};
+        var tooltipEl = document.getElementById(tooltipId);
+        var vlineEl   = document.getElementById(vlineId);
+
+        if (!hoverData || !hoverData.points || hoverData.points.length === 0) {
+            if (tooltipEl) tooltipEl.style.display = 'none';
+            if (vlineEl)   vlineEl.style.display   = 'none';
+            return [hidden, hidden];
+        }
+        if (!figure || !figure.data || figure.data.length === 0) {
+            if (tooltipEl) tooltipEl.style.display = 'none';
+            if (vlineEl)   vlineEl.style.display   = 'none';
+            return [hidden, hidden];
+        }
+
+        var layout = figure.layout || {};
+        var margin = layout.margin || {l: marginL, r: marginR, t: marginT, b: marginB};
+        var plotW = 600, plotH = chartH;
+
+        var graphEl = document.getElementById(graphId);
+        if (graphEl) {
+            var inner = graphEl.querySelector('.main-svg');
+            if (inner) {
+                var rect = inner.getBoundingClientRect();
+                plotW = rect.width  || plotW;
+                plotH = rect.height || plotH;
+            }
+        }
+
+        var l = margin.l || marginL;
+        var r = margin.r || marginR;
+        var t = margin.t || marginT;
+        var b = margin.b || marginB;
+        var innerW = plotW - l - r;
+        var innerH = plotH - t - b;
+
+        var hoveredX = hoverData.points[0].x;
+        var xaxis = layout.xaxis || {};
+        var xMin = xaxis.range ? xaxis.range[0] : null;
+        var xMax = xaxis.range ? xaxis.range[1] : null;
+        if (xMin === null || xMax === null) {
+            var allX = [];
+            figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
+            if (allX.length) { xMin = Math.min.apply(null,allX); xMax = Math.max.apply(null,allX); }
+        }
+        var xFrac = (xMin !== null && xMax !== xMin) ? (hoveredX - xMin)/(xMax - xMin) : 0.5;
+        var xPx = l + xFrac * innerW;
+
+        var vlineStyle = {
+            display: 'block', position: 'absolute',
+            left: xPx + 'px', top: t + 'px', height: innerH + 'px',
+            width: '1px', borderLeft: '1px dashed rgba(168,212,255,0.45)',
+            pointerEvents: 'none', zIndex: '10',
+        };
+
+        var rows = [];
+        figure.data.forEach(function(trace) {
+            if (!trace.x || !trace.y) return;
+            var xi = -1, bestDist = Infinity;
+            for (var i = 0; i < trace.x.length; i++) {
+                var d = Math.abs(trace.x[i] - hoveredX);
+                if (d < bestDist) { bestDist = d; xi = i; }
+            }
+            if (xi === -1 || bestDist > 2) return;
+            var val = trace.y[xi];
+            if (val === null || val === undefined) return;
+            // skip marker-only traces (endpoint dots)
+            if (trace.mode === 'markers' && !trace.name) return;
+            var color = (trace.line && trace.line.color) ? trace.line.color
+                      : (trace.marker && trace.marker.color) ? trace.marker.color : '#4a9eff';
+            rows.push({name: trace.name || '?', color: color, val: val});
+        });
+        rows.sort(function(a,b){ return Math.abs(b.val) - Math.abs(a.val); });
+
+        if (rows.length === 0) {
+            if (tooltipEl) tooltipEl.style.display = 'none';
+            return [vlineStyle, hidden];
+        }
+
+        var twoCol = rows.length > 8;
+
+        function makeCell(row) {
+            var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
+            return '<span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;">'
+                 + '<span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;background:'
+                 + row.color + ';display:inline-block;"></span>'
+                 + '<span style="color:rgba(168,212,255,0.9);min-width:32px;font-size:11px;">'
+                 + row.name + '</span>'
+                 + '<span style="color:white;font-weight:600;font-size:11px;'
+                 + 'font-variant-numeric:tabular-nums;margin-left:4px;">'
+                 + valStr + '</span></span>';
+        }
+
+        var headerHtml = '<div style="font-weight:700;font-size:12px;color:white;'
+                       + 'margin-bottom:6px;padding-bottom:5px;'
+                       + 'border-bottom:1px solid rgba(74,158,255,0.25);">Cycle: ' + hoveredX + '</div>';
+        var bodyHtml = '';
+        if (!twoCol) {
+            rows.forEach(function(row) {
+                bodyHtml += '<div style="display:flex;align-items:center;gap:7px;margin-bottom:3px;">'
+                          + makeCell(row) + '</div>';
+            });
+        } else {
+            var half = Math.ceil(rows.length / 2);
+            var leftRows = rows.slice(0, half), rightRows = rows.slice(half);
+            bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;column-gap:14px;row-gap:3px;">';
+            var maxLen = Math.max(leftRows.length, rightRows.length);
+            for (var i = 0; i < maxLen; i++) {
+                bodyHtml += '<div style="display:flex;align-items:center;">'
+                          + (i < leftRows.length  ? makeCell(leftRows[i])  : '') + '</div>';
+                bodyHtml += '<div style="display:flex;align-items:center;padding-left:8px;'
+                          + 'border-left:1px solid rgba(74,158,255,0.15);">'
+                          + (i < rightRows.length ? makeCell(rightRows[i]) : '') + '</div>';
+            }
+            bodyHtml += '</div>';
+        }
+
+        if (tooltipEl) {
+            tooltipEl.style.maxHeight = '';
+            tooltipEl.style.overflowY = '';
+            tooltipEl.innerHTML = headerHtml + bodyHtml;
+        }
+
+        var tooltipW = twoCol ? 320 : 170;
+        var offsetX  = 10, padding = 6;
+        var leftPos  = xPx + offsetX;
+        if (leftPos + tooltipW > plotW - r - padding) leftPos = xPx - tooltipW - offsetX;
+        if (leftPos < l) leftPos = l;
+
+        var tooltipH  = tooltipEl ? tooltipEl.scrollHeight : 150;
+        var topPos    = t + padding;
+        if (topPos + tooltipH > plotH - b - padding) topPos = (plotH - b - padding) - tooltipH;
+        if (topPos < t + padding) topPos = t + padding;
+
+        var tooltipStyle = {
+            display: 'block', position: 'absolute',
+            left: leftPos + 'px', top: topPos + 'px',
+            background: 'rgba(10,20,45,0.95)', border: '1px solid rgba(74,158,255,0.35)',
+            borderRadius: '8px', padding: '10px 14px', pointerEvents: 'none',
+            zIndex: '20', minWidth: tooltipW + 'px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+        };
+        return [vlineStyle, tooltipStyle];
+    }
+    """
+
+    # ── RUL line chart ────────────────────────────────────────────────────
+    app.clientside_callback(
+        f"(function() {{ var fn = {_HOVER_JS}; return function(h,f){{return fn(h,f,'rul-line-chart','rul-chart-vline','rul-chart-tooltip',220,10,50,10,10);}}; }})()",
+        Output("rul-chart-vline",   "style"),
+        Output("rul-chart-tooltip", "style"),
+        Input("rul-line-chart", "hoverData"),
+        State("rul-line-chart", "figure"),
+        prevent_initial_call=True,
+    )
+
+    # ── Force Plotly to resize all charts after initial page render ───────
+    # requestAnimationFrame defers the resize until after the browser has
+    # finished its layout/paint cycle — more reliable than a fixed timeout.
+    app.clientside_callback(
+        """
+        function(n) {
+            requestAnimationFrame(function() {
+                requestAnimationFrame(function() {
+                    window.dispatchEvent(new Event('resize'));
+                });
+            });
+            return "";
+        }
+        """,
+        Output("dummy-resize-output", "children"),
+        Input("resize-trigger-interval", "n_intervals"),
+        prevent_initial_call=False,
+    )
 
 # ─────────────────────────────────────────────
 #  STANDALONE RUN
@@ -1372,5 +1554,5 @@ if __name__ == "__main__":
         external_stylesheets=[dbc.themes.BOOTSTRAP],
         suppress_callback_exceptions=True,
     )
-    app.layout = create_overview_layout()
+    app.layout = create_overview_layout(supabase=None)
     app.run(debug=True)

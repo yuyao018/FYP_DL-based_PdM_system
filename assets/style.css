@@ -747,7 +747,10 @@ input[type="number"] {
 #da-shap-trend .hoverlayer rect,
 #sensor-chart .spikeline,
 #sensor-chart .hoverlayer .hovertext,
-#sensor-chart .hoverlayer rect {
+#sensor-chart .hoverlayer rect,
+#rul-line-chart .spikeline,
+#rul-line-chart .hoverlayer .hovertext,
+#rul-line-chart .hoverlayer rect {
     display: none !important;
     opacity: 0 !important;
 }
