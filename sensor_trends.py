@@ -227,27 +227,28 @@ def build_sensor_checklist():
         )
         for s in sensors:
             children.append(
-                html.Div(
-                    style={"display": "flex", "alignItems": "center", "gap": "8px",
-                           "padding": "5px 4px", "borderRadius": "6px", "marginBottom": "2px"},
+                # Entire row is the label — clicking anywhere toggles the checkbox
+                html.Label(
+                    htmlFor=f"sensor-check-input-{s['id']}",
+                    className="sensor-row",
                     children=[
+                        # Hidden native checkbox kept for Dash callback compatibility
                         dcc.Checklist(
                             id={"type": "sensor-check", "index": s["id"]},
                             options=[{"label": "", "value": s["id"]}],
                             value=[s["id"]] if s["id"] in DEFAULT_SELECTED else [],
-                            style={"display": "inline"},
-                            inputStyle={
-                                "width": "14px", "height": "14px",
-                                "accentColor": "#4a9eff", "cursor": "pointer",
-                            },
+                            className="sensor-checklist",
+                            inputClassName="sensor-checkbox-input",
+                            labelClassName="sensor-checkbox-label",
                         ),
-                        html.Div(style={
-                            "width": "10px", "height": "10px", "borderRadius": "50%",
-                            "background": s["color"], "flexShrink": "0",
+                        # Color dot
+                        html.Div(className="sensor-color-dot", style={
+                            "background": s["color"],
                         }),
-                        html.Span(s["label"], style={"color": "white", "fontSize": "13px",
-                                                      "fontWeight": "500", "minWidth": "36px"}),
-                        html.Span(s["unit"], style={"color": "rgba(168,212,255,0.45)", "fontSize": "11px"}),
+                        # Name
+                        html.Span(s["label"], className="sensor-name"),
+                        # Unit
+                        html.Span(s["unit"], className="sensor-unit"),
                     ]
                 )
             )
