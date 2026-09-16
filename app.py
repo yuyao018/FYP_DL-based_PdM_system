@@ -96,11 +96,18 @@ app.layout = html.Div([
 @app.callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
+    Input("url", "search"),
     State("session-store", "data"),
 )
-def display_page(pathname, session):
+def display_page(pathname, search, session):
     if not pathname or pathname == "/":
-        return create_login_layout()
+        # Parse ?next= query param for deep-link after login
+        next_url = ""
+        if search:
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(search.lstrip("?"))
+            next_url = qs.get("next", [""])[0]
+        return create_login_layout(next_url=next_url)
 
     if pathname == "/dev-login":
         return create_dev_login_layout()

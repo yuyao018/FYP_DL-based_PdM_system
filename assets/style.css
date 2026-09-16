@@ -822,22 +822,6 @@ input[type="number"] {
     background: rgba(255, 77, 77, 0.07);
 }
 
-
-
-.user-dropdown-item {
-    transition: background 0.15s ease, color 0.15s ease;
-}
-
-.user-dropdown-item:hover {
-    background: rgba(74,158,255,0.12) !important;
-    color: white !important;
-}
-
-.user-dropdown-item-danger:hover {
-    background: rgba(255,77,77,0.1) !important;
-    color: #ff4d4d !important;
-}
-
 /* ============================================
    DASHBOARD NAVBAR — user menu dropdown items
    ============================================ */
@@ -854,4 +838,67 @@ input[type="number"] {
 .user-dropdown-item-danger:hover {
     background: rgba(255,77,77,0.1) !important;
     color: #ff4d4d !important;
+}
+
+/* ============================================
+   SHAP WATERFALL — CYCLE DROPDOWN
+   New Dash dropdown implementation
+   ============================================ */
+
+/* Dropdown options popup */
+.dash-options-list-virtualized {
+    background: #0d1e3a !important;
+    color: rgba(168, 212, 255, 0.9) !important;
+}
+
+/* Every option */
+.dash-dropdown-option,
+.dash-options-list-option {
+    background: #0d1e3a !important;
+    color: rgba(168, 212, 255, 0.85) !important;
+
+    border-bottom: 1px solid rgba(74, 158, 255, 0.08) !important;
+
+    font-size: 13px !important;
+    font-weight: 500 !important;
+
+    transition: background 0.15s ease, color 0.15s ease !important;
+}
+
+/* Option text */
+.dash-options-list-option-text {
+    color: inherit !important;
+}
+
+/* Hover */
+.dash-dropdown-option:hover,
+.dash-options-list-option:hover {
+    background: rgba(74, 158, 255, 0.16) !important;
+    color: white !important;
+}
+
+/* Selected option — e.g. Latest */
+.dash-dropdown-option.selected,
+.dash-options-list-option.selected {
+    background: rgba(74, 158, 255, 0.25) !important;
+    color: #4a9eff !important;
+    font-weight: 700 !important;
+}
+
+/* Scrollbar */
+.dash-options-list-virtualized::-webkit-scrollbar {
+    width: 6px !important;
+}
+
+.dash-options-list-virtualized::-webkit-scrollbar-track {
+    background: #0a142d !important;
+}
+
+.dash-options-list-virtualized::-webkit-scrollbar-thumb {
+    background: rgba(74, 158, 255, 0.45) !important;
+    border-radius: 4px !important;
+}
+
+.dash-options-list-virtualized::-webkit-scrollbar-thumb:hover {
+    background: rgba(74, 158, 255, 0.7) !important;
 }

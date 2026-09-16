@@ -1084,9 +1084,10 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                 options=[{"label": "Latest", "value": "latest"}],
                                 value="latest",
                                 clearable=False,
+                                searchable=False,
                                 className="dark-dropdown",
                                 style={
-                                    "width": "130px",
+                                    "width": "150px",
                                     "background": "rgba(10,20,45,0.8)",
                                     "border": "1.5px solid rgba(74,158,255,0.4)",
                                     "borderRadius": "8px",
@@ -1138,14 +1139,14 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                     html.Div("All", id="da-trend-filter-all", n_clicks=0, style={
                                         "padding": "4px 12px", "borderRadius": "6px",
                                         "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
-                                        "background": "rgba(74,158,255,0.25)", "color": "white",
-                                        "border": "1px solid rgba(74,158,255,0.5)",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
                                     }),
                                     html.Div("Top 5", id="da-trend-filter-5", n_clicks=0, style={
                                         "padding": "4px 12px", "borderRadius": "6px",
                                         "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
-                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
-                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                        "background": "rgba(74,158,255,0.25)", "color": "white",
+                                        "border": "1px solid rgba(74,158,255,0.5)",
                                     }),
                                     html.Div("Top 10", id="da-trend-filter-10", n_clicks=0, style={
                                         "padding": "4px 12px", "borderRadius": "6px",
@@ -1157,7 +1158,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                             ),
                         ]
                     ),
-                    dcc.Store(id="da-trend-filter", data="all"),
+                    dcc.Store(id="da-trend-filter", data="5"),
                     # ── Chart + custom hover overlay ──
                     html.Div(
                         style={"flex": "1", "minHeight": "0", "position": "relative",

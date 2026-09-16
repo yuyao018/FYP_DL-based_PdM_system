@@ -100,7 +100,7 @@ def feature_icon(path_d, label):
     )
 
 # ── Login page layout function ────────────────────────────────────────────────────
-def create_login_layout():
+def create_login_layout(next_url: str = None):
     return html.Div(
         style={
             "display": "flex", "minHeight": "100vh", "fontFamily": "'Segoe UI', sans-serif",
@@ -109,6 +109,8 @@ def create_login_layout():
         children=[
             # Store for selected role (default: "user")
             dcc.Store(id="login-role-store", data="user"),
+            # Store for post-login redirect target (populated from ?next= query param)
+            dcc.Store(id="login-next-store", data=next_url or ""),
             # ── Left panel ──
             html.Div(
                 style={
