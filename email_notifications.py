@@ -261,10 +261,9 @@ def _threshold_alert_html(
     engine_db_id: str,
     triggered_at: Optional[datetime] = None,
 ) -> str:
-    dashboard_url = (
-        _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com")
-        + "/login"
-    )
+    base_url = _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com")
+    # Deep link: after login, navigate directly to this engine's alert log
+    dashboard_url = f"{base_url}/?next=/alert-log/{engine_db_id}"
     date_str = _fmt_date(triggered_at)
     is_critical = level.lower() == "critical"
 

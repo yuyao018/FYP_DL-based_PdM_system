@@ -306,9 +306,10 @@ def toggle_sidebar(n, is_open):
     State("username-input", "value"),
     State("password-input", "value"),
     State("login-role-store", "data"),
+    State("login-next-store", "data"),
     prevent_initial_call=True,
 )
-def handle_login(n_clicks, username, password, selected_role):
+def handle_login(n_clicks, username, password, selected_role, next_url):
     print(f"[DEBUG] Login attempt: username={username}, selected_role={selected_role}")
 
     if not username or not password:
@@ -430,7 +431,8 @@ def handle_login(n_clicks, username, password, selected_role):
                                                  style={"color": "#4a9eff", "fontSize": "13px"}), session_data
 
         print(f"[OK] Login: {username} | role: {actual_role} | user_id: {user_id} | org_id: {organization_id}")
-        return "/dashboard", html.Span("Login successful!",
+        redirect_to = next_url if next_url else "/dashboard"
+        return redirect_to, html.Span("Login successful!",
                                        style={"color": "#4aff9e", "fontSize": "13px"}), session_data
 
     except Exception as e:
