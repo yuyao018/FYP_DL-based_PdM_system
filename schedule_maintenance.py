@@ -412,6 +412,28 @@ def _build_modal(engine_options: list[dict]) -> html.Div:
                         ),
                     ]),
 
+                    # Assign To — only visible for admin (shown/hidden via callback)
+                    html.Div(
+                        id="sm-modal-assignee-row",
+                        style={"marginBottom": "16px", "display": "none"},
+                        children=[
+                            html.Label("ASSIGN TO", style=label_style),
+                            dcc.Dropdown(
+                                id="sm-modal-assignee",
+                                options=[],          # populated when modal opens
+                                placeholder="Select user…",
+                                clearable=True,
+                                className="dark-dropdown",
+                                style={
+                                    "fontSize": "13px",
+                                    "background": "rgba(13,32,69,0.9)",
+                                    "border": "1px solid rgba(74,158,255,0.25)",
+                                    "borderRadius": "8px",
+                                },
+                            ),
+                        ]
+                    ),
+
                     # Date
                     html.Div(style={"marginBottom": "16px"}, children=[
                         html.Label("DATE", style=label_style),
@@ -932,6 +954,23 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
     # Pre-select the engine if navigated from a specific engine card
     default_engine = engine_db_id if engine_db_id else None
 
+    # ── Fetch org users for admin "Assign To" dropdown ─────────────────────
+    org_users = []   # list of {"label": "Name", "value": "user_id"}
+    if supabase and role == "admin" and org_id:
+        try:
+            u_resp = supabase.table("users") \
+                .select("id, username, first_name, last_name") \
+                .eq("organization_id", org_id) \
+                .eq("is_deleted", False) \
+                .execute()
+            for u in (u_resp.data or []):
+                first = u.get("first_name") or ""
+                last  = u.get("last_name") or ""
+                name  = f"{first} {last}".strip() or u.get("username") or str(u["id"])[:8]
+                org_users.append({"label": name, "value": str(u["id"])})
+        except Exception as e:
+            print(f"[SM] Could not fetch org users: {e}")
+
     topbar = build_topbar()
 
     return html.Div(
@@ -952,6 +991,8 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
             dcc.Store(id="sm-preselect-engine",     data=default_engine),
             dcc.Store(id="sm-selected-event-store", data=None),
             dcc.Store(id="sm-week-offset-store",    data=0),
+            dcc.Store(id="sm-org-users-store",      data=org_users),
+            dcc.Store(id="sm-role-store",           data=role or "user"),
 
             topbar,
 
@@ -1054,15 +1095,21 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
 
     # ── Open modal ────────────────────────────────────────────────────────
     @app.callback(
-        Output("sm-modal-overlay",  "style"),
-        Output("sm-modal-engine",   "value"),
-        Input("sm-new-btn",         "n_clicks"),
-        Input("sm-modal-cancel",    "n_clicks"),
-        Input("sm-modal-close",     "n_clicks"),
-        State("sm-preselect-engine","data"),
+        Output("sm-modal-overlay",        "style"),
+        Output("sm-modal-engine",         "value"),
+        Output("sm-modal-assignee-row",   "style"),
+        Output("sm-modal-assignee",       "options"),
+        Output("sm-modal-assignee",       "value"),
+        Input("sm-new-btn",               "n_clicks"),
+        Input("sm-modal-cancel",          "n_clicks"),
+        Input("sm-modal-close",           "n_clicks"),
+        State("sm-preselect-engine",      "data"),
+        State("sm-role-store",            "data"),
+        State("sm-org-users-store",       "data"),
         prevent_initial_call=True,
     )
-    def toggle_modal(open_clicks, cancel_clicks, close_clicks, preselect):
+    def toggle_modal(open_clicks, cancel_clicks, close_clicks,
+                     preselect, role, org_users):
         triggered = callback_context.triggered[0]["prop_id"].split(".")[0]
 
         hidden = {
@@ -1076,9 +1123,19 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         }
         visible = {**hidden, "display": "flex"}
 
+        assignee_row_visible = {"marginBottom": "16px", "display": "block"}
+        assignee_row_hidden  = {"marginBottom": "16px", "display": "none"}
+
         if triggered == "sm-new-btn":
-            return visible, preselect
-        return hidden, dash.no_update
+            is_admin = (role == "admin")
+            return (
+                visible,
+                preselect,
+                assignee_row_visible if is_admin else assignee_row_hidden,
+                org_users or [],
+                None,
+            )
+        return hidden, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     # ── Schedule event → update calendar ─────────────────────────────────
     @app.callback(
@@ -1092,12 +1149,15 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         State("sm-modal-start-time",    "value"),
         State("sm-modal-end-time",      "value"),
         State("sm-modal-notes",         "value"),
+        State("sm-modal-assignee",      "value"),
         State("sm-events-store",        "data"),
         State("session-store",          "data"),
+        State("sm-role-store",          "data"),
         prevent_initial_call=True,
     )
     def handle_schedule(n_clicks, engine_id, sel_date,
-                        start_time, end_time, notes, existing_events, session):
+                        start_time, end_time, notes, assignee_id,
+                        existing_events, session, role):
 
         hidden_style = {
             "display": "none",
@@ -1188,7 +1248,9 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # ── Persist to Supabase if available ─────────────────────────────
         if supabase:
             try:
-                user_id = (session or {}).get("user_id") or None
+                session_user_id = (session or {}).get("user_id") or None
+                # Admin can assign to another user; fall back to themselves
+                created_by = assignee_id if (role == "admin" and assignee_id) else session_user_id
                 result = supabase.table("maintenance_schedules").insert({
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
@@ -1196,7 +1258,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                     "end_time":       end_time,
                     "notes":          notes or "",
                     "status":         "scheduled",
-                    "created_by":     user_id,
+                    "created_by":     created_by,
                     "created_at":     datetime.utcnow().isoformat(),
                 }).execute()
                 if result.data:

@@ -25,6 +25,7 @@ tracked in _RUNNING_SIMULATIONS so we don't double-start the same engine.
 """
 
 import json
+import gc
 import os
 from pathlib import Path
 import threading
@@ -42,6 +43,12 @@ import pandas as pd
 
 TICK_INTERVAL    = 3          # seconds between cycles
 RUL_CAP          = 100        # clamp predicted RUL — matches training rul_cap in model metadata
+
+# How often (in prediction cycles) to run the SHAP GradientExplainer.
+# SHAP is expensive (~150–200 MB peak RAM) — running every cycle OOMs on
+# Render's free tier (512 MB).  Every 5 cycles keeps memory pressure low
+# while still giving the dashboard fresh attributions every ~15 seconds.
+SHAP_INTERVAL = 5
 
 # Per-dataset window sizes (must match training)
 WINDOW_SIZES = {
@@ -811,6 +818,11 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
         # print(f"[SIM] base_corrected={base_corrected:.6f} sum(scores)={actual_sum:.6f} "
         #       f"f(x)={base_corrected + actual_sum:.6f} predicted_rul={predicted_rul_exact:.6f} "
         #       f"gap={abs(base_corrected + actual_sum - predicted_rul_exact):.6f}")
+
+        # ── Free tensors explicitly to release RAM on memory-constrained hosts ──
+        del explainer, shap_values, shap_arr, bg_t, inp_t
+        gc.collect()
+
         return result, base_corrected
 
     except Exception:
@@ -1138,6 +1150,12 @@ def _simulation_loop(
                            cluster_stds=cl_stds)
     _no_model_warned = False  # log "waiting for model" only once
 
+    # SHAP throttle: only run GradientExplainer every SHAP_INTERVAL predictions
+    # to avoid OOM on memory-constrained hosts. Carry the last result forward.
+    _shap_pred_counter = 0
+    _last_shap_data: list = []
+    _last_shap_base: float = 0.0
+
     # Fetch active model_version_id once (re-check if model gets reloaded later)
     model_version_id = _get_active_model_version_id(supabase, model_type)
 
@@ -1256,14 +1274,20 @@ def _simulation_loop(
                     print(f"[SIM] pred_raw={pred_rul_raw:.4f} bias={_bias:.4f} "
                           f"bias_corrected={pred_rul_raw - _bias:.4f} "
                           f"clamped={pred_rul:.4f} RUL_CAP={RUL_CAP}")
-                    # Compute SHAP values using GradientExplainer on the same window
-                    shap_data, shap_base_value = _compute_feature_importance(
-                        model, X, _num_features,
-                        pred_raw=pred_rul_raw,
-                        bias=_bias,
-                        rul_cap=float(RUL_CAP),
-                        sensor_labels=(SENSOR_SHORT + ["OS1","OS2","OS3"]) if _include_os else SENSOR_SHORT,
-                    )
+                    # Compute SHAP values every SHAP_INTERVAL cycles to limit RAM usage.
+                    # Carry the previous result forward on skipped cycles.
+                    _shap_pred_counter += 1
+                    if _shap_pred_counter >= SHAP_INTERVAL:
+                        _shap_pred_counter = 0
+                        _last_shap_data, _last_shap_base = _compute_feature_importance(
+                            model, X, _num_features,
+                            pred_raw=pred_rul_raw,
+                            bias=_bias,
+                            rul_cap=float(RUL_CAP),
+                            sensor_labels=(SENSOR_SHORT + ["OS1","OS2","OS3"]) if _include_os else SENSOR_SHORT,
+                        )
+                    shap_data       = _last_shap_data
+                    shap_base_value = _last_shap_base
                 except Exception:
                     print(f"[SIM][ERROR] model.predict failed at cycle {cycle_num}:\n{traceback.format_exc()}")
                     pred_rul        = None
@@ -1346,6 +1370,7 @@ def _simulation_loop(
                             pred_rul=pred_rul,
                             warn_thresh=int(warn_thresh),
                             crit_thresh=int(crit_thresh),
+                            trigger_cycle=int(cycle_num),
                         )
                     except Exception:
                         print(f"[SIM][WARN] Email alert check failed:\n{traceback.format_exc(limit=2)}")

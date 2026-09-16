@@ -148,11 +148,11 @@ def severity_badge(severity):
 #  ALERT TABLE ROW
 # ─────────────────────────────────────────────
 
-def alert_table_row(idx, alert, is_selected=False):
+def alert_table_row(idx, alert, is_selected=False, is_latest=False):
     ts = alert["timestamp"].strftime("%Y/%m/%d %H:%M")
     status = alert.get("status", "active")
 
-    # Action button based on status
+    # Action button based on status — only enabled on the latest alert row
     _btn_style = {
         "background": "linear-gradient(90deg, #1a6fd4 0%, #2a85f0 100%)",
         "color": "white", "border": "none", "borderRadius": "4px",
@@ -160,7 +160,21 @@ def alert_table_row(idx, alert, is_selected=False):
         "cursor": "pointer", "letterSpacing": "0.3px",
         "boxShadow": "0 1px 4px rgba(42,133,240,0.3)",
     }
-    if status == "active":
+    _btn_style_disabled = {
+        **_btn_style,
+        "background": "rgba(74,158,255,0.1)",
+        "color": "rgba(168,212,255,0.3)",
+        "cursor": "not-allowed",
+        "boxShadow": "none",
+    }
+
+    if not is_latest:
+        # Older rows — show a dimmed non-interactive label
+        action_btn = html.Span("—", style={
+            "color": "rgba(168,212,255,0.25)", "fontSize": "12px",
+            "fontWeight": "600", "display": "block", "textAlign": "center",
+        })
+    elif status == "active":
         action_btn = html.Button("Acknowledge", id={"type": "ack-btn", "index": idx},
                                   n_clicks=0, style=_btn_style)
     elif status == "acknowledged":
@@ -567,7 +581,7 @@ def build_alert_log_body(engine_id="09", alerts=None, selected_idx=0):
                             id="alert-table-body",
                             style={"overflowY": "auto", "flex": "1"},
                             children=[
-                                alert_table_row(i, a, is_selected=(i == selected_idx))
+                                alert_table_row(i, a, is_selected=(i == selected_idx), is_latest=(i == 0))
                                 for i, a in enumerate(alerts)
                             ]
                         )
@@ -619,8 +633,11 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
             except Exception:
                 pass
 
-            # Build base query for alert_logs
-            query = supabase.table("alert_logs").select("id, engine_id, triggered_at, status, acknowledged_by, acknowledged_at, resolved_at, severity")
+            # Build base query for alert_logs — fetch snapshot columns
+            query = supabase.table("alert_logs").select(
+                "id, engine_id, triggered_at, status, acknowledged_by, "
+                "acknowledged_at, resolved_at, severity, predicted_rul, trigger_cycle"
+            )
 
             if engine_db_id is not None:
                 query = query.eq("engine_id", engine_db_id)
@@ -675,29 +692,54 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                 except Exception:
                     timestamp = datetime.now()
 
-                # Fetch actual RUL predictions for this engine's progression chart
+                # ── Use snapshot RUL stored at alert creation time ──
+                # Fall back to fetching from rul_predictions only for legacy rows
+                # that predate the snapshot columns.
+                snapshot_rul     = log.get("predicted_rul")
+                snapshot_cycle   = log.get("trigger_cycle")
+                alert_engine_id  = log.get("engine_id")
+
                 rul_progression = []
-                latest_rul = 0
-                alert_engine_id = log.get("engine_id")
+                alert_rul = 0
+
                 try:
                     pred_resp = supabase.table("rul_predictions") \
                         .select("cycle, predicted_rul") \
                         .eq("engine_id", alert_engine_id) \
                         .order("cycle", desc=False) \
                         .execute()
-                    print(f"[DEBUG] rul_predictions for engine {alert_engine_id}: {len(pred_resp.data or [])} rows")
-                    for pred_row in (pred_resp.data or []):
+
+                    all_preds = pred_resp.data or []
+
+                    # Filter to cycles up to (and including) the trigger cycle
+                    # so the progression chart represents history at alert time.
+                    if snapshot_cycle is not None:
+                        preds_at_trigger = [
+                            r for r in all_preds
+                            if r.get("cycle") is not None and int(r["cycle"]) <= int(snapshot_cycle)
+                        ]
+                    else:
+                        preds_at_trigger = all_preds  # legacy: show full history
+
+                    for pred_row in preds_at_trigger:
                         if pred_row.get("predicted_rul") is not None:
                             rul_progression.append(float(pred_row["predicted_rul"]))
-                    if rul_progression:
-                        latest_rul = int(round(rul_progression[-1]))
+
+                    # RUL shown in the table row: use stored snapshot if available,
+                    # otherwise fall back to the last value in the filtered progression.
+                    if snapshot_rul is not None:
+                        alert_rul = int(round(float(snapshot_rul)))
+                    elif rul_progression:
+                        alert_rul = int(round(rul_progression[-1]))
+
                 except Exception as _e:
                     import traceback
                     print(f"[DEBUG] Failed to fetch rul_predictions: {traceback.format_exc()}")
+                    if snapshot_rul is not None:
+                        alert_rul = int(round(float(snapshot_rul)))
 
                 if not rul_progression:
-                    rul_progression = [current_cycle]
-                    latest_rul = current_cycle
+                    rul_progression = [alert_rul] if alert_rul else [0]
 
                 alerts.append({
                     "alert_no": str(i + 1).zfill(2),
@@ -705,7 +747,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                     "timestamp": timestamp,
                     "severity": severity,
                     "status": alert_status,
-                    "rul": latest_rul,
+                    "rul": alert_rul,
                     "degradation_pattern": degradation_pattern,
                     "llm_explanation": llm_explanation,
                     "shap": [],
@@ -783,7 +825,7 @@ def register_alert_log_callbacks(app, supabase=None):
 
         selected_alert = alerts[idx]
         detail = alert_detail_panel(selected_alert)
-        rows = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
+        rows = [alert_table_row(i, a, is_selected=(i == idx), is_latest=(i == 0)) for i, a in enumerate(alerts)]
 
         return detail, rows, idx
 
@@ -836,7 +878,7 @@ def register_alert_log_callbacks(app, supabase=None):
             a["timestamp"] = datetime.fromisoformat(a["timestamp"])
             alerts.append(a)
 
-        rows = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
+        rows = [alert_table_row(i, a, is_selected=(i == idx), is_latest=(i == 0)) for i, a in enumerate(alerts)]
         detail = alert_detail_panel(alerts[idx]) if idx < len(alerts) else []
 
         # Rebuild summary
@@ -897,7 +939,7 @@ def register_alert_log_callbacks(app, supabase=None):
             a["timestamp"] = datetime.fromisoformat(a["timestamp"])
             alerts.append(a)
 
-        rows = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
+        rows = [alert_table_row(i, a, is_selected=(i == idx), is_latest=(i == 0)) for i, a in enumerate(alerts)]
         detail = alert_detail_panel(alerts[idx]) if idx < len(alerts) else []
 
         # Rebuild summary
@@ -943,7 +985,7 @@ def register_alert_log_callbacks(app, supabase=None):
                 search_lower in str(a.get("rul", "")).lower()
             )]
 
-        rows = [alert_table_row(i, a, is_selected=(i == selected_idx)) for i, a in enumerate(alerts)]
+        rows = [alert_table_row(i, a, is_selected=(i == selected_idx), is_latest=(i == 0)) for i, a in enumerate(alerts)]
         if not rows:
             rows = [html.Div("No alerts matching filter.",
                              style={"color": "rgba(168,212,255,0.5)", "textAlign": "center",

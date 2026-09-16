@@ -46,9 +46,11 @@ def _cfg(key: str, default: str = "") -> str:
 # ─────────────────────────────────────────────
 
 def _send_email(subject: str, html_body: str, recipients_override: list = None) -> bool:
-    """Send an HTML email via Resend API. Falls back to SMTP if Resend not configured."""
-    resend_key = _cfg("RESEND_API_KEY")
-    sender     = _cfg("EMAIL_SENDER", "alerts@resend.dev")
+    """Send an HTML email via SMTP (Gmail)."""
+    sender    = _cfg("EMAIL_SENDER")
+    password  = _cfg("EMAIL_PASSWORD")
+    smtp_host = _cfg("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(_cfg("SMTP_PORT", "587"))
 
     # Use dynamic recipients if provided, else skip
     if recipients_override:
@@ -60,30 +62,8 @@ def _send_email(subject: str, html_body: str, recipients_override: list = None) 
         print("[EMAIL] Skipping — no recipients found for this engine.")
         return False
 
-    # ── Primary: Resend API (works on all platforms) ──
-    if resend_key:
-        try:
-            import resend
-            resend.api_key = resend_key
-            r = resend.Emails.send({
-                "from": sender,
-                "to": recipients,
-                "subject": subject,
-                "html": html_body,
-            })
-            print(f"[EMAIL] Sent via Resend '{subject}' → {recipients} (id={r.get('id', '?')})")
-            return True
-        except Exception:
-            print(f"[EMAIL][ERROR] Resend failed:\n{traceback.format_exc()}")
-            return False
-
-    # ── Fallback: SMTP (for local development) ──
-    password  = _cfg("EMAIL_PASSWORD")
-    smtp_host = _cfg("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(_cfg("SMTP_PORT", "587"))
-
     if not sender or not password:
-        print("[EMAIL] Skipping — no RESEND_API_KEY or EMAIL_PASSWORD configured.")
+        print("[EMAIL] Skipping — EMAIL_SENDER or EMAIL_PASSWORD not configured.")
         return False
 
     msg = MIMEMultipart("alternative")
@@ -364,7 +344,10 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
             return False
 
         if prev is None:
-            # First time this session — check DB to avoid duplicate alerts
+            # First time this session — check DB to avoid duplicate sends
+            # within the same app session. But only block if already acknowledged/resolved.
+            # An existing "active" row means it was logged before but email may not have
+            # been sent (e.g. app restarted). We should still attempt to send.
             if supabase:
                 try:
                     resp = supabase.table("alert_logs") \
@@ -379,13 +362,9 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
                             # Already handled — don't re-alert
                             _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
                             return False
-                        elif latest_status == "active":
-                            # Active alert exists — track state but don't duplicate
-                            _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
-                            return False
+                        # "active" → fall through and send (may have been missed)
                 except Exception:
                     pass
-            # No existing alert found — send first alert
             _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
             return True
 
@@ -436,6 +415,7 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
     recipients = set()
 
     if not supabase:
+        print("[EMAIL] _get_alert_recipients: no supabase client")
         return []
 
     try:
@@ -447,10 +427,12 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
             .execute()
 
         if not eng_resp.data:
+            print(f"[EMAIL] No engine row found for id={engine_db_id}")
             return []
 
         org_id = eng_resp.data.get("organization_id")
         responsible_by = eng_resp.data.get("responsible_by")
+        print(f"[EMAIL] engine org_id={org_id} responsible_by={responsible_by}")
 
         # Get responsible user's email
         if responsible_by:
@@ -460,33 +442,42 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
                     .eq("id", responsible_by) \
                     .single() \
                     .execute()
-                if user_resp.data and user_resp.data.get("email_address"):
-                    recipients.add(user_resp.data["email_address"])
-            except Exception:
-                pass
+                email = (user_resp.data or {}).get("email_address")
+                if email:
+                    recipients.add(email)
+                    print(f"[EMAIL] Responsible user email: {email}")
+                else:
+                    print(f"[EMAIL] Responsible user {responsible_by} has no email_address")
+            except Exception as e:
+                print(f"[EMAIL] Failed to fetch responsible user email: {e}")
 
         # Get all admins in the same organization
         if org_id:
             try:
                 admins_resp = supabase.table("users") \
-                    .select("email_address") \
+                    .select("email_address, username") \
                     .eq("organization_id", org_id) \
                     .eq("role", "admin") \
-                    .eq("is_deleted", True) \
+                    .eq("is_deleted", False) \
                     .execute()
+                print(f"[EMAIL] Found {len(admins_resp.data or [])} admin(s) in org {org_id}")
                 for u in (admins_resp.data or []):
                     email = u.get("email_address")
                     if email:
                         recipients.add(email)
-            except Exception:
-                pass
+                        print(f"[EMAIL] Admin recipient: {email} ({u.get('username','')})")
+                    else:
+                        print(f"[EMAIL] Admin {u.get('username','')} has no email_address set")
+            except Exception as e:
+                print(f"[EMAIL] Failed to fetch admin emails: {e}")
+        else:
+            print("[EMAIL] No org_id on engine — cannot find org admins")
 
     except Exception as e:
         print(f"[EMAIL] Failed to resolve recipients for engine {engine_db_id}: {e}")
 
     result = sorted(recipients)
-    if result:
-        print(f"[EMAIL] Recipients for engine {engine_db_id}: {result}")
+    print(f"[EMAIL] Final recipients for engine {engine_db_id}: {result}")
     return result
 
 
@@ -497,13 +488,13 @@ def check_and_send_threshold_alert(
     pred_rul: float,
     warn_thresh: int,
     crit_thresh: int,
+    trigger_cycle: int = None,
 ) -> None:
     """
     Call this every prediction cycle. Sends an email only when the engine
     first crosses a threshold (deduplication prevents repeated alerts).
-    Runs in the calling thread (simulation loop) so it's non-blocking for
-    other engines but does add the SMTP latency to that engine's tick.
-    To avoid this, run in a thread: threading.Thread(target=..., daemon=True).start()
+    Stores a snapshot of pred_rul and trigger_cycle in alert_logs so
+    historical alerts are never overwritten by later simulation data.
     """
     if pred_rul <= crit_thresh:
         level = "critical"
@@ -526,15 +517,20 @@ def check_and_send_threshold_alert(
 
     now = datetime.now(timezone.utc)
 
-    # ── Insert into alert_logs table ──
+    # ── Insert into alert_logs table — snapshot RUL and cycle at trigger time ──
     try:
-        supabase.table("alert_logs").insert({
-            "engine_id": engine_db_id,
-            "severity": level,
-            "status": "active",
+        insert_data = {
+            "engine_id":    engine_db_id,
+            "severity":     level,
+            "status":       "active",
             "triggered_at": now.isoformat(),
-        }).execute()
-        print(f"[EMAIL] Logged alert to alert_logs: engine={engine_db_id} severity={level}")
+            "predicted_rul": round(float(pred_rul), 2),
+        }
+        if trigger_cycle is not None:
+            insert_data["trigger_cycle"] = int(trigger_cycle)
+        supabase.table("alert_logs").insert(insert_data).execute()
+        print(f"[EMAIL] Logged alert to alert_logs: engine={engine_db_id} severity={level} "
+              f"rul={pred_rul:.1f} cycle={trigger_cycle}")
     except Exception:
         print(f"[EMAIL][ERROR] Failed to insert alert_logs:\n{traceback.format_exc()}")
 
@@ -604,36 +600,11 @@ def start_notification_manager(supabase) -> None:
     Threshold alerts are fired from engine_simulation_manager.py by calling
     check_and_send_threshold_alert() inside the prediction loop.
     """
-    if not _cfg("EMAIL_SENDER") or not _cfg("EMAIL_PASSWORD") or not _cfg("EMAIL_RECIPIENTS"):
+    # Require EMAIL_SENDER + EMAIL_PASSWORD for SMTP
+    if not _cfg("EMAIL_SENDER") or not _cfg("EMAIL_PASSWORD"):
         print("[EMAIL] Notification manager not started — "
-              "EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECIPIENTS missing from .env")
+              "set EMAIL_SENDER and EMAIL_PASSWORD in .env")
         return
-
-    # ── Backfill: log alerts for engines in warning/critical with NO alert_logs at all ──
-    try:
-        eng_resp = supabase.table("engines") \
-            .select("id, condition_status") \
-            .in_("condition_status", ["warning", "critical"]) \
-            .execute()
-        for eng in (eng_resp.data or []):
-            eid = eng["id"]
-            severity = eng["condition_status"]
-            # Only backfill if this engine has ZERO alert_logs entries
-            existing = supabase.table("alert_logs") \
-                .select("id") \
-                .eq("engine_id", eid) \
-                .limit(1) \
-                .execute()
-            if not existing.data:
-                supabase.table("alert_logs").insert({
-                    "engine_id": eid,
-                    "severity": severity,
-                    "status": "active",
-                    "triggered_at": datetime.now(timezone.utc).isoformat(),
-                }).execute()
-                print(f"[EMAIL] Backfilled alert_log for engine {eid} ({severity})")
-    except Exception:
-        print(f"[EMAIL][WARN] Alert backfill failed:\n{traceback.format_exc()}")
 
     hour = int(_cfg("EMAIL_DAILY_HOUR", "9"))
     t = threading.Thread(
