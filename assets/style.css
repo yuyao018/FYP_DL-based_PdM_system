@@ -378,3 +378,97 @@ button.dash-dropdown.dark-dropdown:focus-visible {
     color: rgba(168, 212, 255, 0.7) !important;
     fill: rgba(168, 212, 255, 0.7) !important;
 }
+
+/* ============================================
+   PLOTLY — HIDE NATIVE HOVER UI
+   Custom tooltips are used instead
+   ============================================ */
+
+/* Hide Plotly's native hover labels */
+#sensor-chart .hoverlayer,
+#da-shap-trend .hoverlayer {
+    pointer-events: none !important;
+}
+
+/* Hide native hover text boxes */
+#sensor-chart .hoverlayer .hovertext,
+#da-shap-trend .hoverlayer .hovertext {
+    opacity: 0 !important;
+    visibility: hidden !important;
+}
+
+/* Hide native axis hover label — this is the grey box */
+#sensor-chart .hoverlayer .axistext,
+#da-shap-trend .hoverlayer .axistext {
+    opacity: 0 !important;
+    visibility: hidden !important;
+}
+
+/* Hide Plotly spike lines because your own dashed line is used */
+#sensor-chart .spikeline,
+#da-shap-trend .spikeline {
+    opacity: 0 !important;
+    stroke: transparent !important;
+}
+
+/* Extra protection against Plotly hover rectangles */
+#sensor-chart .hoverlayer rect,
+#da-shap-trend .hoverlayer rect {
+    fill: transparent !important;
+    stroke: transparent !important;
+    opacity: 0 !important;
+}
+
+/* AI Explanation base text */
+.ai-explanation-md {
+    color: rgba(220, 235, 255, 0.88) !important;
+    font-size: 13px !important;
+    line-height: 1.55;
+}
+
+/* Paragraphs and list items */
+.ai-explanation-md p,
+.ai-explanation-md li {
+    color: rgba(220, 235, 255, 0.88) !important;
+    font-size: 13px !important;
+    line-height: 1.55;
+}
+
+/* Section headings */
+.ai-explanation-md h3 {
+    color: #ffffff !important;
+    font-size: 17px !important;
+    font-weight: 700;
+    margin-top: 12px;
+    margin-bottom: 8px;
+}
+
+/* Smaller secondary headings if generated */
+.ai-explanation-md h4 {
+    color: #ffffff !important;
+    font-size: 14px !important;
+    font-weight: 700;
+}
+
+/* Bold sensor names */
+.ai-explanation-md strong,
+.ai-explanation-md b {
+    color: #ffffff !important;
+    font-size: inherit !important;
+    font-weight: 700;
+}
+
+/* Lists */
+.ai-explanation-md ul,
+.ai-explanation-md ol {
+    margin-top: 5px;
+    margin-bottom: 10px;
+    padding-left: 25px;
+}
+
+/* Links */
+.ai-explanation-md a {
+    color: #4a9eff !important;
+    font-size: inherit !important;
+    font-weight: 600;
+}
