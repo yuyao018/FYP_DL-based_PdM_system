@@ -385,12 +385,14 @@ button.dash-dropdown.dark-dropdown:focus-visible {
    ============================================ */
 
 /* Hide Plotly's native hover labels */
+#al-rul-chart .hoverlayer,
 #sensor-chart .hoverlayer,
 #da-shap-trend .hoverlayer {
     pointer-events: none !important;
 }
 
 /* Hide native hover text boxes */
+#al-rul-chart .hoverlayer .hovertext,
 #sensor-chart .hoverlayer .hovertext,
 #da-shap-trend .hoverlayer .hovertext {
     opacity: 0 !important;
@@ -398,6 +400,7 @@ button.dash-dropdown.dark-dropdown:focus-visible {
 }
 
 /* Hide native axis hover label — this is the grey box */
+#al-rul-chart .hoverlayer .axistext,
 #sensor-chart .hoverlayer .axistext,
 #da-shap-trend .hoverlayer .axistext {
     opacity: 0 !important;
@@ -405,6 +408,7 @@ button.dash-dropdown.dark-dropdown:focus-visible {
 }
 
 /* Hide Plotly spike lines because your own dashed line is used */
+#al-rul-chart .spikeline,
 #sensor-chart .spikeline,
 #da-shap-trend .spikeline {
     opacity: 0 !important;
@@ -412,6 +416,7 @@ button.dash-dropdown.dark-dropdown:focus-visible {
 }
 
 /* Extra protection against Plotly hover rectangles */
+#al-rul-chart .hoverlayer rect,
 #sensor-chart .hoverlayer rect,
 #da-shap-trend .hoverlayer rect {
     fill: transparent !important;
@@ -713,3 +718,46 @@ button.dash-dropdown.dark-dropdown:focus-visible {
     cursor: pointer;
     opacity: 0.85;
 }
+/* Alert Log RUL: match the Sensor Trend hover card. */
+.al-rul-vline {
+    position: absolute;
+    width: 1px;
+    border-left: 1px dashed rgba(168,212,255,0.45);
+    pointer-events: none;
+    z-index: 10;
+}
+.al-rul-tooltip {
+    position: absolute;
+    box-sizing: border-box;
+    background: rgba(10,20,45,0.95);
+    border: 1px solid rgba(74,158,255,0.35);
+    border-radius: 8px;
+    padding: 10px 14px;
+    pointer-events: none;
+    z-index: 20;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+.al-rul-tooltip-title {
+    font-weight: 700;
+    font-size: 12px;
+    color: white;
+    margin-bottom: 6px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid rgba(74,158,255,0.25);
+}
+.al-rul-tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    color: rgba(168,212,255,0.9);
+}
+.al-rul-tooltip-row strong { color: white; font-variant-numeric: tabular-nums; }
+.al-rul-tooltip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4a9eff;
+    flex-shrink: 0;
+}
+.al-rul-tooltip-footer { color: rgba(168,212,255,0.35); font-size: 10px; margin-top: 5px; }

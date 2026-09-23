@@ -1,3 +1,4 @@
+from assets.schedule_modal import build_schedule_modal
 import dash
 from dash import dcc, html, Input, Output, State, ALL, MATCH
 import dash_bootstrap_components as dbc
@@ -286,7 +287,7 @@ def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=62):
     fig.add_trace(go.Scatter(
         x=x, y=y, mode="lines",
         line=dict(color="#4a9eff", width=1.5),
-        hovertemplate="Cycle %{x}<br>RUL: %{y:.1f}<extra></extra>",
+        name="RUL", hoverinfo="none",
     ))
     x_end   = x[-1] if x else 50
     x_start = x[0]  if x else 45
@@ -305,7 +306,7 @@ def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=62):
         yaxis=dict(showgrid=True, gridcolor="rgba(74,158,255,0.08)",
                    color="#a8d4ff", tickfont=dict(size=9), zeroline=False,
                    title=dict(text="RUL", font=dict(size=9, color="#a8d4ff"))),
-        showlegend=False, hovermode="x unified",
+        showlegend=False, hovermode="x",
         hoverlabel=dict(bgcolor="#0d1e3a", bordercolor="rgba(74,158,255,0.4)",
                         font=dict(color="white", size=11)),
     )
@@ -580,8 +581,10 @@ def alert_detail_panel(alert, report=None):
         _section_heading("RUL PROGRESSION"),
         html.Div(
             style={"background": "rgba(10,20,45,0.5)", "borderRadius": "10px",
-                   "border": "1px solid rgba(74,158,255,0.1)", "marginBottom": "18px"},
+                   "border": "1px solid rgba(74,158,255,0.1)", "marginBottom": "18px",
+                   "position": "relative", "overflow": "hidden"},
             children=[dcc.Graph(
+                id="al-rul-chart", clear_on_unhover=True,
                 figure=build_rul_sparkline(
                     alert["rul_progression"],
                     crit_thresh=alert.get("crit_thresh", 30),
@@ -589,7 +592,10 @@ def alert_detail_panel(alert, report=None):
                 ),
                 config={"displayModeBar": False},
                 style={"height": "160px"},
-            )]
+            ),
+                html.Div(id="al-rul-vline", className="al-rul-vline", style={"display": "none"}),
+                html.Div(id="al-rul-tooltip", className="al-rul-tooltip", style={"display": "none"}),
+            ]
         ),
 
         # Alert details
@@ -639,87 +645,6 @@ def alert_detail_panel(alert, report=None):
     )
 
 #  SCHEDULE MAINTENANCE MODAL (inline in Alert Log)
-def _schedule_modal():
-    """Overlay modal used to schedule (or follow-up) maintenance from the alert log."""
-    ls = _label_style()
-    is_ = _input_style()
-    return html.Div(
-        id="al-sched-modal-overlay",
-        style={"display": "none", "position": "fixed", "top": "0", "left": "0",
-               "width": "100vw", "height": "100vh", "background": "rgba(5,12,28,0.80)",
-               "zIndex": "1200", "alignItems": "center", "justifyContent": "center"},
-        children=[html.Div(
-            style={"background": "linear-gradient(135deg,#0d1e3a 0%,#071530 100%)",
-                   "border": "1px solid rgba(74,158,255,0.25)", "borderRadius": "16px",
-                   "padding": "24px 28px 28px", "width": "500px", "maxWidth": "94vw",
-                   "boxShadow": "0 20px 60px rgba(0,0,0,0.6)"},
-            children=[
-                # Title row
-                html.Div(style={"display": "flex", "justifyContent": "space-between",
-                                "alignItems": "center", "marginBottom": "20px"},
-                         children=[
-                             html.H3(id="al-sched-modal-title",
-                                     children="Schedule Maintenance",
-                                     style={"margin": "0", "color": "white",
-                                            "fontSize": "16px", "fontWeight": "700"}),
-                             html.Span("×", id="al-sched-modal-close", n_clicks=0,
-                                       style={"color": "rgba(168,212,255,0.5)", "fontSize": "22px",
-                                              "cursor": "pointer", "lineHeight": "1"}),
-                         ]),
-                # Context info (read-only)
-                html.Div(id="al-sched-modal-context",
-                         style={"background": "rgba(74,158,255,0.06)", "border": "1px solid rgba(74,158,255,0.15)",
-                                "borderRadius": "8px", "padding": "10px 14px", "marginBottom": "18px", "fontSize": "12px",
-                                "color": "#a8d4ff"}),
-                # Date
-                html.Div(style={"marginBottom": "14px"}, children=[
-                    html.Label("SCHEDULED DATE", style=ls),
-                    dcc.Input(id="al-sched-date", type="date", style={**is_, "colorScheme": "dark"}),
-                ]),
-                # Start / End time
-                html.Div(style={"display": "flex", "gap": "14px", "marginBottom": "14px"}, children=[
-                    html.Div(style={"flex": "1"}, children=[
-                        html.Label("START TIME", style=ls),
-                        dcc.Input(id="al-sched-start", type="time", value="09:00", style=is_),
-                    ]),
-                    html.Div(style={"flex": "1"}, children=[
-                        html.Label("END TIME", style=ls),
-                        dcc.Input(id="al-sched-end", type="time", value="10:00", style=is_),
-                    ]),
-                ]),
-                # Notes
-                html.Div(style={"marginBottom": "20px"}, children=[
-                    html.Label("NOTES", style=ls),
-                    dcc.Textarea(id="al-sched-notes",
-                                 placeholder="Optional notes…",
-                                 style={**is_, "height": "72px", "resize": "vertical"}),
-                ]),
-                html.Div(id="al-sched-modal-msg",
-                         style={"marginBottom": "10px", "minHeight": "18px"}),
-                # Buttons
-                html.Div(style={"display": "flex", "justifyContent": "flex-end", "gap": "10px"},
-                         children=[
-                             html.Button("Cancel", id="al-sched-modal-cancel", n_clicks=0,
-                                         style={"background": "rgba(74,158,255,0.06)",
-                                                "border": "1px solid rgba(74,158,255,0.25)",
-                                                "borderRadius": "8px", "color": "rgba(168,212,255,0.7)",
-                                                "fontSize": "13px", "fontWeight": "600",
-                                                "padding": "9px 20px", "cursor": "pointer"}),
-                             html.Button("Confirm Schedule", id="al-sched-modal-confirm", n_clicks=0,
-                                         disabled=False,
-                                         style={"background": "rgba(74,158,255,0.18)",
-                                                "border": "1px solid rgba(74,158,255,0.55)",
-                                                "borderRadius": "8px", "color": "#7ab8ff",
-                                                "fontSize": "13px", "fontWeight": "700",
-                                                "padding": "9px 22px", "cursor": "pointer",
-                                                "opacity": "1", "transition": "opacity 0.2s"}),
-                         ]),
-            ]
-        )]
-    )
-
-
-#  MAINTENANCE REPORT MODAL (full-screen overlay)
 def _report_modal():
     """
     Full-screen overlay containing the maintenance report form.
@@ -1181,11 +1106,10 @@ def build_alert_log_body(engine_id="—", alerts=None, selected_idx=0,
         dcc.Store(id="al-sched-org-users-store", data=org_users or []),
         dcc.Store(id="al-sched-role-store", data=role or "user"),
         dcc.Store(id="al-sched-current-user-label-store", data=current_user_label),
-        dcc.Store(id="al-sched-original-store", data=None),  # original DB values for dirty-check
         dcc.Store(id="al-sched-schedule-db-id-store", data=None),  # schedule id being viewed/edited
 
         # Modals (always rendered in DOM)
-        _schedule_modal(),
+        build_schedule_modal(),
         _report_modal(),
         _confirm_modal(),
 
@@ -1645,6 +1569,47 @@ def _generate_pdf(alert, report):
 
 #  CALLBACKS
 def register_alert_log_callbacks(app, supabase=None):
+    app.clientside_callback(
+        """
+        function(hoverData) {
+            const hidden = {display: 'none'};
+            const points = hoverData && hoverData.points;
+            const graph = document.getElementById('al-rul-chart');
+            const plot = graph && graph.querySelector('.js-plotly-plot');
+            const layout = plot && plot._fullLayout;
+            if (!points || !points.length || !layout) return [hidden, hidden, []];
+            const point = points[0];
+            if (point.y == null || !Number.isFinite(Number(point.y)))
+                return [hidden, hidden, []];
+            const axis = layout.xaxis;
+            const x = axis._offset + axis.l2p(point.x);
+            const top = layout.yaxis._offset;
+            const width = Math.min(190, Math.max(0, graph.clientWidth - 12));
+            let left = x + 12;
+            if (left + width > graph.clientWidth - 6) left = x - width - 12;
+            left = Math.max(6, Math.min(left, graph.clientWidth - width - 6));
+            function el(type, props) {
+                return {namespace: 'dash_html_components', type: type, props: props};
+            }
+            return [
+                {display: 'block', left: x + 'px', top: top + 'px',
+                 height: layout.yaxis._length + 'px'},
+                {display: 'block', left: left + 'px', top: (top + 6) + 'px', width: width + 'px'},
+                [el('Div', {className: 'al-rul-tooltip-title', children: 'Cycle: ' + point.x}),
+                 el('Div', {className: 'al-rul-tooltip-row', children: [
+                     el('Span', {className: 'al-rul-tooltip-dot'}),
+                     el('Span', {children: 'RUL'}),
+                     el('Strong', {children: Number(point.y).toFixed(1) + ' cycles'})]}),
+                 el('Div', {className: 'al-rul-tooltip-footer', children: 'Hover to view values'})]
+            ];
+        }
+        """,
+        Output("al-rul-vline", "style"),
+        Output("al-rul-tooltip", "style"),
+        Output("al-rul-tooltip", "children"),
+        Input("al-rul-chart", "hoverData"),
+    )
+
 
     # ── 1. Row selection ──────────────────────────────────────────────
     @app.callback(
@@ -1705,13 +1670,6 @@ def register_alert_log_callbacks(app, supabase=None):
         return rows
 
     # ── 3. Action button click → open appropriate modal ───────────────
-    # NOTE: this used to listen on a pattern-matching id
-    # ({"type": "al-action-btn", "index": ALL}) even though the engine-level
-    # action always operated on alerts[0]. That button was also recreated on
-    # every refresh, which reset n_clicks and could re-trigger this callback
-    # right after a modal closed. It now listens on the single STATIC id
-    # "al-engine-action-btn", which is created once and only has its
-    # children/style updated afterward — so n_clicks only changes on a real click.
     @app.callback(
         # Schedule modal
         Output("al-sched-modal-overlay",       "style",    allow_duplicate=True),
@@ -1736,7 +1694,6 @@ def register_alert_log_callbacks(app, supabase=None):
         Output("al-sched-date",                "value",    allow_duplicate=True),
         Output("al-sched-start",               "value",    allow_duplicate=True),
         Output("al-sched-end",                 "value",    allow_duplicate=True),
-        Output("al-sched-notes",               "value",    allow_duplicate=True),
         Output("al-sched-original-store",      "data",     allow_duplicate=True),
         Output("al-sched-schedule-db-id-store","data",     allow_duplicate=True),
         # Input — static engine-level action button (see note above)
@@ -1791,7 +1748,7 @@ def register_alert_log_callbacks(app, supabase=None):
                     html.Span(f"Pattern: {alert.get('degradation_pattern','—')}"),
                 ]),
                 html.A(
-                    "📅  Open in Maintenance Schedule →",
+                    "◷  Open in Maintenance Schedule →",
                     href=cal_href,
                     target="_self",
                     style={
@@ -1814,7 +1771,7 @@ def register_alert_log_callbacks(app, supabase=None):
                     "followup" if is_followup else "schedule",
                     report_hidden,
                     *([no_update] * 12),
-                    no_update, no_update, no_update, no_update, no_update, no_update)
+                    None, "09:00", "10:00", None, None)
 
         def _open_report_modal(readonly=False):
             schedule_id = alert.get("maintenance_schedule_id")
@@ -1857,7 +1814,6 @@ def register_alert_log_callbacks(app, supabase=None):
                 r.get("id"),
                 readonly,
                 no_update, no_update, no_update, no_update, no_update,
-                no_update, no_update, no_update, no_update, no_update, no_update,
             )
 
         # ── Engine-level action button ─────────────────────────────────
@@ -1870,7 +1826,7 @@ def register_alert_log_callbacks(app, supabase=None):
             if supabase and sched_id:
                 try:
                     sr = supabase.table("maintenance_schedules") \
-                        .select("id,scheduled_date,start_time,end_time,notes") \
+                        .select("id,scheduled_date,start_time,end_time") \
                         .eq("id", sched_id).single().execute()
                     sched_row = sr.data or {}
                 except Exception as _e:
@@ -1879,27 +1835,18 @@ def register_alert_log_callbacks(app, supabase=None):
             prefill_date  = sched_row.get("scheduled_date") or ""
             prefill_start = sched_row.get("start_time", "09:00") or "09:00"
             prefill_end   = sched_row.get("end_time", "10:00") or "10:00"
-            prefill_notes = sched_row.get("notes") or ""
             original = {
                 "date":  prefill_date,
                 "start": prefill_start,
                 "end":   prefill_end,
-                "notes": prefill_notes,
             }
 
             context = html.Div([
-                html.Span(f"Engine {engine_db_id}  |  ", style={"fontWeight": "700"}),
+                html.Span(f"Engine {alert.get('engine_id')}  |  ", style={"fontWeight": "700"}),
                 html.Span("Edit the schedule details below and save to update.",
                           style={"color": "#a8d4ff"}),
             ])
-            is_admin = (role or "user") == "admin"
-            admin_row_style = {"marginBottom": "14px", "display": "block"} if is_admin else {"marginBottom": "14px", "display": "none"}
-            self_row_style  = {"marginBottom": "14px", "display": "none"} if is_admin else {"marginBottom": "14px", "display": "block"}
-            return (sched_shown, "View / Edit Schedule", context,
-                    "view",
-                    report_hidden, *([no_update] * 12),
-                    prefill_date, prefill_start, prefill_end, prefill_notes,
-                    original, sched_id)
+            return (sched_shown, "View / Edit Schedule", context, "view", report_hidden, *([no_update] * 12), prefill_date, prefill_start, prefill_end, original, sched_id)
         elif mstatus == "in_progress":
             return _open_report_modal(readonly=False)
         elif mstatus == "completed":
@@ -1984,12 +1931,11 @@ def register_alert_log_callbacks(app, supabase=None):
         Input("al-sched-date",           "value"),
         Input("al-sched-start",          "value"),
         Input("al-sched-end",            "value"),
-        Input("al-sched-notes",          "value"),
         Input("al-modal-trigger-store",  "data"),
         State("al-sched-original-store", "data"),
         prevent_initial_call=True,
     )
-    def update_confirm_button(date_val, start_val, end_val, notes_val, trigger, original):
+    def update_confirm_button(date_val, start_val, end_val, trigger, original):
         _btn_enabled = {
             "background": "rgba(74,158,255,0.18)",
             "border": "1px solid rgba(74,158,255,0.55)",
@@ -2013,8 +1959,7 @@ def register_alert_log_callbacks(app, supabase=None):
             is_dirty = (
                 (date_val  or "") != (orig.get("date")  or "") or
                 (start_val or "") != (orig.get("start") or "") or
-                (end_val   or "") != (orig.get("end")   or "") or
-                (notes_val or "") != (orig.get("notes") or "")
+                (end_val   or "") != (orig.get("end")   or "") 
             )
             if is_dirty:
                 return False, "Save Updated Schedule", _btn_enabled
@@ -2049,7 +1994,6 @@ def register_alert_log_callbacks(app, supabase=None):
         State("al-sched-date",            "value"),
         State("al-sched-start",           "value"),
         State("al-sched-end",             "value"),
-        State("al-sched-notes",           "value"),
         State("al-modal-trigger-store",   "data"),
         State("alerts-data",              "data"),
         State("selected-alert-idx",       "data"),
@@ -2058,7 +2002,7 @@ def register_alert_log_callbacks(app, supabase=None):
         State("al-sched-schedule-db-id-store", "data"),
         prevent_initial_call=True,
     )
-    def confirm_schedule(n_clicks, sel_date, start_time, end_time, notes,
+    def confirm_schedule(n_clicks, sel_date, start_time, end_time,
                          trigger_type, alerts_data, selected_idx, session, role, existing_schedule_id):
         hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",
                   "width": "100vw", "height": "100vh", "background": "rgba(5,12,28,0.80)",
@@ -2092,7 +2036,6 @@ def register_alert_log_callbacks(app, supabase=None):
                         "scheduled_date": sel_date,
                         "start_time": start_time or "09:00",
                         "end_time": end_time or "10:00",
-                        "notes": notes or "",
                     }
 
                     result = (
@@ -2162,7 +2105,6 @@ def register_alert_log_callbacks(app, supabase=None):
                                 "scheduled_date": sel_date,
                                 "start_time": start_time or "09:00",
                                 "end_time": end_time or "10:00",
-                                "notes": notes or "",
                                 "status": "scheduled",
                                 "created_by": user_id,
                                 "assigned_to": responsible_user_id,
@@ -2289,8 +2231,7 @@ def register_alert_log_callbacks(app, supabase=None):
         prevent_initial_call=True,
     )
 
-    def save_report_progress(n_clicks, actions, comp_insp, comp_rep, findings,
-                             fault, ai_use, notes, schedule_id, report_id, session):
+    def save_report_progress(n_clicks, actions, comp_insp, comp_rep, findings, notes, fault, ai_use, schedule_id, report_id, session):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
 
