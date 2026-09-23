@@ -520,10 +520,10 @@ def check_and_send_threshold_alert(
     # ── Insert into alert_logs table — snapshot RUL and cycle at trigger time ──
     try:
         insert_data = {
-            "engine_id":    engine_db_id,
-            "severity":     level,
-            "status":       "active",
-            "triggered_at": now.isoformat(),
+            "engine_id":     engine_db_id,
+            "severity":      level,
+            "status":        "active",              # legacy column kept for compatibility
+            "triggered_at":  now.isoformat(),
             "predicted_rul": round(float(pred_rul), 2),
         }
         if trigger_cycle is not None:

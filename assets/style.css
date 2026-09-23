@@ -472,3 +472,244 @@ button.dash-dropdown.dark-dropdown:focus-visible {
     font-size: inherit !important;
     font-weight: 600;
 }
+
+
+/* ============================================
+   ALERT LOG — PREDICTIVE MAINTENANCE WORKFLOW
+   ============================================ */
+
+/* ── Maintenance status badges ── */
+.maint-badge {
+    display: inline-block;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.maint-badge-maintenance_required {
+    background: rgba(255, 77, 77, 0.13);
+    color: #ff4d4d;
+    border: 1.5px solid #ff4d4d;
+}
+
+.maint-badge-scheduled {
+    background: rgba(255, 217, 61, 0.12);
+    color: #ffd93d;
+    border: 1.5px solid #ffd93d;
+}
+
+.maint-badge-in_progress {
+    background: rgba(74, 158, 255, 0.13);
+    color: #4a9eff;
+    border: 1.5px solid #4a9eff;
+}
+
+.maint-badge-completed {
+    background: rgba(0, 200, 117, 0.12);
+    color: #00c875;
+    border: 1.5px solid #00c875;
+}
+
+.maint-badge-follow_up_required {
+    background: rgba(192, 132, 252, 0.12);
+    color: #c084fc;
+    border: 1.5px solid #c084fc;
+}
+
+/* ── Maintenance report modal — textarea dark styling ── */
+#al-report-actions,
+#al-report-components-inspected,
+#al-report-components-repaired,
+#al-report-findings,
+#al-report-technician-notes,
+#al-report-followup-reason {
+    background: rgba(13, 32, 69, 0.9) !important;
+    border: 1px solid rgba(74, 158, 255, 0.25) !important;
+    border-radius: 8px !important;
+    color: white !important;
+    font-size: 13px !important;
+    font-family: 'Segoe UI', sans-serif !important;
+    resize: vertical;
+    outline: none !important;
+    transition: border-color 0.15s ease;
+}
+
+#al-report-actions:focus,
+#al-report-components-inspected:focus,
+#al-report-components-repaired:focus,
+#al-report-findings:focus,
+#al-report-technician-notes:focus,
+#al-report-followup-reason:focus {
+    border-color: rgba(74, 158, 255, 0.6) !important;
+    box-shadow: 0 0 0 1px rgba(74, 158, 255, 0.15) !important;
+}
+
+/* ── Date/time input dark styling ── */
+#al-sched-date,
+#al-sched-start,
+#al-sched-end {
+    background: rgba(13, 32, 69, 0.9) !important;
+    border: 1px solid rgba(74, 158, 255, 0.25) !important;
+    border-radius: 8px !important;
+    color: white !important;
+    font-size: 13px !important;
+    color-scheme: dark;
+}
+
+#al-sched-date:focus,
+#al-sched-start:focus,
+#al-sched-end:focus {
+    border-color: rgba(74, 158, 255, 0.6) !important;
+    outline: none !important;
+}
+
+/* ── Maintenance notes textarea ── */
+#al-sched-notes {
+    background: rgba(13, 32, 69, 0.9) !important;
+    border: 1px solid rgba(74, 158, 255, 0.25) !important;
+    border-radius: 8px !important;
+    color: white !important;
+    font-size: 13px !important;
+    font-family: 'Segoe UI', sans-serif !important;
+    resize: vertical;
+    outline: none !important;
+}
+
+#al-sched-notes:focus {
+    border-color: rgba(74, 158, 255, 0.6) !important;
+    box-shadow: 0 0 0 1px rgba(74, 158, 255, 0.15) !important;
+}
+
+/* ── Radio items in report form ── */
+#al-report-fault-confirmed input[type="radio"],
+#al-report-ai-usefulness input[type="radio"] {
+    accent-color: #4a9eff;
+    cursor: pointer;
+}
+
+/* ── Report modal section card hover ── */
+#al-report-modal-overlay .report-section-card:hover {
+    border-color: rgba(74, 158, 255, 0.25) !important;
+}
+
+/* ── Alert summary row — no shrink on narrow screens ── */
+#alert-summary-row {
+    flex-shrink: 0;
+    overflow-x: auto;
+}
+
+/* ── Detail action bar animation ── */
+#al-detail-action-bar {
+    transition: opacity 0.2s ease;
+}
+
+/* ── Alert table — status column wrapping ── */
+.maint-status-cell {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Overlay modals — prevent background scroll on mobile ── */
+#al-sched-modal-overlay,
+#al-report-modal-overlay,
+#al-confirm-modal-overlay {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+
+/* ============================================
+   ALERT LOG — TABLE ROW HOVER (v2 redesign)
+   ============================================ */
+
+/* Row hover — applied to the outer grid div */
+#alert-table-body > div:hover {
+    background: rgba(74, 158, 255, 0.06) !important;
+}
+
+/* Action button hover states */
+#alert-table-body button[id*="al-action-btn"]:hover {
+    filter: brightness(1.15);
+    transform: translateY(-1px);
+    transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+/* Prevent hover style from overriding selected row */
+#alert-table-body > div[style*="rgba(25,74,130"]:hover {
+    background: rgba(25, 74, 130, 0.32) !important;
+}
+
+
+/* =========================================================
+   ALERT LOG — SCHEDULE MODAL INPUTS
+   ========================================================= */
+
+/* Dash-generated wrappers */
+.dash-input-container:has(#al-sched-date),
+.dash-input-container:has(#al-sched-start),
+.dash-input-container:has(#al-sched-end) {
+    width: 100% !important;
+    height: 42px !important;
+    min-height: 42px !important;
+
+    padding: 0 !important;
+    margin: 0 !important;
+
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+
+    box-sizing: border-box !important;
+}
+
+
+/* Actual date/time inputs */
+#al-sched-date.dash-input-element,
+#al-sched-start.dash-input-element,
+#al-sched-end.dash-input-element {
+    display: block !important;
+
+    width: 100% !important;
+    height: 42px !important;
+    min-height: 42px !important;
+
+    padding: 0 12px !important;
+    margin: 0 !important;
+
+    background: rgba(13, 32, 69, 0.9) !important;
+    border: 1px solid rgba(74, 158, 255, 0.30) !important;
+    border-radius: 8px !important;
+
+    color: #ffffff !important;
+    font-size: 13px !important;
+    font-family: "Segoe UI", sans-serif !important;
+
+    line-height: normal !important;
+
+    outline: none !important;
+    box-shadow: none !important;
+
+    box-sizing: border-box !important;
+    color-scheme: dark;
+}
+
+
+/* Focus */
+#al-sched-date.dash-input-element:focus,
+#al-sched-start.dash-input-element:focus,
+#al-sched-end.dash-input-element:focus {
+    border-color: #4a9eff !important;
+    box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.12) !important;
+}
+
+
+/* Native Chrome / Edge picker icon */
+#al-sched-date::-webkit-calendar-picker-indicator,
+#al-sched-start::-webkit-calendar-picker-indicator,
+#al-sched-end::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.85;
+}

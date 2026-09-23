@@ -854,6 +854,8 @@ def register_sensor_callbacks(app, supabase=None):
         prevent_initial_call=True,
     )
     def toggle_sidebar(n, is_open):
+        if not n or n == 0:
+            raise dash.exceptions.PreventUpdate
         is_open = not is_open
         base = {
             "flexShrink": "0", "height": "100%", "background": "#0d1e3a",

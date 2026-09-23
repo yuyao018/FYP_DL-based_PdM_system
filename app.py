@@ -147,7 +147,12 @@ def display_page(pathname, search, session):
 
     if pathname.startswith("/alert-log/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_alert_log_layout(sb, engine_db_id=engine_db_id)
+        return create_alert_log_layout(sb, engine_db_id=engine_db_id,
+                                       org_id=org_id, role=user_role,
+                                       user_id=(session or {}).get("user_id"),
+                                       username=(session or {}).get("username"),
+                                       first_name=(session or {}).get("first_name"),
+                                       last_name=(session or {}).get("last_name"))
 
     if pathname.startswith("/degradation-analysis/"):
         engine_db_id = pathname.split("/")[-1]
@@ -172,7 +177,11 @@ def display_page(pathname, search, session):
         "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role, username=(session or {}).get("username"), first_name=(session or {}).get("first_name")),
         "/overview":          lambda: create_overview_layout(sb),
         "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
-        "/alert-log":         lambda: create_alert_log_layout(sb),
+        "/alert-log":         lambda: create_alert_log_layout(sb, org_id=org_id, role=user_role,
+                                                               user_id=(session or {}).get("user_id"),
+                                                               username=(session or {}).get("username"),
+                                                               first_name=(session or {}).get("first_name"),
+                                                               last_name=(session or {}).get("last_name")),
         "/degradation-analysis": lambda: create_degradation_analysis_layout(sb),
         "/engine-management": lambda: create_engine_management_layout(sb, org_id=org_id),
         "/add-engine":        lambda: create_add_engine_layout(sb, org_id=org_id),
