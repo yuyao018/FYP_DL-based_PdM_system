@@ -343,18 +343,6 @@ def shap_mini_bars(shap_values):
 ALERT_TABLE_COLUMNS = "55px minmax(130px,1.6fr) minmax(130px,1.6fr) minmax(60px,0.8fr)"
 
 def _status_button_props(mstatus):
-    """
-    Return (children, style) for the engine-level maintenance action button
-    based on the current maintenance status.
-
-    IMPORTANT: this returns props only — never a whole html.Button. The button
-    itself is created once in the layout with a STATIC id ("al-engine-action-btn")
-    and callbacks update its .children/.style in place. Recreating the Button
-    component on every refresh would reset n_clicks to 0, which Dash treats as
-    a fresh "input changed" event — re-triggering handle_action right after a
-    modal was closed, which is what was causing the schedule/report popup to
-    reopen itself after clicking Confirm/Save.
-    """
     # Primary blue gradient — schedule / open report actions
     primary = {
         "display": "inline-flex", "alignItems": "center", "gap": "7px",
@@ -382,8 +370,8 @@ def _status_button_props(mstatus):
     }
 
     s = (mstatus or "maintenance_required").lower().strip()
-    icon_cal  = html.Span("📅", style={"fontSize": "13px", "lineHeight": "1"})
-    icon_doc  = html.Span("📋", style={"fontSize": "13px", "lineHeight": "1"})
+    icon_cal  = html.Span("◷", style={"fontSize": "13px", "lineHeight": "1"})
+    icon_doc  = html.Span("▤", style={"fontSize": "13px", "lineHeight": "1"})
 
     if s == "maintenance_required":
         return [icon_cal, "Schedule Maintenance"], primary
@@ -680,55 +668,13 @@ def _schedule_modal():
                          ]),
                 # Context info (read-only)
                 html.Div(id="al-sched-modal-context",
-                         style={"background": "rgba(74,158,255,0.06)",
-                                "border": "1px solid rgba(74,158,255,0.15)",
-                                "borderRadius": "8px", "padding": "10px 14px",
-                                "marginBottom": "18px", "fontSize": "12px",
+                         style={"background": "rgba(74,158,255,0.06)", "border": "1px solid rgba(74,158,255,0.15)",
+                                "borderRadius": "8px", "padding": "10px 14px", "marginBottom": "18px", "fontSize": "12px",
                                 "color": "#a8d4ff"}),
-                # Assigned to — shown for admin, hidden for regular users
-                html.Div(
-                    id="al-sched-assignee-row",
-                    style={"marginBottom": "14px", "display": "none"},
-                    children=[
-                        html.Label("ASSIGN TO", style=ls),
-                        dcc.Dropdown(
-                            id="al-sched-assignee",
-                            options=[],
-                            placeholder="Select technician…",
-                            clearable=True,
-                            className="dark-dropdown",
-                            style={
-                                "fontSize": "13px",
-                                "background": "rgba(13,32,69,0.9)",
-                                "border": "1px solid rgba(74,158,255,0.25)",
-                                "borderRadius": "8px",
-                            },
-                        ),
-                    ],
-                ),
-                # Assigned-by info line — shown for regular users
-                html.Div(
-                    id="al-sched-assignee-self-row",
-                    style={"marginBottom": "14px", "display": "none"},
-                    children=[
-                        html.Label("ASSIGNED TO", style=ls),
-                        html.Div(
-                            id="al-sched-assignee-self-label",
-                            style={
-                                "background": "rgba(74,158,255,0.06)",
-                                "border": "1px solid rgba(74,158,255,0.15)",
-                                "borderRadius": "8px", "padding": "9px 14px",
-                                "color": "#a8d4ff", "fontSize": "13px",
-                            },
-                            children="You (logged-in user)",
-                        ),
-                    ],
-                ),
                 # Date
                 html.Div(style={"marginBottom": "14px"}, children=[
                     html.Label("SCHEDULED DATE", style=ls),
-                    dcc.Input(id="al-sched-date", type="date",
-                              style={**is_, "colorScheme": "dark"}),
+                    dcc.Input(id="al-sched-date", type="date", style={**is_, "colorScheme": "dark"}),
                 ]),
                 # Start / End time
                 html.Div(style={"display": "flex", "gap": "14px", "marginBottom": "14px"}, children=[
@@ -1786,12 +1732,6 @@ def register_alert_log_callbacks(app, supabase=None):
         Output("al-report-schedule-id-store",     "data",     allow_duplicate=True),
         Output("al-report-id-store",           "data",     allow_duplicate=True),
         Output("al-report-readonly-store",     "data",     allow_duplicate=True),
-        # Assignee rows (shown/hidden depending on role)
-        Output("al-sched-assignee-row",        "style",    allow_duplicate=True),
-        Output("al-sched-assignee",            "options",  allow_duplicate=True),
-        Output("al-sched-assignee",            "value",    allow_duplicate=True),
-        Output("al-sched-assignee-self-row",   "style",    allow_duplicate=True),
-        Output("al-sched-assignee-self-label", "children", allow_duplicate=True),
         # Schedule input pre-fill (for View Schedule)
         Output("al-sched-date",                "value",    allow_duplicate=True),
         Output("al-sched-start",               "value",    allow_duplicate=True),
@@ -1874,8 +1814,6 @@ def register_alert_log_callbacks(app, supabase=None):
                     "followup" if is_followup else "schedule",
                     report_hidden,
                     *([no_update] * 12),
-                    admin_row_style, user_opts, user_val,
-                    self_row_style, self_label,
                     no_update, no_update, no_update, no_update, no_update, no_update)
 
         def _open_report_modal(readonly=False):
@@ -1950,7 +1888,7 @@ def register_alert_log_callbacks(app, supabase=None):
             }
 
             context = html.Div([
-                html.Span(f"Alert #{alert['alert_no']}  |  ", style={"fontWeight": "700"}),
+                html.Span(f"Engine {engine_db_id}  |  ", style={"fontWeight": "700"}),
                 html.Span("Edit the schedule details below and save to update.",
                           style={"color": "#a8d4ff"}),
             ])
@@ -1960,8 +1898,6 @@ def register_alert_log_callbacks(app, supabase=None):
             return (sched_shown, "View / Edit Schedule", context,
                     "view",
                     report_hidden, *([no_update] * 12),
-                    admin_row_style, no_update, no_update,
-                    self_row_style, no_update,
                     prefill_date, prefill_start, prefill_end, prefill_notes,
                     original, sched_id)
         elif mstatus == "in_progress":
@@ -2115,7 +2051,6 @@ def register_alert_log_callbacks(app, supabase=None):
         State("al-sched-end",             "value"),
         State("al-sched-notes",           "value"),
         State("al-modal-trigger-store",   "data"),
-        State("al-sched-assignee",        "value"),
         State("alerts-data",              "data"),
         State("selected-alert-idx",       "data"),
         State("session-store",            "data"),
@@ -2124,7 +2059,7 @@ def register_alert_log_callbacks(app, supabase=None):
         prevent_initial_call=True,
     )
     def confirm_schedule(n_clicks, sel_date, start_time, end_time, notes,
-                         trigger_type, assignee_id, alerts_data, selected_idx, session, role, existing_schedule_id):
+                         trigger_type, alerts_data, selected_idx, session, role, existing_schedule_id):
         hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",
                   "width": "100vw", "height": "100vh", "background": "rgba(5,12,28,0.80)",
                   "zIndex": "1200", "alignItems": "center", "justifyContent": "center"}
@@ -2145,9 +2080,7 @@ def register_alert_log_callbacks(app, supabase=None):
         if supabase and alert_id:
             try:
                 user_id  = (session or {}).get("user_id")
-                is_admin = (role or "user") == "admin"
-                assigned_to = (assignee_id if assignee_id else user_id) if is_admin else user_id
-
+                
                 # Resolve the engine_id for this alert
                 arow = _fetch_alert_row(supabase, alert_id)
                 engine_db_id = arow.get("engine_id")
@@ -2161,10 +2094,6 @@ def register_alert_log_callbacks(app, supabase=None):
                         "end_time": end_time or "10:00",
                         "notes": notes or "",
                     }
-
-                    # Update assignee if appropriate
-                    if assigned_to:
-                        update_payload["created_by"] = assigned_to
 
                     result = (
                         supabase.table("maintenance_schedules")
@@ -2182,9 +2111,24 @@ def register_alert_log_callbacks(app, supabase=None):
 
                 else:
                     # ── NEW SCHEDULE / FOLLOW-UP ───────────────────────────
+                    responsible_user_id = None
+                    if engine_db_id:
+                        try:
+                            engine_resp = (
+                                supabase.table("engines")
+                                .select("responsible_by")
+                                .eq("id", engine_db_id)
+                                .single()
+                                .execute()
+                            )
+
+                            if engine_resp.data:
+                                responsible_user_id = engine_resp.data.get("responsible_by")
+
+                        except Exception as _e:
+                            print(f"[ALERT] Failed to fetch engine responsible user: {_e}")
 
                     existing_sched = None
-
                     if engine_db_id:
                         try:
                             ex_resp = (
@@ -2210,8 +2154,31 @@ def register_alert_log_callbacks(app, supabase=None):
                             f"[ALERT] Reusing existing schedule "
                             f"{sched_db_id} for engine {engine_db_id}"
                         )
+                    else:
+                        result = (
+                            supabase.table("maintenance_schedules")
+                            .insert({
+                                "engine_id": engine_db_id,
+                                "scheduled_date": sel_date,
+                                "start_time": start_time or "09:00",
+                                "end_time": end_time or "10:00",
+                                "notes": notes or "",
+                                "status": "scheduled",
+                                "created_by": user_id,
+                                "assigned_to": responsible_user_id,
+                            })
+                            .execute()
+                        )
 
-                        # ── Link engine alerts to this maintenance schedule ──────────────
+                        if result.data:
+                            sched_db_id = result.data[0]["id"]
+
+                            print(
+                                f"[ALERT] Created new schedule "
+                                f"{sched_db_id} for engine {engine_db_id}"
+                            )
+
+                    # ── Link engine alerts to this maintenance schedule ──────────────
                         if sched_db_id and engine_db_id:
                             try:
                                 # Get alerts for this engine
@@ -2265,29 +2232,6 @@ def register_alert_log_callbacks(app, supabase=None):
 
                             except Exception as _e:
                                 print(f"[ALERT] maintenance_alerts mapping: {_e}")
-
-                    else:
-                        result = (
-                            supabase.table("maintenance_schedules")
-                            .insert({
-                                "engine_id": engine_db_id,
-                                "scheduled_date": sel_date,
-                                "start_time": start_time or "09:00",
-                                "end_time": end_time or "10:00",
-                                "notes": notes or "",
-                                "status": "scheduled",
-                                "created_by": assigned_to,
-                            })
-                            .execute()
-                        )
-
-                        if result.data:
-                            sched_db_id = result.data[0]["id"]
-
-                            print(
-                                f"[ALERT] Created new schedule "
-                                f"{sched_db_id} for engine {engine_db_id}"
-                            )
             except Exception as _e:
                 print(f"[ALERT] confirm_schedule DB error: {_e}")
 
@@ -2306,17 +2250,6 @@ def register_alert_log_callbacks(app, supabase=None):
             # No schedule created — at minimum update the clicked row in the store
             alerts_data[idx]["maintenance_status"]    = "scheduled"
             alerts_data[idx]["scheduled_date"]        = sel_date
-
-        if supabase and alert_id:
-            user_id     = (session or {}).get("user_id")
-            is_admin    = (role or "user") == "admin"
-            assigned_to = (assignee_id if assignee_id else user_id) if is_admin else user_id
-            # Apply assigned_user to every alert we just scheduled
-            clicked_engine = alerts_data[idx].get("engine_id") if idx < len(alerts_data) else None
-            for i, a in enumerate(alerts_data):
-                same_engine = (a.get("engine_id") == clicked_engine) if clicked_engine else (i == idx)
-                if same_engine and alerts_data[i].get("maintenance_status") == "scheduled":
-                    alerts_data[i]["assigned_user"] = assigned_to
 
         alerts = [_alert_from_store(a) for a in alerts_data]
         report = (alerts[idx].get("report")) if idx < len(alerts) else None
