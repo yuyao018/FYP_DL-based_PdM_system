@@ -412,7 +412,7 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
 
         # Step 4: Update last_login_at
         supabase.table("users") \
-            .update({"last_login_at": "now()"}) \
+            .update({"last_login_at": "now()", "status": "active"}) \
             .eq("username", username) \
             .execute()
 
@@ -443,16 +443,32 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
         return dash.no_update, html.Span("Login failed. Please try again.",
                               style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
+def mark_logged_out(session):
+    """Update this user's presence without signing out the shared auth client."""
+    user_id = (session or {}).get("user_id")
+    if not user_id:
+        return
+    try:
+        supabase_admin.table("users").update({"status": "inactive"}).eq(
+            "id", user_id
+        ).execute()
+    except Exception as exc:
+        # A database outage must not prevent clearing the browser session.
+        print(f"[WARN] Logout status update failed: {type(exc).__name__}")
+
+
 # Logout callback
 @app.callback(
     Output("url", "pathname", allow_duplicate=True),
     Output("session-store", "data", allow_duplicate=True),
     Input("logout-btn", "n_clicks"),
+    State("session-store", "data"),
     prevent_initial_call=True,
 )
-def handle_logout(n_clicks):
+def handle_logout(n_clicks, session):
     if not n_clicks or n_clicks == 0:
         raise dash.exceptions.PreventUpdate
+    mark_logged_out(session)
     print("[OK] User logged out (session cleared)")
     # Clear session and redirect to login
     # NOTE: Do NOT call supabase.auth.sign_out() here — it would invalidate
@@ -537,7 +553,7 @@ def handle_dev_login(n_clicks, username, password):
 
         # Update last_login_at
         supabase.table("users") \
-            .update({"last_login_at": "now()"}) \
+            .update({"last_login_at": "now()", "status": "active"}) \
             .eq("username", username) \
             .execute()
 
@@ -573,11 +589,13 @@ def handle_dev_login(n_clicks, username, password):
     Output("url", "pathname", allow_duplicate=True),
     Output("session-store", "data", allow_duplicate=True),
     Input("dev-logout-btn", "n_clicks"),
+    State("session-store", "data"),
     prevent_initial_call=True,
 )
-def handle_dev_logout(n_clicks):
+def handle_dev_logout(n_clicks, session):
     if not n_clicks or n_clicks == 0:
         raise dash.exceptions.PreventUpdate
+    mark_logged_out(session)
     return "/dev-login", None
 
 
