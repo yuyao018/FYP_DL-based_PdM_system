@@ -529,7 +529,8 @@ def build_topbar():
             "height": "60px",
             "display": "flex",
             "alignItems": "center",
-            "justifyContent": "space-between",
+            "justifyContent": "flex-start",
+            "gap": "16px",
             "flexShrink": "0",
         },
         children=[
@@ -543,10 +544,14 @@ def build_topbar():
                     "letterSpacing": "1.2px",
                 }
             ),
-            html.Div(
+            html.Button(
                 id="sidebar-toggle",
                 n_clicks=0,
-                style={"cursor": "pointer"},
+                title="Toggle sidebar",
+                **{"aria-label": "Toggle sidebar"},
+                style={"cursor": "pointer", "marginLeft": "auto", "flexShrink": "0",
+                       "display": "flex", "alignItems": "center", "padding": "6px",
+                       "background": "transparent", "border": "none", "borderRadius": "6px"},
                 children=[icon_sidebar()]
             ),
         ]

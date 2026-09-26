@@ -1,4 +1,5 @@
 import dash
+from simulation_panel import build_simulation_panel, register_simulation_callbacks
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
@@ -56,6 +57,7 @@ register_alert_thresholds_callbacks(app, supabase=supabase_admin)
 register_engine_management_callbacks(app, supabase=supabase_admin)
 register_add_engine_callbacks(app, supabase=supabase_admin)
 register_overview_callbacks(app, supabase=supabase_admin)
+register_simulation_callbacks(app, supabase=supabase_admin)
 register_degradation_analysis_callbacks(app, supabase=supabase_admin)
 register_new_organization_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
 register_change_password_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
@@ -90,6 +92,7 @@ app.layout = html.Div([
         },
     ),
     html.Div(id='page-content'),
+    build_simulation_panel(),
 ])
 
 # Routing callback

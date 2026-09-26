@@ -30,6 +30,7 @@ from pathlib import Path
 import threading
 import time
 import traceback
+from simulation_clock import SimulationClock
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
@@ -40,7 +41,7 @@ import pandas as pd
 #  CONSTANTS
 # ─────────────────────────────────────────────
 
-TICK_INTERVAL    = 3          # seconds between cycles
+TICK_INTERVAL    = 5          # healthy default; pacing is controlled per engine
 RUL_CAP          = 100        # clamp predicted RUL — matches training rul_cap in model metadata
 
 # Per-dataset window sizes (must match training)
@@ -1111,6 +1112,7 @@ def _simulation_loop(
     model_type: str,
     supabase,
     stop_event: threading.Event,
+    clock: SimulationClock,
 ):
     """
     Main loop for a single engine simulation.
@@ -1149,10 +1151,13 @@ def _simulation_loop(
     resume_from_cycle = 0
     try:
         eng_resp = supabase.table("engines") \
-            .select("current_cycle") \
+            .select("current_cycle, condition_status") \
             .eq("id", engine_db_id) \
             .single() \
             .execute()
+        if eng_resp.data:
+            clock.observe(eng_resp.data.get("condition_status") or "healthy",
+                          int(eng_resp.data.get("current_cycle") or 0))
         if eng_resp.data and eng_resp.data.get("current_cycle"):
             resume_from_cycle = int(eng_resp.data["current_cycle"])
             print(f"[SIM] engine={engine_db_id} resuming from cycle {resume_from_cycle}")
@@ -1182,7 +1187,7 @@ def _simulation_loop(
         if cycle_num <= resume_from_cycle:
             continue
 
-        if stop_event.is_set():
+        if not clock.wait_cycle(stop_event):
             print(f"[SIM] Simulation stopped for engine {engine_db_id}")
             break
 
@@ -1199,7 +1204,6 @@ def _simulation_loop(
         vec = _extract_raw_sensors(row, include_os=_include_os)
         if vec is None:
             print(f"[SIM][WARN] Skipping cycle {cycle_num} — missing features")
-            time.sleep(TICK_INTERVAL)
             continue
 
         # ── Push raw row into sensor ring buffer ──
@@ -1218,6 +1222,8 @@ def _simulation_loop(
             )
         except Exception:
             print(f"[SIM][ERROR] Failed to update current_cycle:\n{traceback.format_exc(limit=2)}")
+
+        clock.observe(clock.snapshot()["condition"], cycle_num)
 
         # ── Predict once window is full ──
         if X is not None:
@@ -1241,7 +1247,6 @@ def _simulation_loop(
                 X = buffer.push(buffer.buffer[-1]) if buffer.buffer else None
                 print(f"[SIM] Hot-reloaded model for engine {engine_db_id}")
                 if X is None:
-                    time.sleep(TICK_INTERVAL)
                     continue
 
             if model is not None:
@@ -1279,6 +1284,7 @@ def _simulation_loop(
 
             if pred_rul is not None:
                 new_status = _rul_to_status(pred_rul, warn_thresh=warn_thresh, crit_thresh=crit_thresh)
+                clock.observe(new_status, cycle_num)
                 fault_mode = (
                     "critical_degradation" if new_status == "critical" else
                     "moderate_degradation" if new_status == "warning" else
@@ -1358,7 +1364,6 @@ def _simulation_loop(
                 except Exception:
                     print(f"[SIM][ERROR] Insert/update failed at cycle {cycle_num}:\n{traceback.format_exc(limit=2)}")
 
-        time.sleep(TICK_INTERVAL)
 
     print(f"[SIM] Simulation complete for engine {engine_db_id} (all cycles processed)")
 
@@ -1391,13 +1396,14 @@ def start_engine_simulation(
             del _RUNNING_SIMULATIONS[engine_db_id]
 
         stop_event = threading.Event()
+        clock = SimulationClock()
         thread = threading.Thread(
             target=_simulation_loop,
-            args=(engine_db_id, json_path, model_type, supabase, stop_event),
+            args=(engine_db_id, json_path, model_type, supabase, stop_event, clock),
             daemon=True,
             name=f"sim-{engine_db_id}",
         )
-        _RUNNING_SIMULATIONS[engine_db_id] = {"thread": thread, "stop": stop_event, "model_type": model_type}
+        _RUNNING_SIMULATIONS[engine_db_id] = {"thread": thread, "stop": stop_event, "model_type": model_type, "clock": clock}
         thread.start()
         print(f"[SIM] Spawned simulation thread for engine {engine_db_id}")
         return True
@@ -1574,3 +1580,22 @@ def resume_all_simulations(supabase):
             model_type=model_type,
             supabase=supabase,
         )
+
+
+def get_simulation_state(engine_db_id):
+    with _LOCK:
+        entry = _RUNNING_SIMULATIONS.get(engine_db_id)
+        if not entry or not entry.get("clock"):
+            return None
+        state = entry["clock"].snapshot()
+        state["running"] = entry["thread"].is_alive() and not entry["stop"].is_set()
+        return state
+
+
+def configure_simulation(engine_db_id, **changes):
+    with _LOCK:
+        entry = _RUNNING_SIMULATIONS.get(engine_db_id)
+        if not entry or not entry["thread"].is_alive() or entry["stop"].is_set():
+            return False
+        entry["clock"].configure(**changes)
+        return True

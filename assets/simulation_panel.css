@@ -1,0 +1,64 @@
+#simulation-widget { position:fixed; top:14px; right:84px; z-index:1050; width:340px; max-width:calc(100vw - 24px); color:#e7f2ff; font:13px 'Segoe UI',sans-serif; }
+#simulation-widget[hidden] { display:none !important; }
+#simulation-widget details { border:1px solid #36577a; border-radius:12px; background:#10243e; box-shadow:0 12px 36px #0006; }
+#simulation-widget summary { display:flex; align-items:center; gap:10px; padding:12px 14px; cursor:pointer; list-style:none; user-select:none; }
+#simulation-widget summary::-webkit-details-marker { display:none; }
+.simulation-widget-title { flex:1; font-weight:650; }
+.simulation-drag-handle { cursor:grab; touch-action:none; font-size:20px; color:#89bdf1; padding:0 6px; }
+.simulation-drag-handle:active { cursor:grabbing; }
+#simulation-widget details[open] .simulation-chevron { transform:rotate(180deg); }
+.simulation-widget-body { padding:0 16px 16px; max-height:calc(100vh - 90px); overflow-y:auto; }
+#simulation-state { padding:12px; margin-bottom:14px; border-radius:8px; background:#091a30; line-height:1.6; }
+#simulation-widget label { display:block; margin-bottom:7px; color:#abc8e7; }
+.simulation-actions { display:flex; gap:8px; margin:12px 0; }
+#simulation-widget button { background:#1c3a5b; color:#dcecff; border:1px solid #426a94; border-radius:7px; padding:8px 12px; cursor:pointer; }
+#simulation-widget button:hover:not(:disabled) { background:#295581; }
+#simulation-widget button:disabled { opacity:.4; cursor:default; }
+#simulation-widget button:focus-visible, .simulation-drag-handle:focus-visible { outline:2px solid #75b8ff; outline-offset:3px; }
+#simulation-feedback { color:#80d6b4; margin:10px 0; }
+#simulation-widget small { display:block; color:#9bb4ce; line-height:1.6; }
+@media(max-width:600px) { #simulation-widget { top:76px; right:12px; width:300px; } }
+
+/* Scoped to the widget, including Dash's locally portalled options menu. */
+#simulation-widget button.simulation-speed-select {
+    background:#173451; color:#e7f2ff; border:1px solid #426a94;
+    border-radius:8px; min-height:44px; padding:0; width:100%;
+    font-size:13px; box-shadow:none; text-align:left;
+}
+#simulation-widget button.simulation-speed-select:hover:not(:disabled) { background:#1d4063; }
+#simulation-widget .dash-dropdown-trigger {
+    background:transparent; border:0; border-radius:0;
+    padding:10px 12px; box-shadow:none; min-height:0;
+}
+#simulation-widget button.simulation-speed-select:focus-visible {
+    outline:2px solid #75b8ff; outline-offset:2px;
+}
+#simulation-widget .dash-dropdown-value,
+#simulation-widget .dash-dropdown-trigger-icon { color:#dcecff; }
+#simulation-widget .dash-dropdown-content {
+    background:#10243e !important; color:#e7f2ff;
+    border:1px solid #426a94; border-radius:9px; padding:4px;
+    box-shadow:0 10px 24px #0005; overflow:hidden;
+}
+#simulation-widget .dash-dropdown-options,
+#simulation-widget .dash-options-list-virtualized { background:#10243e !important; }
+#simulation-widget .dash-dropdown-option,
+#simulation-widget .dash-options-list-option {
+    background:#10243e !important; color:#d2e3f5 !important;
+    border:0 !important; border-radius:5px; margin:0;
+    font-size:13px !important; font-weight:500 !important;
+}
+#simulation-widget .dash-dropdown-option:hover,
+#simulation-widget .dash-options-list-option:hover,
+#simulation-widget .dash-dropdown-option:focus-within {
+    background:#1d4063 !important; color:#fff !important;
+}
+#simulation-widget .dash-dropdown-option.selected,
+#simulation-widget .dash-options-list-option.selected,
+#simulation-widget .dash-dropdown-option[aria-selected="true"],
+#simulation-widget .dash-dropdown-option:has(input:checked) {
+    background:#244e77 !important; color:#b9ddff !important;
+    font-weight:600 !important;
+}
+#simulation-widget .dash-dropdown-option label,
+#simulation-widget .dash-options-list-option label { margin:0; color:inherit; }

@@ -730,11 +730,9 @@ input[type="number"] {
    colorScheme: dark is set inline; no extra CSS needed.
    ============================================ */
 
-/* ============================================
-   SCHEDULE MAINTENANCE — sidebar toggle hidden
-   ============================================ */
-#sidebar-toggle {
-    display: none !important;
+#sidebar-toggle:focus-visible {
+    outline: 2px solid #75b8ff;
+    outline-offset: 3px;
 }
 
 /* ============================================
