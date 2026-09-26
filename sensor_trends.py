@@ -674,44 +674,50 @@ def register_sensor_callbacks(app, supabase=None):
                 return [hidden, hidden];
             }
 
-            // ── Plot geometry ─────────────────────────────────────────────
-            var layout = figure.layout || {};
-            var margin = layout.margin || {l:10, r:20, t:30, b:10};
-            var plotW = 800, plotH = 420;
-
+            // Use rendered axes: Plotly expands margins for labels and titles.
+            // Figure margins and data extents do not describe the visible plot.
             var graphEl = document.getElementById('sensor-chart');
-            if (graphEl) {
-                var inner = graphEl.querySelector('.main-svg');
-                if (inner) {
-                    var rect = inner.getBoundingClientRect();
-                    plotW = rect.width  || plotW;
-                    plotH = rect.height || plotH;
-                }
+            var plotEl = graphEl && graphEl.querySelector('.js-plotly-plot');
+            var layout = plotEl && plotEl._fullLayout;
+            if (!layout || !layout.xaxis || !layout.yaxis) return [hidden, hidden];
+            var xaxis = layout.xaxis;
+            var yaxis = layout.yaxis;
+            var plotW = layout.width, plotH = layout.height;
+            var l = xaxis._offset, t = yaxis._offset;
+            var innerW = xaxis._length, innerH = yaxis._length;
+            var r = plotW - l - innerW, b = plotH - t - innerH;
+
+            // Clear overlays as soon as the pointer enters an axis/margin area.
+            if (!plotEl._sensorHoverBoundsBound) {
+                plotEl._sensorHoverBoundsBound = true;
+                plotEl.addEventListener('pointermove', function(event) {
+                    var current = plotEl._fullLayout;
+                    if (!current) return;
+                    var rect = plotEl.getBoundingClientRect();
+                    var px = (event.clientX - rect.left) * current.width / rect.width;
+                    var py = (event.clientY - rect.top) * current.height / rect.height;
+                    var xa = current.xaxis, ya = current.yaxis;
+                    plotEl._sensorPointerOutside = px < xa._offset || px > xa._offset + xa._length
+                        || py < ya._offset || py > ya._offset + ya._length;
+                    if (plotEl._sensorPointerOutside) hideOverlays();
+                }, true);
+                plotEl.addEventListener('pointerleave', function() {
+                    plotEl._sensorPointerOutside = true;
+                    hideOverlays();
+                });
             }
-
-            var l = margin.l || 10;
-            var r = margin.r || 20;
-            var t = margin.t || 30;
-            var b = margin.b || 10;
-            var innerW = plotW - l - r;
-            var innerH = plotH - t - b;
-
-            // ── X pixel position of hovered cycle ────────────────────────
+            function hideOverlays() {
+                var tip = document.getElementById('sensor-trend-tooltip');
+                var line = document.getElementById('sensor-trend-vline');
+                if (tip) tip.style.display = 'none';
+                if (line) line.style.display = 'none';
+            }
+            if (plotEl._sensorPointerOutside) return [hidden, hidden];
             var hoveredX = hoverData.points[0].x;
-            var xaxis = layout.xaxis || {};
-            var xMin = xaxis.range ? xaxis.range[0] : null;
-            var xMax = xaxis.range ? xaxis.range[1] : null;
-            if (xMin === null || xMax === null) {
-                var allX = [];
-                figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
-                if (allX.length) {
-                    xMin = Math.min.apply(null, allX);
-                    xMax = Math.max.apply(null, allX);
-                }
-            }
-            var xFrac = (xMin !== null && xMax !== xMin)
-                ? (hoveredX - xMin) / (xMax - xMin) : 0.5;
-            var xPx = l + xFrac * innerW;
+            var xPx = l + xaxis.l2p(hoveredX);
+            if (!Number.isFinite(xPx) || xPx < l - 0.5 || xPx > l + innerW + 0.5)
+                return [hidden, hidden];
+            xPx = Math.max(l, Math.min(xPx, l + innerW));
 
             // ── Vertical line ─────────────────────────────────────────────
             var vlineStyle = {
@@ -801,7 +807,7 @@ def register_sensor_callbacks(app, supabase=None):
             }
 
             // ── Sizing ────────────────────────────────────────────────────
-            var tooltipW = twoCol ? 340 : 190;
+            var tooltipW = Math.min(twoCol ? 340 : 190, Math.max(0, innerW - 12));
             var offsetX  = 12;
             var padding  = 6;
 
@@ -831,7 +837,10 @@ def register_sensor_callbacks(app, supabase=None):
                 padding:       '10px 14px',
                 pointerEvents: 'none',
                 zIndex:        '20',
-                minWidth:      tooltipW + 'px',
+                width:         tooltipW + 'px',
+                boxSizing:     'border-box',
+                maxHeight:     Math.max(0, innerH - 12) + 'px',
+                overflow:      'hidden',
                 boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
             };
 

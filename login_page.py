@@ -100,6 +100,18 @@ def feature_icon(path_d, label):
     )
 
 # ── Login page layout function ────────────────────────────────────────────────────
+def validate_login_inputs(username, password):
+    missing_username = not username or not username.strip()
+    missing_password = not password or not password.strip()
+    if missing_username and missing_password:
+        return "Please fill in your username and password."
+    if missing_username:
+        return "Please fill in your username."
+    if missing_password:
+        return "Please fill in your password."
+    return None
+
+
 def create_login_layout(next_url: str = None):
     return html.Div(
         style={
@@ -320,7 +332,7 @@ def create_login_layout(next_url: str = None):
                     ),
 
                     # Status message
-                    html.Div(id="login-status", style={"minHeight": "24px", "marginBottom": "12px"}),
+                    html.Div(id="login-status", role="alert", style={"minHeight": "24px", "marginBottom": "12px"}),
 
                     # Footer
                     html.Div(

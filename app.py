@@ -3,6 +3,7 @@ from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
+from login_page import validate_login_inputs
 from dev_login_page import create_dev_login_layout
 from dev_dashboard import create_dev_dashboard_layout
 from dev_new_organization import create_new_organization_layout, register_new_organization_callbacks
@@ -319,10 +320,16 @@ def toggle_sidebar(n, is_open):
     prevent_initial_call=True,
 )
 def handle_login(n_clicks, username, password, selected_role, next_url):
+    return authenticate_login(username, password, selected_role, next_url)
+
+
+def authenticate_login(username, password, selected_role, next_url=None):
+    """Shared credential verification, role validation, and session creation."""
     print(f"[DEBUG] Login attempt: username={username}, selected_role={selected_role}")
 
-    if not username or not password:
-        return dash.no_update, html.Span("Please enter your credentials.",
+    validation_error = validate_login_inputs(username, password)
+    if validation_error:
+        return dash.no_update, html.Span(validation_error,
                               style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
     if not supabase:
@@ -385,7 +392,7 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
                 )
             except Exception as hash_err:
                 print(f"[DEBUG-V2] bcrypt.checkpw failed: {hash_err}")
-                # Fallback to RPC for non-bcrypt hashes (e.g., pgcrypto $2a$06$)
+                # Fall back to database verification if bcrypt raises an exception.
                 resp = supabase.rpc("verify_login", {
                     "p_username": username,
                     "p_password": password,
@@ -411,8 +418,13 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
         selected = (selected_role or "user").lower()
         if actual_role != selected:
             print(f"[DEBUG] Role mismatch: actual={actual_role}, selected={selected}")
+            message = (
+                "Access denied. Developer account required."
+                if selected == "developer"
+                else f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}."
+            )
             return dash.no_update, html.Span(
-                f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}.",
+                message,
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 
@@ -440,7 +452,10 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
                                                  style={"color": "#4a9eff", "fontSize": "13px"}), session_data
 
         print(f"[OK] Login: {username} | role: {actual_role} | user_id: {user_id} | org_id: {organization_id}")
-        redirect_to = next_url if next_url else "/dashboard"
+        if actual_role == "developer":
+            redirect_to = "/dev-dashboard"
+        else:
+            redirect_to = next_url if next_url else "/dashboard"
         return redirect_to, html.Span("Login successful!",
                                        style={"color": "#4aff9e", "fontSize": "13px"}), session_data
 
@@ -505,73 +520,7 @@ def toggle_role(user_clicks, admin_clicks):
     prevent_initial_call=True,
 )
 def handle_dev_login(n_clicks, username, password):
-    if not username or not password:
-        return dash.no_update, html.Span("Please enter your credentials.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    if not supabase:
-        return dash.no_update, html.Span("Supabase not connected. Check your .env file.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    try:
-        # Verify credentials via RPC
-        resp = supabase.rpc("verify_login", {
-            "p_username": username,
-            "p_password": password,
-        }).execute()
-
-        if not resp.data:
-            return dash.no_update, html.Span("Invalid username or password.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        # Fetch user profile
-        user_resp = supabase.table("users") \
-            .select("id, username, first_name, last_name, role, organization_id, last_login_at") \
-            .eq("username", username) \
-            .single() \
-            .execute()
-
-        user_profile = user_resp.data or {}
-        role = user_profile.get("role", "")
-
-        # Verify this is a developer account
-        if role != "developer":
-            return dash.no_update, html.Span("Access denied. Developer account required.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        is_first_login = user_profile.get("last_login_at") is None
-
-        # Update last_login_at
-        supabase.table("users") \
-            .update({"last_login_at": "now()"}) \
-            .eq("username", username) \
-            .execute()
-
-        # Build session data
-        session_data = {
-            "user_id": str(user_profile.get("id", "")),
-            "username": user_profile.get("username", username),
-            "first_name": user_profile.get("first_name", ""),
-            "last_name": user_profile.get("last_name", ""),
-            "role": "developer",
-            "organization_id": str(user_profile.get("organization_id", "") or ""),
-        }
-
-        # Redirect to password change if first login
-        if is_first_login:
-            session_data["must_change_password"] = True
-            print(f"[OK] First dev login: {username} — redirecting to change password")
-            return "/change-password", html.Span("Please update your password.",
-                                                 style={"color": "#4a9eff", "fontSize": "13px"}), session_data
-
-        print(f"[OK] Dev Login: {username}")
-        return "/dev-dashboard", html.Span("Login successful!",
-                                       style={"color": "#4aff9e", "fontSize": "13px"}), session_data
-
-    except Exception as e:
-        print(f"[ERROR] Dev Login: {e}")
-        return dash.no_update, html.Span("Login failed. Please try again.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+    return authenticate_login(username, password, "developer")
 
 
 # Developer logout callback

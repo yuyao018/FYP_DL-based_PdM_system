@@ -158,6 +158,8 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
             font=dict(color="rgba(0,0,0,0)", size=1), namelength=0,
         ),
     )
+    # Keep hover events for the custom card without native labels/arrow shapes.
+    fig.update_traces(hoverinfo="none", hovertemplate=None)
     return fig
 
 
@@ -1385,38 +1387,50 @@ def register_overview_callbacks(app, supabase=None):
             return [hidden, hidden];
         }
 
-        var layout = figure.layout || {};
-        var margin = layout.margin || {l: marginL, r: marginR, t: marginT, b: marginB};
-        var plotW = 600, plotH = chartH;
-
+        // Use rendered axes: Plotly expands margins for labels and titles.
+        // Figure margins and data extents do not describe the visible plot.
         var graphEl = document.getElementById(graphId);
-        if (graphEl) {
-            var inner = graphEl.querySelector('.main-svg');
-            if (inner) {
-                var rect = inner.getBoundingClientRect();
-                plotW = rect.width  || plotW;
-                plotH = rect.height || plotH;
-            }
+        var plotEl = graphEl && graphEl.querySelector('.js-plotly-plot');
+        var layout = plotEl && plotEl._fullLayout;
+        if (!layout || !layout.xaxis || !layout.yaxis) return [hidden, hidden];
+        var xaxis = layout.xaxis;
+        var yaxis = layout.yaxis;
+        var plotW = layout.width, plotH = layout.height;
+        var l = xaxis._offset, t = yaxis._offset;
+        var innerW = xaxis._length, innerH = yaxis._length;
+        var r = plotW - l - innerW, b = plotH - t - innerH;
+
+        // Clear overlays as soon as the pointer enters an axis/margin area.
+        if (!plotEl._rulHoverBoundsBound) {
+            plotEl._rulHoverBoundsBound = true;
+            plotEl.addEventListener('pointermove', function(event) {
+                var current = plotEl._fullLayout;
+                if (!current) return;
+                var rect = plotEl.getBoundingClientRect();
+                var px = (event.clientX - rect.left) * current.width / rect.width;
+                var py = (event.clientY - rect.top) * current.height / rect.height;
+                var xa = current.xaxis, ya = current.yaxis;
+                plotEl._rulPointerOutside = px < xa._offset || px > xa._offset + xa._length
+                    || py < ya._offset || py > ya._offset + ya._length;
+                if (plotEl._rulPointerOutside) hideOverlays();
+            }, true);
+            plotEl.addEventListener('pointerleave', function() {
+                plotEl._rulPointerOutside = true;
+                hideOverlays();
+            });
         }
-
-        var l = margin.l || marginL;
-        var r = margin.r || marginR;
-        var t = margin.t || marginT;
-        var b = margin.b || marginB;
-        var innerW = plotW - l - r;
-        var innerH = plotH - t - b;
-
+        function hideOverlays() {
+            var tip = document.getElementById(tooltipId);
+            var line = document.getElementById(vlineId);
+            if (tip) tip.style.display = 'none';
+            if (line) line.style.display = 'none';
+        }
+        if (plotEl._rulPointerOutside) return [hidden, hidden];
         var hoveredX = hoverData.points[0].x;
-        var xaxis = layout.xaxis || {};
-        var xMin = xaxis.range ? xaxis.range[0] : null;
-        var xMax = xaxis.range ? xaxis.range[1] : null;
-        if (xMin === null || xMax === null) {
-            var allX = [];
-            figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
-            if (allX.length) { xMin = Math.min.apply(null,allX); xMax = Math.max.apply(null,allX); }
-        }
-        var xFrac = (xMin !== null && xMax !== xMin) ? (hoveredX - xMin)/(xMax - xMin) : 0.5;
-        var xPx = l + xFrac * innerW;
+        var xPx = l + xaxis.l2p(hoveredX);
+        if (!Number.isFinite(xPx) || xPx < l - 0.5 || xPx > l + innerW + 0.5)
+            return [hidden, hidden];
+        xPx = Math.max(l, Math.min(xPx, l + innerW));
 
         var vlineStyle = {
             display: 'block', position: 'absolute',
@@ -1493,7 +1507,7 @@ def register_overview_callbacks(app, supabase=None):
             tooltipEl.innerHTML = headerHtml + bodyHtml;
         }
 
-        var tooltipW = twoCol ? 320 : 170;
+        var tooltipW = Math.min(twoCol ? 320 : 170, Math.max(0, innerW - 12));
         var offsetX  = 10, padding = 6;
         var leftPos  = xPx + offsetX;
         if (leftPos + tooltipW > plotW - r - padding) leftPos = xPx - tooltipW - offsetX;
@@ -1509,7 +1523,8 @@ def register_overview_callbacks(app, supabase=None):
             left: leftPos + 'px', top: topPos + 'px',
             background: 'rgba(10,20,45,0.95)', border: '1px solid rgba(74,158,255,0.35)',
             borderRadius: '8px', padding: '10px 14px', pointerEvents: 'none',
-            zIndex: '20', minWidth: tooltipW + 'px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+            zIndex: '20', width: tooltipW + 'px', boxSizing: 'border-box',
+            maxHeight: Math.max(0, innerH - 12) + 'px', overflow: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
         };
         return [vlineStyle, tooltipStyle];
     }
