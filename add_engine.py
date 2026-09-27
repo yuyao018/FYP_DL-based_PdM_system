@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -470,22 +471,20 @@ def create_add_engine_layout(supabase=None, org_id=None, edit_engine_id=None):
     edit_engine = None
     if supabase and edit_engine_id:
         try:
-            resp = supabase.table("engines") \
-                .select("id, engine_id, model_type, responsible_by") \
-                .eq("id", edit_engine_id) \
-                .single() \
-                .execute()
+            resp = db.get_engine(supabase, edit_engine_id, "id, engine_id, model_type, responsible_by")
             if resp.data:
                 edit_engine = resp.data
                 # Fetch responsible user's info for pre-filling
                 responsible_by = edit_engine.get("responsible_by")
                 if responsible_by:
                     try:
-                        user_resp = supabase.table("users") \
-                            .select("first_name, last_name, email_address, department") \
-                            .eq("id", responsible_by) \
-                            .single() \
-                            .execute()
+                        user_resp = db.fetch_records(
+                            supabase,
+                            "users",
+                            "first_name, last_name, email_address, department",
+                            filters=[('eq', "id", responsible_by)],
+                            single=True,
+                        )
                         if user_resp.data:
                             u = user_resp.data
                             edit_engine["_user_name"] = f"{u.get('last_name', '')} {u.get('first_name', '')}".strip()
@@ -543,11 +542,15 @@ def register_add_engine_callbacks(app, supabase=None):
         if not supabase:
             return []
         try:
-            query = supabase.table("users") \
-                .select("id, username, first_name, last_name, email_address, department")
+            query = dict(
+                client=supabase,
+                table="users",
+                columns="id, username, first_name, last_name, email_address, department",
+                filters=[],
+            )
             if org_id:
-                query = query.eq("organization_id", org_id)
-            resp = query.execute()
+                query["filters"].append(('eq', "organization_id", org_id))
+            resp = db.fetch_records(**query)
             options = []
             for u in (resp.data or []):
                 name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
@@ -569,11 +572,13 @@ def register_add_engine_callbacks(app, supabase=None):
         if not user_id or not supabase:
             return "", "", ""
         try:
-            resp = supabase.table("users") \
-                .select("first_name, last_name, email_address, department") \
-                .eq("id", user_id) \
-                .single() \
-                .execute()
+            resp = db.fetch_records(
+                supabase,
+                "users",
+                "first_name, last_name, email_address, department",
+                filters=[('eq', "id", user_id)],
+                single=True,
+            )
             u = resp.data or {}
             name = f"{u.get('last_name', '')} {u.get('first_name', '')}".strip()
             email = u.get("email_address", "")
@@ -633,7 +638,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 if location:
                     update_data["installation_location"] = location
 
-                supabase.table("engines").update(update_data).eq("id", edit_engine_id).execute()
+                db.update_records(supabase, "engines", update_data, filters=[('eq', "id", edit_engine_id)])
                 print(f"[OK] Engine {edit_engine_id} updated")
                 return (
                     "",
@@ -643,23 +648,28 @@ def register_add_engine_callbacks(app, supabase=None):
 
             # ── CREATE MODE ──
             # ── 1. Check uniqueness within the same organization ──
-            check_q = supabase.table("engines") \
-                .select("engine_id") \
-                .eq("engine_id", engine_id)
+            check_q = dict(
+                client=supabase,
+                table="engines",
+                columns="engine_id",
+                filters=[('eq', "engine_id", engine_id)],
+            )
             if org_id:
-                check_q = check_q.eq("organization_id", org_id)
-            if check_q.execute().data:
+                check_q["filters"].append(('eq', "organization_id", org_id))
+            if db.fetch_records(**check_q).data:
                 return html.Span(f"Engine ID {engine_id} already exists in your organization.",
                                 style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
             # ── 2. Fetch organization name for folder naming ──
             org_name = "unknown_org"
             if org_id:
-                org_resp = supabase.table("organizations") \
-                    .select("name") \
-                    .eq("id", org_id) \
-                    .single() \
-                    .execute()
+                org_resp = db.fetch_records(
+                    supabase,
+                    "organizations",
+                    "name",
+                    filters=[('eq', "id", org_id)],
+                    single=True,
+                )
                 if org_resp.data:
                     # Sanitize org name for use as folder name
                     raw_name = org_resp.data.get("name", "unknown_org")
@@ -682,7 +692,7 @@ def register_add_engine_callbacks(app, supabase=None):
             if assign_to_user_id:
                 payload["responsible_by"] = assign_to_user_id
 
-            result = supabase.table("engines").insert(payload).execute()
+            result = db.insert_records(supabase, "engines", payload)
 
             # Get the new engine's UUID (returned by Supabase)
             new_engine_db_id = None
@@ -707,7 +717,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 _sb_storage = _get_supabase_admin()
                 if _sb_storage:
                     # List available JSON files in the model_type folder
-                    file_list = _sb_storage.storage.from_(ENGINE_DATA_BUCKET).list(model_type)
+                    file_list = db.list_files(_sb_storage, ENGINE_DATA_BUCKET, model_type)
                     json_files = [f["name"] for f in file_list if f.get("name", "").endswith(".json")]
 
                     if json_files:
@@ -717,17 +727,20 @@ def register_add_engine_callbacks(app, supabase=None):
                         print(f"[OK] Selected template: {storage_path}")
 
                         # Download template data
-                        template_data = _sb_storage.storage.from_(ENGINE_DATA_BUCKET).download(storage_path)
+                        template_data = db.download_file(_sb_storage, ENGINE_DATA_BUCKET, storage_path)
 
                         # Upload to orgs folder in storage (persistent)
                         org_storage_path = f"orgs/{folder_name}/{engine_file}"
                         try:
-                            _sb_storage.storage.from_(ENGINE_DATA_BUCKET).remove([org_storage_path])
+                            db.remove_files(_sb_storage, ENGINE_DATA_BUCKET, [org_storage_path])
                         except Exception:
                             pass
-                        _sb_storage.storage.from_(ENGINE_DATA_BUCKET).upload(
-                            path=org_storage_path, file=template_data,
-                            file_options={"content-type": "application/json"}
+                        db.upload_file(
+                            _sb_storage,
+                            ENGINE_DATA_BUCKET,
+                            path=org_storage_path,
+                            file=template_data,
+                            file_options={"content-type": "application/json"},
                         )
                         print(f"[OK] Stored engine data in storage: {org_storage_path}")
 

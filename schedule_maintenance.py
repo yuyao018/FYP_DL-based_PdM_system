@@ -13,8 +13,10 @@ Layout
     - Cancel / Schedule buttons aligned to the right
   • On submit the calendar updates to show the event in the correct day/time cell
 """
+from assets import database_integration as db
 
 import dash
+from scheduling_agent import build_scheduling_agent, register_scheduling_agent
 from dash import dcc, html, Input, Output, State, callback_context, ALL
 import dash_bootstrap_components as dbc
 from datetime import date, datetime, timedelta
@@ -444,7 +446,7 @@ def _build_modal(engine_options: list[dict]) -> html.Div:
                                 dcc.Input(
                                     id="sm-modal-end-time",
                                     type="time",
-                                    value="10:00",
+                                    value="11:00",
                                     style=input_style,
                                 ),
                             ]),
@@ -778,17 +780,22 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
     """Build the Schedule Maintenance page."""
 
     # ── Fetch engines for dropdown, scoped by role ─────────────────────────
-    # admin → all engines across all orgs
-    # user  → only engines in their organisation
+    # admin → engines in their organization
+    # user → only engines assigned to them
     engine_options = []
     engine_label_map = {}
     if supabase:
         try:
-            q = supabase.table("engines").select("id, engine_id, model_type") \
-                .eq("is_deleted", True)
-            if role != "admin" and org_id:
-                q = q.eq("organization_id", org_id)
-            eng_resp = q.execute()
+            q = dict(
+                client=supabase,
+                table="engines",
+                columns="id, engine_id, model_type",
+                filters=[('eq', "is_deleted", True)],
+            )
+            q["filters"].append(('eq', "organization_id", org_id or "00000000-0000-0000-0000-000000000000"))
+            if role != "admin":
+                q["filters"].append(('eq', "responsible_by", user_id or "00000000-0000-0000-0000-000000000000"))
+            eng_resp = db.fetch_records(**q)
             for row in (eng_resp.data or []):
                 label = f"ENGINE-{str(row.get('engine_id', '?')).zfill(2)} ({row.get('model_type', '')})"
                 eid = str(row["id"])
@@ -804,9 +811,13 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 
     if supabase:
         try:
-            q = supabase.table("maintenance_schedules") \
-                .select("id, engine_id, scheduled_date, start_time, end_time, notes, status, created_by") \
-                .order("scheduled_date", desc=False)
+            q = dict(
+                client=supabase,
+                table="maintenance_schedules",
+                columns="id, engine_id, scheduled_date, start_time, end_time, notes, status, created_by",
+                filters=[],
+                order_by=[("scheduled_date", False)],
+            )
 
             print(f"[SM] Loading schedules: role={role}, org_id={org_id}, user_id={user_id}")
 
@@ -814,11 +825,12 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 # Admin sees all schedules for any engine in their org
                 if org_id:
                     try:
-                        e_resp = supabase.table("engines") \
-                            .select("id") \
-                            .eq("organization_id", org_id) \
-                            .eq("is_deleted", True) \
-                            .execute()
+                        e_resp = db.fetch_records(
+                            supabase,
+                            "engines",
+                            "id",
+                            filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", True)],
+                        )
                         org_engine_ids = [str(r["id"]) for r in (e_resp.data or [])]
                         print(f"[SM] Admin org engine IDs: {org_engine_ids}")
                     except Exception as e:
@@ -826,22 +838,23 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                         print(f"[SM] Failed to fetch org engines: {e}")
 
                     if org_engine_ids:
-                        q = q.in_("engine_id", org_engine_ids)
+                        q["filters"].append(('in_', "engine_id", org_engine_ids))
                     else:
                         print(f"[SM] No engines found for org_id={org_id}, showing all schedules")
                         # org has no engines — nothing to show
-                        q = q.eq("id", "00000000-0000-0000-0000-000000000000")
+                        q["filters"].append(('eq', "id", "00000000-0000-0000-0000-000000000000"))
                 else:
                     # No org_id for admin — show everything (super-admin)
                     print("[SM] Admin with no org_id — showing all schedules")
             else:
-                # Regular users only see their own schedules
-                if user_id:
-                    q = q.eq("created_by", user_id)
+                # Scope by current engine responsibility, not historical booking creator.
+                allowed_ids = list(engine_label_map)
+                if allowed_ids:
+                    q["filters"].append(('in_', "engine_id", allowed_ids))
                 else:
-                    q = q.eq("created_by", "00000000-0000-0000-0000-000000000000")
+                    q["filters"].append(('eq', "id", "00000000-0000-0000-0000-000000000000"))
 
-            sched_resp = q.execute()
+            sched_resp = db.fetch_records(**q)
 
             # ── For admin: batch-fetch usernames for all created_by IDs ──────
             user_name_map: dict[str, str] = {}  # user_id → display name
@@ -852,10 +865,12 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 })
                 if created_by_ids:
                     try:
-                        u_resp = supabase.table("users") \
-                            .select("id, username, first_name, last_name") \
-                            .in_("id", created_by_ids) \
-                            .execute()
+                        u_resp = db.fetch_records(
+                            supabase,
+                            "users",
+                            "id, username, first_name, last_name",
+                            filters=[('in_', "id", created_by_ids)],
+                        )
                         for u in (u_resp.data or []):
                             uid = str(u["id"])
                             first = u.get("first_name") or ""
@@ -930,7 +945,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
             print(f"[SM] Could not load existing schedules: {e}")
 
     # Pre-select the engine if navigated from a specific engine card
-    default_engine = engine_db_id if engine_db_id else None
+    default_engine = str(engine_db_id) if str(engine_db_id) in engine_label_map else None
 
     topbar = build_topbar()
 
@@ -1039,6 +1054,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 
             # ── Modal (fixed overlay) ─────────────────────────────────────
             _build_modal(engine_options),
+            build_scheduling_agent(engine_options, default_engine),
 
             # ── Edit/Delete modal ─────────────────────────────────────────
             _build_edit_modal(engine_options),
@@ -1051,6 +1067,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 # ─────────────────────────────────────────────
 
 def register_schedule_maintenance_callbacks(app, supabase=None):
+    register_scheduling_agent(app, supabase)
 
     # ── Open modal ────────────────────────────────────────────────────────
     @app.callback(
@@ -1149,18 +1166,11 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         status = "warning"
         if supabase:
             try:
-                resp = supabase.table("engines") \
-                    .select("engine_id, model_type") \
-                    .eq("id", engine_id) \
-                    .single().execute()
+                resp = db.get_engine(supabase, engine_id, "engine_id, model_type")
                 if resp.data:
                     engine_label = f"ENGINE-{str(resp.data.get('engine_id', '?')).zfill(2)}"
                 # Fetch latest RUL to derive status
-                pred = supabase.table("rul_predictions") \
-                    .select("predicted_rul") \
-                    .eq("engine_id", engine_id) \
-                    .order("predicted_at", desc=True) \
-                    .limit(1).execute()
+                pred = db.get_latest_prediction(supabase, engine_id, "predicted_rul")
                 if pred.data:
                     rul = float(pred.data[0].get("predicted_rul", 100))
                     status = "critical" if rul <= 30 else "warning" if rul <= 62 else "healthy"
@@ -1188,21 +1198,15 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # ── Persist to Supabase if available ─────────────────────────────
         if supabase:
             try:
-                user_id = (session or {}).get("user_id") or None
-                result = supabase.table("maintenance_schedules").insert({
-                    "engine_id":      engine_id,
-                    "scheduled_date": sel_date,
-                    "start_time":     start_time,
-                    "end_time":       end_time,
-                    "notes":          notes or "",
-                    "status":         "scheduled",
-                    "created_by":     user_id,
-                    "created_at":     datetime.utcnow().isoformat(),
-                }).execute()
+                from maintenance_recommendations import create_manual_booking
+                result = create_manual_booking(supabase, engine_id, sel_date,
+                                               start_time, end_time, notes, session)
                 if result.data:
                     new_event["db_id"] = str(result.data[0].get("id", ""))
             except Exception as e:
-                print(f"[SM][WARN] Supabase insert failed: {e}")
+                message = str(e) if isinstance(e, ValueError) else "Unable to save maintenance. Please try again."
+                return dash.no_update, dash.no_update, dash.no_update, html.Span(
+                    message, style={"color": "#ff6b6b"})
 
         return (
             updated_events,
@@ -1342,13 +1346,33 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         ev_idx = (selected_ev or {}).get("_idx")
         db_id  = (selected_ev or {}).get("db_id", "")
 
+        # Resolve the persisted booking; browser event data is not authorization.
+        try:
+            from scheduling_agent_service import authorized_engine
+            if not supabase or not db_id:
+                raise ValueError("No saved maintenance booking was selected.")
+            saved = db.fetch_records(
+                supabase,
+                "maintenance_schedules",
+                "engine_id",
+                filters=[('eq', "id", db_id)],
+                single=True,
+            ).data
+            if not saved:
+                raise ValueError("This booking no longer exists.")
+            authorized_engine(supabase, saved["engine_id"], session)
+            if triggered != "sm-edit-delete-btn":
+                authorized_engine(supabase, engine_id, session)
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, ValueError) else "Unable to verify permission for this booking."
+            return dash.no_update, dash.no_update, dash.no_update, html.Span(message, style={"color": "#ff6b6b"})
+
         # ── DELETE ────────────────────────────────────────────────────────
         if triggered == "sm-edit-delete-btn":
             updated = [e for e in events if e.get("_idx") != ev_idx]
             if supabase and db_id:
                 try:
-                    supabase.table("maintenance_schedules") \
-                        .delete().eq("id", db_id).execute()
+                    db.delete_records(supabase, "maintenance_schedules", filters=[('eq', "id", db_id)])
                 except Exception as e:
                     print(f"[SM][WARN] Delete failed: {e}")
             return updated, [_build_calendar(updated, 0)], hidden_style, ""
@@ -1383,8 +1407,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         status = (selected_ev or {}).get("status", "warning")
         if supabase:
             try:
-                resp = supabase.table("engines").select("engine_id") \
-                    .eq("id", engine_id).single().execute()
+                resp = db.get_engine(supabase, engine_id, "engine_id")
                 if resp.data:
                     engine_label = f"ENGINE-{str(resp.data.get('engine_id', '?')).zfill(2)}"
             except Exception:
@@ -1410,13 +1433,13 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # Persist to Supabase
         if supabase and db_id:
             try:
-                supabase.table("maintenance_schedules").update({
+                db.update_records(supabase, "maintenance_schedules", {
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
                     "start_time":     start_time,
                     "end_time":       end_time,
                     "notes":          notes or "",
-                }).eq("id", db_id).execute()
+                }, filters=[('eq', "id", db_id)])
             except Exception as e:
                 print(f"[SM][WARN] Update failed: {e}")
 

@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -464,10 +465,7 @@ def create_sensor_trends_layout(supabase=None, engine_db_id=None):
 
     try:
         if supabase and engine_db_id is not None:
-            eng_resp = supabase.table("engines") \
-                .select("engine_id, condition_status") \
-                .eq("id", engine_db_id) \
-                .single().execute()
+            eng_resp = db.get_engine(supabase, engine_db_id, "engine_id, condition_status")
             engine   = eng_resp.data or {}
             engine_id = str(engine.get("engine_id", "01")).zfill(2)
             status    = (engine.get("condition_status") or "healthy").lower().strip()

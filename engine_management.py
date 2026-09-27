@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -211,10 +212,10 @@ def create_engine_management_layout(supabase=None, org_id=None):
             crit_thresh = 30
             max_life    = 125
             try:
-                t_resp = supabase.table("alert_thresholds") \
-                    .select("warning_threshold, critical_threshold, max_rul_cap") \
-                    .order("updated_at", desc=True) \
-                    .limit(1).execute()
+                t_resp = db.get_alert_thresholds(
+                    supabase,
+                    "warning_threshold, critical_threshold, max_rul_cap",
+                )
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
@@ -222,13 +223,17 @@ def create_engine_management_layout(supabase=None, org_id=None):
             except Exception:
                 pass
 
-            query = supabase.table("engines") \
-                .select("id, engine_id, model_type, condition_status, current_cycle, created_at, is_deleted")
+            query = dict(
+                client=supabase,
+                table="engines",
+                columns="id, engine_id, model_type, condition_status, current_cycle, created_at, is_deleted",
+                filters=[],
+            )
 
             if org_id:
-                query = query.eq("organization_id", org_id)
+                query["filters"].append(('eq', "organization_id", org_id))
 
-            resp = query.order("engine_id").execute()
+            resp = db.fetch_records(**query, order_by=[("engine_id", False)])
 
             if resp.data:
                 engine_ids = [e.get("id") for e in resp.data if e.get("id")]
@@ -237,11 +242,13 @@ def create_engine_management_layout(supabase=None, org_id=None):
                 latest_rul_map = {}
                 if engine_ids:
                     try:
-                        pred_resp = supabase.table("rul_predictions") \
-                            .select("engine_id, predicted_rul") \
-                            .in_("engine_id", engine_ids) \
-                            .order("predicted_at", desc=True) \
-                            .execute()
+                        pred_resp = db.fetch_records(
+                            supabase,
+                            "rul_predictions",
+                            "engine_id, predicted_rul",
+                            filters=[('in_', "engine_id", engine_ids)],
+                            order_by=[("predicted_at", True)],
+                        )
                         for row in (pred_resp.data or []):
                             eid = row.get("engine_id")
                             if eid and eid not in latest_rul_map \
@@ -370,7 +377,12 @@ def register_engine_management_callbacks(app, supabase=None):
         # Soft-delete: set is_deleted = False in Supabase
         if supabase:
             try:
-                supabase.table("engines").update({"is_deleted": False}).eq("id", engine_id).execute()
+                db.update_records(
+                    supabase,
+                    "engines",
+                    {"is_deleted": False},
+                    filters=[('eq', "id", engine_id)],
+                )
                 print(f"[OK] Soft-deleted engine {engine_id}")
             except Exception as e:
                 print(f"[ERROR] soft-delete engine: {e}")
@@ -422,7 +434,12 @@ def register_engine_management_callbacks(app, supabase=None):
         # Restore: set is_deleted = True in Supabase
         if supabase:
             try:
-                supabase.table("engines").update({"is_deleted": True}).eq("id", engine_id).execute()
+                db.update_records(
+                    supabase,
+                    "engines",
+                    {"is_deleted": True},
+                    filters=[('eq', "id", engine_id)],
+                )
                 print(f"[OK] Restored engine {engine_id}")
             except Exception as e:
                 print(f"[ERROR] restore engine: {e}")

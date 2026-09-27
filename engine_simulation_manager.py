@@ -23,6 +23,7 @@ touches this thread directly.
 Multiple engines run in parallel (each in their own thread). Threads are
 tracked in _RUNNING_SIMULATIONS so we don't double-start the same engine.
 """
+from assets import database_integration as db
 
 import json
 import os
@@ -303,12 +304,13 @@ def _load_model(model_type: str, supabase=None):
         active_filename = None
         if supabase:
             try:
-                resp = supabase.table("model_versions") \
-                    .select("id, filename") \
-                    .eq("model_type", model_type) \
-                    .eq("status", "active") \
-                    .limit(1) \
-                    .execute()
+                resp = db.fetch_records(
+                    supabase,
+                    "model_versions",
+                    "id, filename",
+                    filters=[('eq', "model_type", model_type), ('eq', "status", "active")],
+                    limit=1,
+                )
                 if resp.data:
                     row = resp.data[0]
                     active_filename = row.get("filename")
@@ -919,9 +921,7 @@ def _load_shap_signatures(path: Path = _SIGNATURES_PATH) -> None:
             from storage_utils import _get_supabase_admin
             sb = _get_supabase_admin()
             if sb:
-                data = sb.storage.from_(SHAP_SIGNATURES_BUCKET).download(
-                    SHAP_SIGNATURES_FILENAME
-                )
+                data = db.download_file(sb, SHAP_SIGNATURES_BUCKET, SHAP_SIGNATURES_FILENAME)
                 resolved_path.parent.mkdir(parents=True, exist_ok=True)
                 resolved_path.write_bytes(data)
                 print(f"[SIM] Downloaded shap_signatures.json from "
@@ -1053,11 +1053,7 @@ def _fetch_thresholds(supabase) -> tuple[float, float]:
     """
     try:
         resp = _supabase_execute(
-            lambda: supabase.table("alert_thresholds")
-                .select("warning_threshold, critical_threshold")
-                .order("updated_at", desc=True)
-                .limit(1)
-                .execute()
+            lambda: db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
         )
         if resp.data:
             warn = float(resp.data[0].get("warning_threshold", 62))
@@ -1076,12 +1072,13 @@ def _get_active_model_version_id(supabase, model_type: str) -> str | None:
     """Fetch the UUID of the currently active model version for a given model_type."""
     try:
         resp = _supabase_execute(
-            lambda: supabase.table("model_versions")
-                .select("id")
-                .eq("model_type", model_type)
-                .eq("status", "active")
-                .limit(1)
-                .execute()
+            lambda: db.fetch_records(
+                supabase,
+                "model_versions",
+                "id",
+                filters=[('eq', "model_type", model_type), ('eq', "status", "active")],
+                limit=1,
+            )
         )
         if resp.data:
             return str(resp.data[0]["id"])
@@ -1150,11 +1147,7 @@ def _simulation_loop(
     # ── Resume from last saved cycle (skip already-processed cycles) ──────────
     resume_from_cycle = 0
     try:
-        eng_resp = supabase.table("engines") \
-            .select("current_cycle, condition_status") \
-            .eq("id", engine_db_id) \
-            .single() \
-            .execute()
+        eng_resp = db.get_engine(supabase, engine_db_id, "current_cycle, condition_status")
         if eng_resp.data:
             clock.observe(eng_resp.data.get("condition_status") or "healthy",
                           int(eng_resp.data.get("current_cycle") or 0))
@@ -1215,10 +1208,12 @@ def _simulation_loop(
         # ── Update current_cycle in engines table ──
         try:
             _supabase_execute(
-                lambda _c=cycle_num: supabase.table("engines")
-                    .update({"current_cycle": _c})
-                    .eq("id", engine_db_id)
-                    .execute()
+                lambda _c=cycle_num: db.update_records(
+                    supabase,
+                    "engines",
+                    {"current_cycle": _c},
+                    filters=[('eq', "id", engine_db_id)],
+                )
             )
         except Exception:
             print(f"[SIM][ERROR] Failed to update current_cycle:\n{traceback.format_exc(limit=2)}")
@@ -1315,7 +1310,7 @@ def _simulation_loop(
 
                     # Use default-arg capture to avoid late-binding closure issues
                     _supabase_execute(
-                        lambda _d=row_data: supabase.table("rul_predictions").insert(_d).execute()
+                        lambda _d=row_data: db.insert_records(supabase, "rul_predictions", _d)
                     )
 
                     # Write pattern label and similarity score to engines table.
@@ -1328,10 +1323,12 @@ def _simulation_loop(
                         _eng_update["degradation_confidence"] = round(float(pattern_similarity), 4)
 
                     _supabase_execute(
-                        lambda _u=_eng_update: supabase.table("engines")
-                            .update(_u)
-                            .eq("id", engine_db_id)
-                            .execute()
+                        lambda _u=_eng_update: db.update_records(
+                            supabase,
+                            "engines",
+                            _u,
+                            filters=[('eq', "id", engine_db_id)],
+                        )
                     )
 
                     # ── Fire email alert if threshold crossed ──
@@ -1340,7 +1337,7 @@ def _simulation_loop(
                         # Resolve human-readable engine number for the email subject
                         _eng_num = engine_db_id  # fallback
                         try:
-                            _er = supabase.table("engines").select("engine_id").eq("id", engine_db_id).single().execute()
+                            _er = db.get_engine(supabase, engine_db_id, "engine_id")
                             if _er.data:
                                 _eng_num = str(_er.data.get("engine_id", engine_db_id))
                         except Exception:
@@ -1450,9 +1447,7 @@ def resume_all_simulations(supabase):
     print("[SIM] resume_all_simulations starting...")
 
     try:
-        resp = supabase.table("engines") \
-            .select("id, engine_id, model_type, organization_id") \
-            .execute()
+        resp = db.fetch_records(supabase, "engines", "id, engine_id, model_type, organization_id")
         engines = resp.data or []
         print(f"[SIM] Found {len(engines)} engines in database")
     except Exception:
@@ -1462,7 +1457,7 @@ def resume_all_simulations(supabase):
     # Also fetch org names for storage path resolution
     org_names = {}
     try:
-        org_resp = supabase.table("organizations").select("id, name").execute()
+        org_resp = db.fetch_records(supabase, "organizations", "id, name")
         for o in (org_resp.data or []):
             org_names[str(o["id"])] = o.get("name", "unknown")
         print(f"[SIM] Loaded {len(org_names)} organization names")
@@ -1481,11 +1476,7 @@ def resume_all_simulations(supabase):
         # ── Check if this engine has already finished all its cycles ──
         current_cycle = 0
         try:
-            cc_resp = supabase.table("engines") \
-                .select("current_cycle") \
-                .eq("id", engine_db_id) \
-                .single() \
-                .execute()
+            cc_resp = db.get_engine(supabase, engine_db_id, "current_cycle")
             if cc_resp.data and cc_resp.data.get("current_cycle"):
                 current_cycle = int(cc_resp.data["current_cycle"])
         except Exception:

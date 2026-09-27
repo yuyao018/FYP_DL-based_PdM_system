@@ -1,4 +1,5 @@
 """Shared floating simulation controls for engine-specific pages."""
+from assets import database_integration as db
 from dash import html, dcc, Input, Output, State, ctx
 from simulation_clock import SPEEDS, DEFAULT_SPEED
 
@@ -83,8 +84,12 @@ def register_simulation_callbacks(app, supabase):
         if not org_id or not engine_id or supabase is None:
             return "Simulation controls unavailable.", "", True, True, True, True
         try:
-            result = supabase.table("engines").select("id, engine_id").eq("id", engine_id).eq(
-                "organization_id", org_id).execute()
+            result = db.fetch_records(
+                supabase,
+                "engines",
+                "id, engine_id",
+                filters=[('eq', "id", engine_id), ('eq', "organization_id", org_id)],
+            )
             if not result.data:
                 return "Simulation controls unavailable.", "", True, True, True, True
         except Exception:

@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -308,11 +309,15 @@ def create_user_management_layout(supabase=None, org_id=None):
     try:
         if supabase:
             # Fetch active users (is_deleted = true means active)
-            query = supabase.table("users") \
-                .select("id, username, first_name, last_name, role, status, last_login_at, is_deleted")
+            query = dict(
+                client=supabase,
+                table="users",
+                columns="id, username, first_name, last_name, role, status, last_login_at, is_deleted",
+                filters=[],
+            )
             if org_id:
-                query = query.eq("organization_id", org_id)
-            resp = query.execute()
+                query["filters"].append(('eq', "organization_id", org_id))
+            resp = db.fetch_records(**query)
             if resp.data:
                 users = []
                 deleted_users = []
@@ -421,7 +426,7 @@ def register_user_management_callbacks(app, supabase=None):
         # Soft delete: mark as deleted (is_deleted = false means removed)
         if supabase:
             try:
-                supabase.table("users").update({"is_deleted": False}).eq("id", user_id).execute()
+                db.update_records(supabase, "users", {"is_deleted": False}, filters=[('eq', "id", user_id)])
             except Exception as e:
                 print(f"[ERROR] soft-delete user: {e}")
 
@@ -461,7 +466,7 @@ def register_user_management_callbacks(app, supabase=None):
         # Restore: set is_deleted back to true (active)
         if supabase:
             try:
-                supabase.table("users").update({"is_deleted": True}).eq("id", user_id).execute()
+                db.update_records(supabase, "users", {"is_deleted": True}, filters=[('eq', "id", user_id)])
             except Exception as e:
                 print(f"[ERROR] restore user: {e}")
 

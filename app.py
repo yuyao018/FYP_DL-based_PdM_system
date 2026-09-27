@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from simulation_panel import build_simulation_panel, register_simulation_callbacks
 from dash import dcc, html, Input, Output, State, callback_context
@@ -48,6 +49,8 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
+from maintenance_recommendations import register_response_routes
+register_response_routes(server, supabase_admin)
 register_sensor_callbacks(app, supabase=supabase_admin)
 register_alert_log_callbacks(app, supabase=supabase_admin)
 register_user_management_callbacks(app, supabase=supabase_admin)
@@ -157,10 +160,25 @@ def display_page(pathname, search, session):
         return create_degradation_analysis_layout(sb, engine_db_id=engine_db_id)
 
     if pathname.startswith("/schedule-maintenance/"):
-        engine_db_id = pathname.split("/")[-1]
-        return create_schedule_maintenance_layout(sb, engine_db_id=engine_db_id,
+        parts = pathname.strip("/").split("/")
+        engine_db_id = parts[1]
+        proposal = None
+        if len(parts) == 4 and parts[2] == "recommendation":
+            from maintenance_recommendations import read_proposal, prefill_layout
+            try:
+                proposal = read_proposal(parts[3])
+                from scheduling_agent_service import authorized_engine
+                authorized_engine(sb, engine_db_id, session)
+                if (proposal["engine_id"] != engine_db_id
+                        or proposal["organization_id"] != str(org_id)
+                        or (user_role != "admin" and proposal["technician"] != str((session or {}).get("user_id")))):
+                    return html.Div("This recommendation is not assigned to your account.")
+            except Exception:
+                return html.Div("This recommendation has expired. Please open My Schedule to create a booking.")
+        layout = create_schedule_maintenance_layout(sb, engine_db_id=engine_db_id,
                                                   org_id=org_id, role=user_role,
                                                   user_id=(session or {}).get("user_id"))
+        return prefill_layout(layout, proposal) if proposal else layout
 
     if pathname.startswith("/edit-user/"):
         user_id = pathname.split("/")[-1]
@@ -172,7 +190,7 @@ def display_page(pathname, search, session):
 
     # ── Exact routes ──
     routes = {
-        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role, username=(session or {}).get("username"), first_name=(session or {}).get("first_name")),
+        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role, username=(session or {}).get("username"), first_name=(session or {}).get("first_name"), user_id=(session or {}).get("user_id")),
         "/overview":          lambda: create_overview_layout(sb),
         "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
         "/alert-log":         lambda: create_alert_log_layout(sb),
@@ -326,10 +344,12 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
     try:
         # Step 1: Check if user exists and has password_hash set
         print(f"[DEBUG-V2] Checking users table for {username}...")
-        user_check = supabase.table("users") \
-            .select("id, username, role, password_hash, email_address, organization_id, first_name, last_name, last_login_at") \
-            .eq("username", username) \
-            .execute()
+        user_check = db.fetch_records(
+            supabase,
+            "users",
+            "id, username, role, password_hash, email_address, organization_id, first_name, last_name, last_login_at",
+            filters=[('eq', "username", username)],
+        )
 
         if not user_check.data:
             print(f"[DEBUG-V2] User '{username}' not found in users table")
@@ -358,10 +378,12 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
                 # Auth succeeded — backfill password_hash
                 import bcrypt as _bcrypt
                 hashed = _bcrypt.hashpw(password.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
-                supabase.table("users") \
-                    .update({"password_hash": hashed}) \
-                    .eq("username", username) \
-                    .execute()
+                db.update_records(
+                    supabase,
+                    "users",
+                    {"password_hash": hashed},
+                    filters=[('eq', "username", username)],
+                )
                 print(f"[OK] Backfilled password_hash for {username}")
 
             except Exception as auth_e:
@@ -380,10 +402,10 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
             except Exception as hash_err:
                 print(f"[DEBUG-V2] bcrypt.checkpw failed: {hash_err}")
                 # Fallback to RPC for non-bcrypt hashes (e.g., pgcrypto $2a$06$)
-                resp = supabase.rpc("verify_login", {
+                resp = db.call_database_function(supabase, "verify_login", {
                     "p_username": username,
                     "p_password": password,
-                }).execute()
+                })
                 password_valid = bool(resp.data)
 
             print(f"[DEBUG-V2] Password valid: {password_valid}")
@@ -411,10 +433,12 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
             ), dash.no_update
 
         # Step 4: Update last_login_at
-        supabase.table("users") \
-            .update({"last_login_at": "now()", "status": "active"}) \
-            .eq("username", username) \
-            .execute()
+        db.update_records(
+            supabase,
+            "users",
+            {"last_login_at": "now()", "status": "active"},
+            filters=[('eq', "username", username)],
+        )
 
         # Step 5: Build session data
         session_data = {
@@ -449,9 +473,7 @@ def mark_logged_out(session):
     if not user_id:
         return
     try:
-        supabase_admin.table("users").update({"status": "inactive"}).eq(
-            "id", user_id
-        ).execute()
+        db.update_records(supabase_admin, "users", {"status": "inactive"}, filters=[('eq', "id", user_id)])
     except Exception as exc:
         # A database outage must not prevent clearing the browser session.
         print(f"[WARN] Logout status update failed: {type(exc).__name__}")
@@ -525,21 +547,23 @@ def handle_dev_login(n_clicks, username, password):
 
     try:
         # Verify credentials via RPC
-        resp = supabase.rpc("verify_login", {
+        resp = db.call_database_function(supabase, "verify_login", {
             "p_username": username,
             "p_password": password,
-        }).execute()
+        })
 
         if not resp.data:
             return dash.no_update, html.Span("Invalid username or password.",
                                   style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         # Fetch user profile
-        user_resp = supabase.table("users") \
-            .select("id, username, first_name, last_name, role, organization_id, last_login_at") \
-            .eq("username", username) \
-            .single() \
-            .execute()
+        user_resp = db.fetch_records(
+            supabase,
+            "users",
+            "id, username, first_name, last_name, role, organization_id, last_login_at",
+            filters=[('eq', "username", username)],
+            single=True,
+        )
 
         user_profile = user_resp.data or {}
         role = user_profile.get("role", "")
@@ -552,10 +576,12 @@ def handle_dev_login(n_clicks, username, password):
         is_first_login = user_profile.get("last_login_at") is None
 
         # Update last_login_at
-        supabase.table("users") \
-            .update({"last_login_at": "now()", "status": "active"}) \
-            .eq("username", username) \
-            .execute()
+        db.update_records(
+            supabase,
+            "users",
+            {"last_login_at": "now()", "status": "active"},
+            filters=[('eq', "username", username)],
+        )
 
         # Build session data
         session_data = {
@@ -601,43 +627,22 @@ def handle_dev_logout(n_clicks, session):
 
 @app.callback(
     Output("engines-grid", "children"),
-    Output("filter-all",      "style"),
-    Output("filter-healthy",  "style"),
-    Output("filter-degrading","style"),
-    Output("filter-critical", "style"),
-    Input("filter-all",       "n_clicks"),
-    Input("filter-healthy",   "n_clicks"),
-    Input("filter-degrading", "n_clicks"),
-    Input("filter-critical",  "n_clicks"),
-    State("engine-data-store","data"),
+    Output("dashboard-total-count", "children"),
+    Output("dashboard-healthy-count", "children"),
+    Output("dashboard-warning-count", "children"),
+    Output("dashboard-critical-count", "children"),
+    Input("engine-status-filter", "value"),
+    Input("engine-scope-filter", "value"),
+    State("engine-data-store", "data"),
+    State("session-store", "data"),
     prevent_initial_call=True,
 )
-def filter_engines(all_clicks, healthy_clicks, degrading_clicks, critical_clicks, engine_data):
-    ctx = callback_context
-    if not ctx.triggered or not engine_data:
-        raise dash.exceptions.PreventUpdate
-
-    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
-
-    active_style = {
-        "background": "#007bff", "border": "none", "color": "white",
-        "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px",
-        "fontWeight": "700", "cursor": "pointer",
-    }
-    inactive_style = {
-        "background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
-        "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
-        "fontSize": "12px", "fontWeight": "700", "cursor": "pointer",
-    }
-
-    filter_map = {
-        "filter-all":      None,
-        "filter-healthy":  "healthy",
-        "filter-degrading":"warning",
-        "filter-critical": "critical",
-    }
-
-    selected = filter_map.get(trigger)
+def filter_engines(status_filter, scope, engine_data, session):
+    selected = status_filter if status_filter in ("healthy", "warning", "critical") else None
+    engine_data = engine_data or []
+    if scope != "all":
+        user_id = (session or {}).get("user_id")
+        engine_data = [e for e in engine_data if user_id and str(e.get("responsible_by")) == str(user_id)]
 
     # Filter engine data
     filtered = (
@@ -646,6 +651,7 @@ def filter_engines(all_clicks, healthy_clicks, degrading_clicks, critical_clicks
     )
 
     status_colors = {
+        "unknown": {"bg": "rgba(168,212,255,0.1)", "border": "#a8d4ff", "text": "#a8d4ff"},
         "healthy": {"bg": "rgba(0,255,100,0.15)", "border": "#00ff64", "text": "#00ff64"},
         "warning": {"bg": "rgba(255,217,61,0.15)", "border": "#ffd93d", "text": "#ffd93d"},
         "critical": {"bg": "rgba(255,77,77,0.15)", "border": "#ff4d4d", "text": "#ff4d4d"},
@@ -694,7 +700,7 @@ def filter_engines(all_clicks, healthy_clicks, degrading_clicks, critical_clicks
                         html.Div(style={"display": "flex", "justifyContent": "space-between"},
                                  children=[
                                      html.Span("Predicted cycles left", style={"color": "rgba(74,158,255,0.7)", "fontSize": "11px"}),
-                                     html.Span(f"{engine['rul']}", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "14px"}),
+                                     html.Span(f"{engine['rul']}" if engine.get("has_prediction") else "Warming up…", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "14px"}),
                                  ]),
                         html.Div(style={"borderTop": "1px solid rgba(74,158,255,0.15)", "paddingTop": "8px",
                                         "display": "flex", "justifyContent": "flex-end", "gap": "4px"},
@@ -713,13 +719,15 @@ def filter_engines(all_clicks, healthy_clicks, degrading_clicks, critical_clicks
                         "padding": "40px 0", "gridColumn": "1 / -1", "fontSize": "14px"})
     ]
 
-    # Button styles — highlight whichever is active
-    styles = [
-        active_style if trigger == f"filter-{k}" else inactive_style
-        for k in ["all", "healthy", "degrading", "critical"]
-    ]
+    # Counts cover the ownership scope, independently of the status filter.
+    return (
+        cards,
+        str(len(engine_data)),
+        str(sum(e["status"] == "healthy" for e in engine_data)),
+        str(sum(e["status"] == "warning" for e in engine_data)),
+        str(sum(e["status"] == "critical" for e in engine_data)),
+    )
 
-    return cards, *styles
 
 
 # Developer dashboard: filter organizations by search/dropdown

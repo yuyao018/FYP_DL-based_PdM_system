@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html
 import dash_bootstrap_components as dbc
@@ -19,10 +20,10 @@ def create_dev_dashboard_layout(supabase):
             crit_thresh = 30
             max_life = 125
             try:
-                t_resp = supabase.table("alert_thresholds") \
-                    .select("warning_threshold, critical_threshold, max_rul_cap") \
-                    .order("updated_at", desc=True) \
-                    .limit(1).execute()
+                t_resp = db.get_alert_thresholds(
+                    supabase,
+                    "warning_threshold, critical_threshold, max_rul_cap",
+                )
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
@@ -31,12 +32,12 @@ def create_dev_dashboard_layout(supabase):
                 pass
 
             # ── Fetch all organizations ──
-            orgs_resp = supabase.table("organizations").select("*").execute()
+            orgs_resp = db.fetch_records(supabase, "organizations", "*")
             orgs = orgs_resp.data or []
             total_orgs = len(orgs)
 
             # ── Fetch all engines ──
-            engines_resp = supabase.table("engines").select("*").execute()
+            engines_resp = db.fetch_records(supabase, "engines", "*")
             all_engines = engines_resp.data or []
             total_engines = len(all_engines)
 
@@ -45,11 +46,13 @@ def create_dev_dashboard_layout(supabase):
             latest_rul_map = {}
             if engine_ids:
                 try:
-                    pred_resp = supabase.table("rul_predictions") \
-                        .select("engine_id, predicted_rul") \
-                        .in_("engine_id", engine_ids) \
-                        .order("predicted_at", desc=True) \
-                        .execute()
+                    pred_resp = db.fetch_records(
+                        supabase,
+                        "rul_predictions",
+                        "engine_id, predicted_rul",
+                        filters=[('in_', "engine_id", engine_ids)],
+                        order_by=[("predicted_at", True)],
+                    )
                     for row in (pred_resp.data or []):
                         eid = row.get("engine_id")
                         if eid and eid not in latest_rul_map and row.get("predicted_rul") is not None:
@@ -59,32 +62,33 @@ def create_dev_dashboard_layout(supabase):
 
             # ── Fetch total active alerts ──
             try:
-                alert_resp = supabase.table("alert_logs") \
-                    .select("*", count="exact") \
-                    .eq("status", "active") \
-                    .execute()
+                alert_resp = db.fetch_records(
+                    supabase,
+                    "alert_logs",
+                    "*",
+                    filters=[('eq', "status", "active")],
+                    count="exact",
+                )
                 total_active_alerts = alert_resp.count or 0
             except Exception:
                 pass
 
             # ── Fetch recent activities (latest alert logs) ──
             try:
-                activity_resp = supabase.table("alert_logs") \
-                    .select("*") \
-                    .order("triggered_at", desc=True) \
-                    .limit(15) \
-                    .execute()
+                activity_resp = db.fetch_records(
+                    supabase,
+                    "alert_logs",
+                    "*",
+                    limit=15,
+                    order_by=[("triggered_at", True)],
+                )
                 for act in (activity_resp.data or []):
                     eng_id = act.get("engine_id")
                     eng_display = "?"
                     org_name = "Unknown"
                     if eng_id:
                         try:
-                            eng_resp = supabase.table("engines") \
-                                .select("engine_id, organization_id") \
-                                .eq("id", eng_id) \
-                                .single() \
-                                .execute()
+                            eng_resp = db.get_engine(supabase, eng_id, "engine_id, organization_id")
                             eng_row = eng_resp.data or {}
                             eng_display = str(eng_row.get("engine_id", "?")).zfill(2)
                             org_row_id = eng_row.get("organization_id")
@@ -109,7 +113,7 @@ def create_dev_dashboard_layout(supabase):
             # Fetch all users to count per org
             all_users = []
             try:
-                users_resp = supabase.table("users").select("id, organization_id").execute()
+                users_resp = db.fetch_records(supabase, "users", "id, organization_id")
                 all_users = users_resp.data or []
             except Exception:
                 pass

@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -608,11 +609,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
             # Fetch alert thresholds
             warn_thresh, crit_thresh = 62, 30
             try:
-                t_resp = supabase.table("alert_thresholds") \
-                    .select("warning_threshold, critical_threshold") \
-                    .order("updated_at", desc=True) \
-                    .limit(1) \
-                    .execute()
+                t_resp = db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", 62))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", 30))
@@ -620,12 +617,17 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                 pass
 
             # Build base query for alert_logs
-            query = supabase.table("alert_logs").select("id, engine_id, triggered_at, status, acknowledged_by, acknowledged_at, resolved_at, severity")
+            query = dict(
+                client=supabase,
+                table="alert_logs",
+                columns="id, engine_id, triggered_at, status, acknowledged_by, acknowledged_at, resolved_at, severity",
+                filters=[],
+            )
 
             if engine_db_id is not None:
-                query = query.eq("engine_id", engine_db_id)
+                query["filters"].append(('eq', "engine_id", engine_db_id))
 
-            logs_resp = query.order("triggered_at", desc=True).execute()
+            logs_resp = db.fetch_records(**query, order_by=[("triggered_at", True)])
             logs = logs_resp.data or []
 
             print(f"[DEBUG] alert_logs rows: {logs}")
@@ -636,10 +638,12 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
             # Fetch engine details for all referenced engines in one query
             engines_lookup = {}
             if engine_ids:
-                eng_resp = supabase.table("engines") \
-                    .select("id, engine_id, condition_status, current_cycle, degradation_type, llm_explanation") \
-                    .in_("id", engine_ids) \
-                    .execute()
+                eng_resp = db.fetch_records(
+                    supabase,
+                    "engines",
+                    "id, engine_id, condition_status, current_cycle, degradation_type, llm_explanation",
+                    filters=[('in_', "id", engine_ids)],
+                )
                 for e in (eng_resp.data or []):
                     engines_lookup[e["id"]] = e
 
@@ -680,11 +684,13 @@ def create_alert_log_layout(supabase=None, engine_db_id=None):
                 latest_rul = 0
                 alert_engine_id = log.get("engine_id")
                 try:
-                    pred_resp = supabase.table("rul_predictions") \
-                        .select("cycle, predicted_rul") \
-                        .eq("engine_id", alert_engine_id) \
-                        .order("cycle", desc=False) \
-                        .execute()
+                    pred_resp = db.fetch_records(
+                        supabase,
+                        "rul_predictions",
+                        "cycle, predicted_rul",
+                        filters=[('eq', "engine_id", alert_engine_id)],
+                        order_by=[("cycle", False)],
+                    )
                     print(f"[DEBUG] rul_predictions for engine {alert_engine_id}: {len(pred_resp.data or [])} rows")
                     for pred_row in (pred_resp.data or []):
                         if pred_row.get("predicted_rul") is not None:
@@ -821,7 +827,7 @@ def register_alert_log_callbacks(app, supabase=None):
                 }
                 if user_id:
                     update_data["acknowledged_by"] = user_id
-                supabase.table("alert_logs").update(update_data).eq("id", alert_id).execute()
+                db.update_records(supabase, "alert_logs", update_data, filters=[('eq', "id", alert_id)])
                 print(f"[ALERT] Acknowledged alert {alert_id} by user {user_id}")
             except Exception:
                 import traceback
@@ -879,10 +885,10 @@ def register_alert_log_callbacks(app, supabase=None):
         if supabase and alert_id:
             now = datetime.now(timezone.utc).isoformat()
             try:
-                supabase.table("alert_logs").update({
+                db.update_records(supabase, "alert_logs", {
                     "status": "resolved",
                     "resolved_at": now,
-                }).eq("id", alert_id).execute()
+                }, filters=[('eq', "id", alert_id)])
                 print(f"[ALERT] Resolved alert {alert_id}")
             except Exception:
                 import traceback

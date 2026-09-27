@@ -1,6 +1,7 @@
 """
 Change Password Page — Forced password update on first login.
 """
+from assets import database_integration as db
 
 import dash
 from dash import dcc, html, Input, Output, State
@@ -249,10 +250,12 @@ def register_change_password_callbacks(app, supabase=None, supabase_admin=None):
 
             # Update password_hash in the users table
             if supabase:
-                supabase.table("users") \
-                    .update({"password_hash": hashed_pw, "last_login_at": "now()"}) \
-                    .eq("id", user_id) \
-                    .execute()
+                db.update_records(
+                    supabase,
+                    "users",
+                    {"password_hash": hashed_pw, "last_login_at": "now()"},
+                    filters=[('eq', "id", user_id)],
+                )
 
             # Also update via Supabase Auth Admin API (keeps auth.users in sync)
             try:

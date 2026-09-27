@@ -7,6 +7,7 @@ Replaces the former "Explainability AI" page.  Provides:
   • Row 1 col 2: LLM-generated natural language explanation (Groq Llama)
   • Row 2: SHAP value trend line chart for top sensors over cycles
 """
+from assets import database_integration as db
 
 import dash
 from dash import dcc, html, Input, Output, State, callback_context, MATCH, ALL
@@ -65,7 +66,7 @@ def _load_da_signatures() -> None:
             from storage_utils import _get_supabase_admin
             sb = _get_supabase_admin()
             if sb:
-                data = sb.storage.from_("SHAP").download("shap_signatures.json")
+                data = db.download_file(sb, "SHAP", "shap_signatures.json")
                 sig_path.parent.mkdir(parents=True, exist_ok=True)
                 sig_path.write_bytes(data)
                 print(f"[DEGRAD] Downloaded shap_signatures.json from Storage → {sig_path}")
@@ -863,11 +864,11 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
 
     if supabase and engine_db_id:
         try:
-            resp = supabase.table("engines") \
-                .select("engine_id, degradation_type, degradation_confidence, model_type, llm_explanation, llm_explanation_updated_at") \
-                .eq("id", engine_db_id) \
-                .single() \
-                .execute()
+            resp = db.get_engine(
+                supabase,
+                engine_db_id,
+                "engine_id, degradation_type, degradation_confidence, model_type, llm_explanation, llm_explanation_updated_at",
+            )
             if resp.data:
                 engine_label = f"Engine #{resp.data.get('engine_id', engine_db_id)}"
                 degradation_type = resp.data.get("degradation_type")
@@ -1465,11 +1466,13 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         shap_base_values = []
 
         try:
-            resp = supabase.table("rul_predictions") \
-                .select("cycle, predicted_rul, shap_values, shap_base_value") \
-                .eq("engine_id", engine_db_id) \
-                .order("cycle", desc=False) \
-                .execute()
+            resp = db.fetch_records(
+                supabase,
+                "rul_predictions",
+                "cycle, predicted_rul, shap_values, shap_base_value",
+                filters=[('eq', "engine_id", engine_db_id)],
+                order_by=[("cycle", False)],
+            )
 
             for row in (resp.data or []):
                 shap = _json.loads(row["shap_values"]) if isinstance(row["shap_values"], str) else row["shap_values"]
@@ -1528,11 +1531,11 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         # ── Re-fetch degradation_type and stored similarity (may have updated) ──
         if supabase and engine_db_id:
             try:
-                eng_resp = supabase.table("engines") \
-                    .select("degradation_type, degradation_confidence, model_type") \
-                    .eq("id", engine_db_id) \
-                    .single() \
-                    .execute()
+                eng_resp = db.get_engine(
+                    supabase,
+                    engine_db_id,
+                    "degradation_type, degradation_confidence, model_type",
+                )
                 if eng_resp.data:
                     degradation_type   = eng_resp.data.get("degradation_type") or degradation_type
                     stored_similarity  = eng_resp.data.get("degradation_confidence") or stored_similarity
@@ -1619,11 +1622,13 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         model_type_fetched = None
 
         try:
-            resp = supabase.table("rul_predictions") \
-                .select("cycle, predicted_rul, shap_values") \
-                .eq("engine_id", engine_db_id) \
-                .order("cycle", desc=False) \
-                .execute()
+            resp = db.fetch_records(
+                supabase,
+                "rul_predictions",
+                "cycle, predicted_rul, shap_values",
+                filters=[('eq', "engine_id", engine_db_id)],
+                order_by=[("cycle", False)],
+            )
 
             rows = resp.data or []
             all_cycles = []
@@ -1685,11 +1690,11 @@ def register_degradation_analysis_callbacks(app, supabase=None):
 
         # ── Re-fetch degradation_type, stored similarity and model_type ──
         try:
-            eng_resp = supabase.table("engines") \
-                .select("degradation_type, degradation_confidence, model_type") \
-                .eq("id", engine_db_id) \
-                .single() \
-                .execute()
+            eng_resp = db.get_engine(
+                supabase,
+                engine_db_id,
+                "degradation_type, degradation_confidence, model_type",
+            )
             if eng_resp.data:
                 degradation_type   = eng_resp.data.get("degradation_type") or degradation_type
                 stored_similarity  = eng_resp.data.get("degradation_confidence")
@@ -1701,11 +1706,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         warn_threshold = 80
         crit_threshold = 30
         try:
-            thr_resp = supabase.table("alert_thresholds") \
-                .select("warning_threshold, critical_threshold") \
-                .order("updated_at", desc=True) \
-                .limit(1) \
-                .execute()
+            thr_resp = db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
             if thr_resp.data:
                 warn_threshold = thr_resp.data[0].get("warning_threshold", warn_threshold)
                 crit_threshold = thr_resp.data[0].get("critical_threshold", crit_threshold)
@@ -1750,13 +1751,10 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         # ── Cache to engines table ──
         now_iso = datetime.utcnow().isoformat()
         try:
-            supabase.table("engines") \
-                .update({
+            db.update_records(supabase, "engines", {
                     "llm_explanation": explanation,
                     "llm_explanation_updated_at": now_iso,
-                }) \
-                .eq("id", engine_db_id) \
-                .execute()
+                }, filters=[('eq', "id", engine_db_id)])
         except Exception as e:
             print(f"[DEGRAD] Failed to cache LLM explanation: {e}")
 
@@ -1817,12 +1815,14 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             return build_top_drivers_chart(None), top_n, *styles
 
         try:
-            resp = supabase.table("rul_predictions") \
-                .select("shap_values") \
-                .eq("engine_id", engine_db_id) \
-                .order("cycle", desc=True) \
-                .limit(1) \
-                .execute()
+            resp = db.fetch_records(
+                supabase,
+                "rul_predictions",
+                "shap_values",
+                filters=[('eq', "engine_id", engine_db_id)],
+                limit=1,
+                order_by=[("cycle", True)],
+            )
             if resp.data:
                 raw_shap = resp.data[0].get("shap_values")
                 if raw_shap:

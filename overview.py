@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
@@ -813,26 +814,15 @@ def create_overview_layout(supabase, engine_db_id=None):
     try:
         if supabase and engine_db_id is not None:
             # Fetch engine row by PK
-            eng_resp = supabase.table("engines") \
-                .select("*") \
-                .eq("id", engine_db_id) \
-                .single() \
-                .execute()
+            eng_resp = db.get_engine(supabase, engine_db_id, "*")
             engine = eng_resp.data or {}
 
             # Fetch latest RUL prediction for this engine
-            pred_resp = supabase.table("rul_predictions") \
-                .select("*") \
-                .eq("engine_id", engine_db_id) \
-                .order("predicted_at", desc=True) \
-                .limit(1) \
-                .execute()
+            pred_resp = db.get_latest_prediction(supabase, engine_db_id, "*")
             pred = pred_resp.data[0] if pred_resp.data else {}
 
-            engine_id   = str(engine.get("engine_id", "01")).zfill(2)
-            status      = (engine.get("condition_status") or "healthy").lower().strip()
-            if status not in ("healthy", "warning", "critical"):
-                status = "healthy"
+            engine_id   = str(engine.get("engine_id")).zfill(2)
+            status      = (engine.get("condition_status")).lower().strip()
 
             degradation_type = engine.get("degradation_type") or None
 
@@ -943,11 +933,7 @@ def register_overview_callbacks(app, supabase=None):
         # ── Fetch engine model_type to determine window size ──
         if supabase and engine_db_id:
             try:
-                _mt_resp = supabase.table("engines") \
-                    .select("model_type") \
-                    .eq("id", engine_db_id) \
-                    .single() \
-                    .execute()
+                _mt_resp = db.get_engine(supabase, engine_db_id, "model_type")
                 if _mt_resp.data:
                     _mt = _mt_resp.data.get("model_type", "FD001")
                     _window_size = WINDOW_SIZES.get(_mt, 45)
@@ -957,11 +943,7 @@ def register_overview_callbacks(app, supabase=None):
         # ── Fetch thresholds from Supabase ──
         if supabase:
             try:
-                t_resp = supabase.table("alert_thresholds") \
-                    .select("warning_threshold, critical_threshold") \
-                    .order("updated_at", desc=True) \
-                    .limit(1) \
-                    .execute()
+                t_resp = db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
                 if t_resp.data:
                     WARN_THRESH = int(t_resp.data[0].get("warning_threshold", WARN_THRESH))
                     CRIT_THRESH = int(t_resp.data[0].get("critical_threshold", CRIT_THRESH))
@@ -979,11 +961,13 @@ def register_overview_callbacks(app, supabase=None):
                 _resp_data = None
                 for _attempt in range(3):
                     try:
-                        resp = supabase.table("rul_predictions") \
-                            .select("cycle, predicted_rul, shap_values") \
-                            .eq("engine_id", engine_db_id) \
-                            .order("cycle", desc=False) \
-                            .execute()
+                        resp = db.fetch_records(
+                            supabase,
+                            "rul_predictions",
+                            "cycle, predicted_rul, shap_values",
+                            filters=[('eq', "engine_id", engine_db_id)],
+                            order_by=[("cycle", False)],
+                        )
                         _resp_data = resp.data or []
                         break
                     except Exception as _net_err:
@@ -1069,11 +1053,7 @@ def register_overview_callbacks(app, supabase=None):
         _stored_similarity = None
         if supabase and engine_db_id:
             try:
-                _dt_resp = supabase.table("engines") \
-                    .select("degradation_type, degradation_confidence") \
-                    .eq("id", engine_db_id) \
-                    .single() \
-                    .execute()
+                _dt_resp = db.get_engine(supabase, engine_db_id, "degradation_type, degradation_confidence")
                 if _dt_resp.data:
                     _deg_type = _dt_resp.data.get("degradation_type")
                     _stored_similarity = _dt_resp.data.get("degradation_confidence")
@@ -1317,11 +1297,7 @@ def register_overview_callbacks(app, supabase=None):
                 history = get_sensor_history(engine_db_id) or []
                 # Get model_type for this engine to check if cluster normalization applies
                 if supabase:
-                    _eng_resp = supabase.table("engines") \
-                        .select("model_type") \
-                        .eq("id", engine_db_id) \
-                        .single() \
-                        .execute()
+                    _eng_resp = db.get_engine(supabase, engine_db_id, "model_type")
                     if _eng_resp.data:
                         _mt = _eng_resp.data.get("model_type", "FD001")
                         cluster_info = _CLUSTER_CACHE.get(_mt, (None, None, None))

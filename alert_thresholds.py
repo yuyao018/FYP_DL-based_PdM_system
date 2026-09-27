@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -300,11 +301,7 @@ def create_alert_thresholds_layout(supabase=None):
 
     try:
         if supabase:
-            resp = supabase.table("alert_thresholds") \
-                .select("*") \
-                .order("updated_at", desc=True) \
-                .limit(1) \
-                .execute()
+            resp = db.get_alert_thresholds(supabase, "*")
             if resp.data:
                 t = resp.data[0]
                 warn = t.get("warning_threshold", warn)
@@ -473,11 +470,7 @@ def register_alert_thresholds_callbacks(app, supabase=None):
 
         try:
             # Fetch the most recent threshold settings
-            resp = supabase.table("alert_thresholds") \
-                .select("*") \
-                .order("updated_at", desc=True) \
-                .limit(1) \
-                .execute()
+            resp = db.get_alert_thresholds(supabase, "*")
             
             # Check if current values match the previous saved values
             if resp.data:
@@ -501,7 +494,7 @@ def register_alert_thresholds_callbacks(app, supabase=None):
             if user_id:
                 threshold_data["updated_by"] = user_id
             
-            supabase.table("alert_thresholds").insert(threshold_data).execute()
+            db.insert_records(supabase, "alert_thresholds", threshold_data)
             return html.Span("Thresholds saved successfully!", style={"color": "#4aff9e", "fontSize": "13px"})
         except Exception as e:
             print(f"[ERROR] save thresholds: {e}")

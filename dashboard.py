@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html
 import dash_bootstrap_components as dbc
@@ -78,7 +79,8 @@ def logout_icon():
     return html.Img(src=f'data:image/svg+xml;base64,{svg_base64}', style={'width': '28px', 'height': '28px'})
 
 
-def create_dashboard_layout(supabase, org_id=None, role=None, username=None, first_name=None):
+def create_dashboard_layout(supabase, org_id=None, role=None, username=None, first_name=None, user_id=None):
+    default_scope = "all" if role in ("admin", "developer") else "mine"
     engine_data = []
     maintenance_alerts = []
     total_count = 0
@@ -90,30 +92,25 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
     try:
         if supabase:
             # ── Fetch alert thresholds ──
-            warn_thresh = 62
+            warn_thresh = 50
             crit_thresh = 30
-            max_life    = 125
             try:
-                t_resp = supabase.table("alert_thresholds") \
-                    .select("warning_threshold, critical_threshold, max_rul_cap") \
-                    .order("updated_at", desc=True) \
-                    .limit(1).execute()
+                t_resp = db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
-                    max_life    = int(t_resp.data[0].get("max_rul_cap", max_life))
             except Exception:
                 pass
 
             # ── Base query builder: always filter by org_id ──
             def eng_query():
-                q = supabase.table("engines").select("*", count="exact")
+                q = dict(client=supabase, table="engines", columns="*", filters=[], count="exact")
                 if org_id:
-                    q = q.eq("organization_id", org_id)
-                q = q.eq("is_deleted", True)
+                    q["filters"].append(('eq', "organization_id", org_id))
+                q["filters"].append(('eq', "is_deleted", True))
                 return q
 
-            response     = eng_query().execute()
+            response     = db.fetch_records(**eng_query())
             total_count  = response.count or 0
 
             # warning_count / critical_count are derived below from engine_data
@@ -127,13 +124,15 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                 alert_count = 0
             else:
                 try:
-                    ac_query = supabase.table("alert_logs") \
-                        .select("engine_id") \
-                        .in_("severity", ["warning", "critical"]) \
-                        .eq("status", "active")
+                    ac_query = dict(
+                        client=supabase,
+                        table="alert_logs",
+                        columns="engine_id",
+                        filters=[('in_', "severity", ["warning", "critical"]), ('eq', "status", "active")],
+                    )
                     if org_id and engine_ids:
-                        ac_query = ac_query.in_("engine_id", engine_ids)
-                    ac_resp = ac_query.execute()
+                        ac_query["filters"].append(('in_', "engine_id", engine_ids))
+                    ac_resp = db.fetch_records(**ac_query)
                     # Count distinct engines with an active alert
                     alert_count = len({r["engine_id"] for r in (ac_resp.data or []) if r.get("engine_id")})
                 except Exception:
@@ -145,11 +144,13 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                 try:
                     # Fetch all predictions for these engines ordered newest first,
                     # then keep only the first (latest) row per engine
-                    pred_resp = supabase.table("rul_predictions") \
-                        .select("engine_id, predicted_rul") \
-                        .in_("engine_id", engine_ids) \
-                        .order("predicted_at", desc=True) \
-                        .execute()
+                    pred_resp = db.fetch_records(
+                        supabase,
+                        "rul_predictions",
+                        "engine_id, predicted_rul",
+                        filters=[('in_', "engine_id", engine_ids)],
+                        order_by=[("predicted_at", True)],
+                    )
                     for row in (pred_resp.data or []):
                         eid = row.get("engine_id")
                         if eid and eid not in latest_rul_map and row.get("predicted_rul") is not None:
@@ -161,38 +162,38 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
             for engine in (response.data or []):
                 db_id = engine.get("id")
 
-                # Use predicted_rul from rul_predictions; fall back to cycle-based estimate
-                if db_id in latest_rul_map:
-                    rul = latest_rul_map[db_id]
-                else:
-                    current_cycle = engine.get("current_cycle") or 0
-                    rul = max(0.0, float(max_life - current_cycle))
+                # Use stored predictions only; missing predictions have unknown health.
+                rul = latest_rul_map.get(db_id)
 
                 # Status derived from thresholds
-                if rul <= crit_thresh:
+                if rul is None:
+                    raw_status = "unknown"
+                elif rul <= crit_thresh:
                     raw_status = "critical"
                 elif rul <= warn_thresh:
                     raw_status = "warning"
                 else:
                     raw_status = "healthy"
 
-                # Degradation: how close to 0 relative to max_life
-                degradation = max(0, min(100, round((1 - rul / max_life) * 100)))
-
                 engine_data.append({
                     "db_id":       db_id,
+                    "responsible_by": engine.get("responsible_by"),
                     "id":          str(engine.get("engine_id", "?")).zfill(2),
                     "status":      raw_status,
-                    "rul":         int(round(rul)),
+                    "rul":         int(round(rul)) if rul is not None else None,
                     "has_prediction": db_id in latest_rul_map,
                     "model_type":  engine.get("model_type", "N/A"),
                     "created_at":  (engine.get("created_at") or "")[:10],
                 })
 
-            # ── Derive summary counts from engine_data (uses fetched thresholds) ──
-            healthy_count  = sum(1 for e in engine_data if e["status"] == "healthy")
-            warning_count  = sum(1 for e in engine_data if e["status"] == "warning")
-            critical_count = sum(1 for e in engine_data if e["status"] == "critical")
+            # Summary cards follow the initial ownership scope.
+            scoped_engines = [e for e in engine_data
+                              if default_scope == "all" or
+                              (user_id and str(e.get("responsible_by")) == str(user_id))]
+            total_count = len(scoped_engines)
+            healthy_count  = sum(1 for e in scoped_engines if e["status"] == "healthy")
+            warning_count  = sum(1 for e in scoped_engines if e["status"] == "warning")
+            critical_count = sum(1 for e in scoped_engines if e["status"] == "critical")
 
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 
@@ -201,16 +202,18 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
             if org_id and not engine_ids:
                 pass
             else:
-                alert_query = supabase.table("alert_logs") \
-                    .select("engine_id, severity, triggered_at") \
-                    .in_("severity", ["warning", "critical"]) \
-                    .eq("status", "active") \
-                    .order("triggered_at", desc=True)
+                alert_query = dict(
+                    client=supabase,
+                    table="alert_logs",
+                    columns="engine_id, severity, triggered_at",
+                    filters=[('in_', "severity", ["warning", "critical"]), ('eq', "status", "active")],
+                    order_by=[("triggered_at", True)],
+                )
 
                 if org_id and engine_ids:
-                    alert_query = alert_query.in_("engine_id", engine_ids)
+                    alert_query["filters"].append(('in_', "engine_id", engine_ids))
 
-                alerts_resp = alert_query.execute()
+                alerts_resp = db.fetch_records(**alert_query)
 
                 # Deduplicate: keep one per engine, critical > warning, then latest
                 best: dict = {}  # engine_id → alert row
@@ -251,10 +254,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                 for eid, alert in best.items():
                     # Fetch engine display info
                     try:
-                        eng_resp = supabase.table("engines") \
-                            .select("id, engine_id") \
-                            .eq("id", eid) \
-                            .single().execute()
+                        eng_resp = db.get_engine(supabase, eid, "id, engine_id")
                         eng = eng_resp.data or {}
                     except Exception:
                         eng = {}
@@ -280,6 +280,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
         print(f"[ERROR] {traceback.format_exc()}")
 
     status_colors = {
+        "unknown": {"bg": "rgba(168,212,255,0.1)", "border": "#a8d4ff", "text": "#a8d4ff"},
         "healthy": {"bg": "rgba(0, 255, 100, 0.15)", "border": "#00ff64", "text": "#00ff64"},
         "warning": {"bg": "rgba(255, 217, 61, 0.15)", "border": "#ffd93d", "text": "#ffd93d"},
         "critical": {"bg": "rgba(255, 77, 77, 0.15)", "border": "#ff4d4d", "text": "#ff4d4d"},
@@ -287,7 +288,6 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
     def engine_card(engine):
         colors = status_colors[engine["status"]]
-        show_maintenance = engine["status"] in ("warning", "critical")
         return html.Div(
             style={"position": "relative"},
             children=[
@@ -371,16 +371,6 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                         "alignItems": "center",
                                     },
                                     children=[
-                                        html.Span(
-                                            "Schedule Maintenance",
-                                            style={
-                                                "visibility": "hidden",
-                                                "fontSize": "11px",
-                                                "fontWeight": "600",
-                                                "padding": "5px 10px",
-                                                "display": "inline-block",
-                                            }
-                                        ),
                                         html.Div(
                                             style={"display": "flex", "alignItems": "center", "gap": "4px"},
                                             children=[
@@ -394,28 +384,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                         )
                     ]
                 ),
-                # Schedule Maintenance — sits at same position as the spacer span above,
-                # outside dcc.Link so clicking it goes to a different page.
-                html.A(
-                    "Schedule Maintenance",
-                    href=f"/schedule-maintenance/{engine['db_id']}",
-                    style={
-                        "position": "absolute",
-                        "bottom": "16px",
-                        "left": "16px",
-                        "visibility": "visible" if show_maintenance else "hidden",
-                        "background": "rgba(74,158,255,0.12)",
-                        "border": "1px solid rgba(74,158,255,0.45)",
-                        "borderRadius": "8px",
-                        "color": "#7ab8ff",
-                        "fontSize": "11px",
-                        "fontWeight": "600",
-                        "padding": "5px 10px",
-                        "textDecoration": "none",
-                        "lineHeight": "1.4",
-                        "zIndex": "1",
-                    },
-                ),
+
             ]
         )
 
@@ -702,13 +671,17 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                         style={"display": "flex", "gap": "20px", "marginBottom": "24px", "justifyContent": "center", "flexShrink": "0"},
                         children=[
                             html.Div(style={"background": "linear-gradient(135deg, #2a354a 0%, #1a2335 100%)", "border": "1px solid rgba(255,255,255,0.2)", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
-                                     children=[html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(total_count), style={"color": "white", "fontSize": "36px", "fontWeight": "700"})]),
+                                     children=[html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "16px", "fontWeight": "600"}),
+                                     html.Span(str(total_count), id="dashboard-total-count", style={"color": "white", "fontSize": "36px", "fontWeight": "700"})]),
                             html.Div(style={"background": "linear-gradient(135deg, rgba(0,255,100,0.15) 0%, rgba(0,200,80,0.08) 100%)", "border": "1px solid rgb(0,255,100,0.5)", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
-                                     children=[html.Span("HEALTHY", style={"color": "#00ff64", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(healthy_count), style={"color": "#00ff64", "fontSize": "36px", "fontWeight": "700"})]),
+                                     children=[html.Span("HEALTHY", style={"color": "#00ff64", "fontSize": "16px", "fontWeight": "600"}),
+                                     html.Span(str(healthy_count), id="dashboard-healthy-count", style={"color": "#00ff64", "fontSize": "36px", "fontWeight": "700"})]),
                             html.Div(style={"background": "linear-gradient(135deg, rgba(255,217,61,0.15) 0%, rgba(255,174,0,0.08) 100%)", "border": "1px solid rgb(255,217,61,0.5)", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
-                                     children=[html.Span("DEGRADING", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(warning_count), style={"color": "#ffd93d", "fontSize": "36px", "fontWeight": "700"})]),
+                                     children=[html.Span("DEGRADING", style={"color": "#ffd93d", "fontSize": "16px", "fontWeight": "600"}),
+                                     html.Span(str(warning_count), id="dashboard-warning-count", style={"color": "#ffd93d", "fontSize": "36px", "fontWeight": "700"})]),
                             html.Div(style={"background": "linear-gradient(135deg, rgba(255,77,77,0.15) 0%, rgba(255,0,0,0.08) 100%)", "border": "1px solid rgb(255,77,77,0.5)", "borderRadius": "12px", "padding": "16px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "minWidth": "250px", "justifyContent": "space-between"},
-                                     children=[html.Span("CRITICAL", style={"color": "#ff4d4d", "fontSize": "16px", "fontWeight": "600"}), html.Span(str(critical_count), style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"})]),
+                                     children=[html.Span("CRITICAL", style={"color": "#ff4d4d", "fontSize": "16px", "fontWeight": "600"}),
+                                     html.Span(str(critical_count), id="dashboard-critical-count", style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"})]),
                         ]
                     ),
                     html.Div(
@@ -724,22 +697,18 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                             html.Div(
                                                 style={"display": "flex", "gap": "8px"},
                                                 children=[
-                                                    html.Button("All",      id="filter-all",      n_clicks=1,
-                                                                style={"background": "#007bff", "border": "none", "color": "white",
-                                                                    "padding": "6px 14px", "borderRadius": "20px", "fontSize": "12px",
-                                                                    "fontWeight": "700", "cursor": "pointer"}),
-                                                    html.Button("Healthy",  id="filter-healthy",  n_clicks=0,
-                                                                style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
-                                                                    "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
-                                                                    "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
-                                                    html.Button("Degrading",id="filter-degrading",n_clicks=0,
-                                                                style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
-                                                                    "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
-                                                                    "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
-                                                    html.Button("Critical", id="filter-critical", n_clicks=0,
-                                                                style={"background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
-                                                                    "color": "#a8d4ff", "padding": "6px 14px", "borderRadius": "20px",
-                                                                    "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"}),
+                                                    dcc.Dropdown(id="engine-scope-filter",
+                                                        options=[{"label": "My engines", "value": "mine"},
+                                                                 {"label": "All engines", "value": "all"}],
+                                                        value=default_scope, searchable=False, clearable=False,
+                                                        style={"width": "180px"}),
+                                                    dcc.Dropdown(id="engine-status-filter",
+                                                        options=[{"label": "All statuses", "value": "all"},
+                                                                 {"label": "Healthy", "value": "healthy"},
+                                                                 {"label": "Degrading", "value": "warning"},
+                                                                 {"label": "Critical", "value": "critical"}],
+                                                        value="all", searchable=False, clearable=False,
+                                                        style={"width": "180px"}),
                                                 ]
                                             ),
                                         ]
@@ -755,8 +724,9 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                             "minHeight": "0",
                                             "paddingRight": "4px",
                                         },
-                                        children=[engine_card(engine) for engine in engine_data] if engine_data else [
-                                            html.Div("No data.", style={"color": "rgba(255,255,255,0.7)", "fontSize": "16px", "textAlign": "center", "padding": "40px 0", "gridColumn": "1 / -1"})
+                                        children=[engine_card(engine) for engine in engine_data
+                                                  if default_scope == "all" or (user_id and str(engine.get("responsible_by")) == str(user_id))] or [
+                                            html.Div("No engines match this filter.", style={"color": "rgba(255,255,255,0.7)", "fontSize": "16px", "textAlign": "center", "padding": "40px 0", "gridColumn": "1 / -1"})
                                         ]
                                     )
                                 ]

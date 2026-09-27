@@ -1,0 +1,41 @@
+/* Dash 4 renders the selector as a button and portals its menu into the wrapper. */
+:is(#engine-scope-filter, #engine-status-filter) {
+    width:100%; min-height:38px; padding:0;
+    background:#173451; color:#e7f2ff;
+    border:1px solid #426a94; border-radius:8px;
+    font:500 13px 'Segoe UI',sans-serif; text-align:left;
+    box-shadow:none; cursor:pointer;
+}
+:is(#engine-scope-filter, #engine-status-filter):hover { background:#1d4063; }
+:is(#engine-scope-filter, #engine-status-filter):focus-visible {
+    outline:2px solid #75b8ff; outline-offset:2px;
+}
+:is(#engine-scope-filter, #engine-status-filter) .dash-dropdown-trigger {
+    background:transparent; border:0; box-shadow:none;
+    padding:9px 12px; min-height:0;
+}
+:is(#engine-scope-filter, #engine-status-filter) .dash-dropdown-value,
+:is(#engine-scope-filter, #engine-status-filter) .dash-dropdown-trigger-icon { color:#e7f2ff; }
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-content {
+    background:#10243e !important; color:#e7f2ff;
+    border:1px solid #426a94; border-radius:8px; padding:4px;
+    box-shadow:0 10px 24px #0005; overflow:hidden;
+}
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-options,
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-options-list-virtualized {
+    background:#10243e !important;
+}
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-option {
+    background:#10243e !important; color:#d2e3f5 !important;
+    border:0 !important; border-radius:5px; font-weight:500 !important;
+}
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-option:hover,
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-option:focus-within {
+    background:#1d4063 !important; color:white !important;
+}
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-option.selected,
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-option[aria-selected="true"],
+.dash-dropdown-wrapper:has(:is(#engine-scope-filter, #engine-status-filter)) .dash-dropdown-option:has(input:checked) {
+    background:#244e77 !important; color:#b9ddff !important;
+    font-weight:600 !important;
+}

@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -601,11 +602,13 @@ def _fetch_history_for_type(supabase, model_type):
     history = []
     try:
         # ── Step 1: fetch model versions ──
-        resp = supabase.table("model_versions") \
-            .select("id, filename, uploaded_at, uploaded_by, status, model_type") \
-            .eq("model_type", model_type) \
-            .order("uploaded_at", desc=True) \
-            .execute()
+        resp = db.fetch_records(
+            supabase,
+            "model_versions",
+            "id, filename, uploaded_at, uploaded_by, status, model_type",
+            filters=[('eq', "model_type", model_type)],
+            order_by=[("uploaded_at", True)],
+        )
 
         rows = resp.data or []
         if not rows:
@@ -615,10 +618,7 @@ def _fetch_history_for_type(supabase, model_type):
         uuids = list({r["uploaded_by"] for r in rows if r.get("uploaded_by")})
         username_map = {}
         if uuids:
-            u_resp = supabase.table("users") \
-                .select("id, username") \
-                .in_("id", uuids) \
-                .execute()
+            u_resp = db.fetch_records(supabase, "users", "id, username", filters=[('in_', "id", uuids)])
             for u in (u_resp.data or []):
                 username_map[u["id"]] = u.get("username", "—")
 
@@ -792,20 +792,21 @@ def register_model_upload_callbacks(app, supabase=None):
             file_bytes = base64.b64decode(b64data)
 
             # ── Mark previous active model for this type as archived ──
-            supabase.table("model_versions") \
-                .update({"status": "archived"}) \
-                .eq("status", "active") \
-                .eq("model_type", selected_type) \
-                .execute()
+            db.update_records(
+                supabase,
+                "model_versions",
+                {"status": "archived"},
+                filters=[('eq', "status", "active"), ('eq', "model_type", selected_type)],
+            )
 
             # ── Insert new model version as active ──
-            insert_resp = supabase.table("model_versions").insert({
+            insert_resp = db.insert_records(supabase, "model_versions", {
                 "uploaded_by": user_id,
                 "filename": staged_file["filename"],
                 "version_notes": notes or None,
                 "status": "active",
                 "model_type": selected_type,
-            }).execute()
+            })
 
             # Get the new version's UUID
             version_id = insert_resp.data[0]["id"] if insert_resp.data else None
@@ -821,10 +822,12 @@ def register_model_upload_callbacks(app, supabase=None):
 
             # Update the DB row with the actual stored filename
             if version_id:
-                supabase.table("model_versions") \
-                    .update({"filename": save_filename}) \
-                    .eq("id", version_id) \
-                    .execute()
+                db.update_records(
+                    supabase,
+                    "model_versions",
+                    {"filename": save_filename},
+                    filters=[('eq', "id", version_id)],
+                )
 
             # ── Re-fetch active model + history for this type ──
             active_model, history = _fetch_history_for_type(supabase, selected_type)
@@ -892,17 +895,20 @@ def register_model_upload_callbacks(app, supabase=None):
 
         try:
             # Archive current active model for this type
-            supabase.table("model_versions") \
-                .update({"status": "archived"}) \
-                .eq("status", "active") \
-                .eq("model_type", selected_type) \
-                .execute()
+            db.update_records(
+                supabase,
+                "model_versions",
+                {"status": "archived"},
+                filters=[('eq', "status", "active"), ('eq', "model_type", selected_type)],
+            )
 
             # Set the selected version as active
-            supabase.table("model_versions") \
-                .update({"status": "active"}) \
-                .eq("id", version_id) \
-                .execute()
+            db.update_records(
+                supabase,
+                "model_versions",
+                {"status": "active"},
+                filters=[('eq', "id", version_id)],
+            )
 
             # Reload model in running simulations
             try:
@@ -925,11 +931,13 @@ def register_model_upload_callbacks(app, supabase=None):
             ]
 
             # Get the restored filename for the toast
-            _restored_resp = supabase.table("model_versions") \
-                .select("filename") \
-                .eq("id", version_id) \
-                .single() \
-                .execute()
+            _restored_resp = db.fetch_records(
+                supabase,
+                "model_versions",
+                "filename",
+                filters=[('eq', "id", version_id)],
+                single=True,
+            )
             _restored_filename = _restored_resp.data.get("filename", "Model") if _restored_resp.data else "Model"
 
             return (

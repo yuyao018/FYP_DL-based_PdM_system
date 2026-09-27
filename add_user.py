@@ -1,3 +1,4 @@
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -513,11 +514,13 @@ def create_add_user_layout(supabase=None, edit_user_id=None):
     edit_user = None
     if supabase and edit_user_id:
         try:
-            resp = supabase.table("users") \
-                .select("id, username, first_name, last_name, email_address, department, role") \
-                .eq("id", edit_user_id) \
-                .single() \
-                .execute()
+            resp = db.fetch_records(
+                supabase,
+                "users",
+                "id, username, first_name, last_name, email_address, department, role",
+                filters=[('eq', "id", edit_user_id)],
+                single=True,
+            )
             if resp.data:
                 edit_user = resp.data
         except Exception:
@@ -653,7 +656,7 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                     except Exception:
                         pass
 
-                supabase.table("users").update(update_data).eq("id", edit_user_id).execute()
+                db.update_records(supabase, "users", update_data, filters=[('eq', "id", edit_user_id)])
 
                 return (
                     "",
@@ -687,7 +690,7 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                 if admin_org_id:
                     user_data["organization_id"] = admin_org_id
 
-                supabase.table("users").insert(user_data).execute()
+                db.insert_records(supabase, "users", user_data)
 
                 return (
                     "",

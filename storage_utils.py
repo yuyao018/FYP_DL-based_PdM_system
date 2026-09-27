@@ -9,6 +9,7 @@ Buckets:
   - "engine-data" → engine JSON files, path: <model_type>/<filename>.json
                     or orgs/<org_folder>/<filename>.json
 """
+from assets import database_integration as db
 
 import os
 import tempfile
@@ -65,7 +66,7 @@ def download_model_file(model_type: str, filename: str, local_dir: str = None) -
             return None
 
         storage_path = f"{model_type}/{filename}"
-        data = sb.storage.from_(MODELS_BUCKET).download(storage_path)
+        data = db.download_file(sb, MODELS_BUCKET, storage_path)
         
         with open(cache_path, "wb") as f:
             f.write(data)
@@ -99,7 +100,7 @@ def download_engine_json(storage_path: str, local_fallback: str = None) -> str |
         if not sb:
             return None
 
-        data = sb.storage.from_(ENGINE_DATA_BUCKET).download(storage_path)
+        data = db.download_file(sb, ENGINE_DATA_BUCKET, storage_path)
         
         with open(cache_path, "wb") as f:
             f.write(data)
@@ -131,7 +132,7 @@ def list_model_files(model_type: str) -> list[str]:
         try:
             sb = _get_supabase_admin()
             if sb:
-                result = sb.storage.from_(MODELS_BUCKET).list(model_type)
+                result = db.list_files(sb, MODELS_BUCKET, model_type)
                 for item in result:
                     name = item.get("name", "")
                     if name.endswith(".h5"):

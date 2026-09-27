@@ -3,6 +3,7 @@ Developer - New Organization Page
 Form to create a new organization. An admin account is automatically
 created for the organization upon successful creation.
 """
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import base64
@@ -215,9 +216,9 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
 
         try:
             # ── Step 1: Create the organization ──
-            org_resp = supabase.table("organizations").insert({
+            org_resp = db.insert_records(supabase, "organizations", {
                 "name": org_name.strip(),
-            }).execute()
+            })
 
             if not org_resp.data:
                 return html.Span("Failed to create organization.",
@@ -240,7 +241,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
 
                 # Insert profile into users table
                 hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                supabase.table("users").insert({
+                db.insert_records(supabase, "users", {
                     "id": user_id,
                     "username": username.strip(),
                     "first_name": first_name.strip(),
@@ -251,7 +252,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
                     "organization_id": new_org_id,
                     "password_hash": hashed_pw,
                     "created_at": "now()",
-                }).execute()
+                })
 
             except Exception as user_err:
                 print(f"[ERROR] Admin user creation: {user_err}")
