@@ -520,7 +520,7 @@ def build_dev_sidebar(active_page="dashboard"):
         ]
     )
 
-def build_topbar():
+def build_topbar(show_sidebar_toggle=True):
     return html.Div(
         style={
             "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
@@ -529,8 +529,7 @@ def build_topbar():
             "height": "60px",
             "display": "flex",
             "alignItems": "center",
-            "justifyContent": "flex-start",
-            "gap": "16px",
+            "justifyContent": "space-between",
             "flexShrink": "0",
         },
         children=[
@@ -544,14 +543,10 @@ def build_topbar():
                     "letterSpacing": "1.2px",
                 }
             ),
-            html.Button(
+            html.Div(
                 id="sidebar-toggle",
                 n_clicks=0,
-                title="Toggle sidebar",
-                **{"aria-label": "Toggle sidebar"},
-                style={"cursor": "pointer", "marginLeft": "auto", "flexShrink": "0",
-                       "display": "flex", "alignItems": "center", "padding": "6px",
-                       "background": "transparent", "border": "none", "borderRadius": "6px"},
+                style={"cursor": "pointer", "display": "block" if show_sidebar_toggle else "none"},
                 children=[icon_sidebar()]
             ),
         ]

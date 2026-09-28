@@ -1,32 +1,12 @@
-"""
-schedule_maintenance.py
-────────────────────────
-Schedule Maintenance page.
-
-Layout
-──────
-  • Sidebar + topbar (consistent with the rest of the app)
-  • Header row: "Maintenance Schedule" title  |  "New +" button  (space-between)
-  • Weekly calendar table: columns = time slots, rows = days (Mon–Sun)
-    - Each cell can hold one or more scheduled maintenance events
-  • Modal (centre-screen overlay): engine dropdown, date, start/end time, notes
-    - Cancel / Schedule buttons aligned to the right
-  • On submit the calendar updates to show the event in the correct day/time cell
-"""
-from assets import database_integration as db
-
+from assets.schedule_modal import build_schedule_modal, get_responsible_user
 import dash
-from scheduling_agent import build_scheduling_agent, register_scheduling_agent
 from dash import dcc, html, Input, Output, State, callback_context, ALL
 import dash_bootstrap_components as dbc
 from datetime import date, datetime, timedelta
 from assets.components import build_topbar
 import json as _json
 
-# ─────────────────────────────────────────────
 #  CONSTANTS
-# ─────────────────────────────────────────────
-
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
 # Working hours only: 08:00 – 19:00
@@ -56,14 +36,8 @@ _STATUS_COLORS = {
     "healthy":  "#00c875",
 }
 
-# ─────────────────────────────────────────────
 #  CALENDAR BUILDER
-# ─────────────────────────────────────────────
-
 def _build_calendar(events: list[dict], offset: int = 0) -> html.Div:
-    """
-    Build a weekly calendar table.
-    """
     week_dates = _week_dates(offset)
     today = date.today()
 
@@ -312,214 +286,6 @@ def _hex_to_rgb(hex_color: str) -> str:
 #  MODAL
 # ─────────────────────────────────────────────
 
-def _build_modal(engine_options: list[dict]) -> html.Div:
-    """
-    Centre-screen modal overlay for creating a new maintenance event.
-    Hidden by default (display: none on the outer wrapper).
-    """
-    input_style = {
-        "width": "100%",
-        "background": "rgba(13,32,69,0.9)",
-        "border": "1px solid rgba(74,158,255,0.25)",
-        "borderRadius": "8px",
-        "color": "white",
-        "padding": "10px 14px",
-        "fontSize": "13px",
-        "outline": "none",
-        "boxSizing": "border-box",
-        "fontFamily": "'Segoe UI', sans-serif",
-    }
-    label_style = {
-        "color": "rgba(168,212,255,0.8)",
-        "fontSize": "11px",
-        "fontWeight": "600",
-        "marginBottom": "5px",
-        "letterSpacing": "0.5px",
-        "display": "block",
-    }
-
-    return html.Div(
-        id="sm-modal-overlay",
-        style={
-            "display": "none",
-            "position": "fixed",
-            "top": "0", "left": "0",
-            "width": "100vw", "height": "100vh",
-            "background": "rgba(5,12,28,0.75)",
-            "zIndex": "1000",
-            "alignItems": "center",
-            "justifyContent": "center",
-        },
-        children=[
-            html.Div(
-                style={
-                    "background": "linear-gradient(135deg, #0d1e3a 0%, #071530 100%)",
-                    "border": "1px solid rgba(74,158,255,0.25)",
-                    "borderRadius": "16px",
-                    "padding": "16px 32px 28px",
-                    "width": "480px",
-                    "maxWidth": "92vw",
-                    "boxShadow": "0 20px 60px rgba(0,0,0,0.6)",
-                },
-                children=[
-                    # Modal title
-                    html.Div(
-                        style={
-                            "display": "flex",
-                            "alignItems": "center",
-                            "justifyContent": "space-between",
-                            "marginBottom": "22px",
-                        },
-                        children=[
-                            html.H3(
-                                "New Maintenance Event",
-                                style={
-                                    "margin": "0",
-                                    "color": "white",
-                                    "fontSize": "16px",
-                                    "fontWeight": "700",
-                                }
-                            ),
-                            # Close × button
-                            html.Span(
-                                "×",
-                                id="sm-modal-close",
-                                n_clicks=0,
-                                style={
-                                    "color": "rgba(168,212,255,0.5)",
-                                    "fontSize": "22px",
-                                    "cursor": "pointer",
-                                    "lineHeight": "1",
-                                    "padding": "0 4px",
-                                }
-                            ),
-                        ]
-                    ),
-
-                    # Engine selection
-                    html.Div(style={"marginBottom": "16px"}, children=[
-                        html.Label("ENGINE", style=label_style),
-                        dcc.Dropdown(
-                            id="sm-modal-engine",
-                            options=engine_options,
-                            placeholder="Select engine…",
-                            clearable=False,
-                            className="dark-dropdown",
-                            style={
-                                "fontSize": "13px",
-                                "background": "rgba(13,32,69,0.9)",
-                                "border": "1px solid rgba(74,158,255,0.25)",
-                                "borderRadius": "8px",
-                            },
-                        ),
-                    ]),
-
-                    # Date
-                    html.Div(style={"marginBottom": "16px"}, children=[
-                        html.Label("DATE", style=label_style),
-                        dcc.Input(
-                            id="sm-modal-date",
-                            type="date",
-                            min=date.today().isoformat(),
-                            style={
-                                **input_style,
-                                "colorScheme": "dark",
-                            },
-                        ),
-                    ]),
-
-                    # Start time / End time row
-                    html.Div(
-                        style={"display": "flex", "gap": "14px", "marginBottom": "16px"},
-                        children=[
-                            html.Div(style={"flex": "1"}, children=[
-                                html.Label("START TIME", style=label_style),
-                                dcc.Input(
-                                    id="sm-modal-start-time",
-                                    type="time",
-                                    value="09:00",
-                                    style=input_style,
-                                ),
-                            ]),
-                            html.Div(style={"flex": "1"}, children=[
-                                html.Label("END TIME", style=label_style),
-                                dcc.Input(
-                                    id="sm-modal-end-time",
-                                    type="time",
-                                    value="11:00",
-                                    style=input_style,
-                                ),
-                            ]),
-                        ]
-                    ),
-
-                    # Notes
-                    html.Div(style={"marginBottom": "24px"}, children=[
-                        html.Label("NOTES", style=label_style),
-                        dcc.Textarea(
-                            id="sm-modal-notes",
-                            placeholder="Optional notes or instructions…",
-                            style={
-                                **input_style,
-                                "height": "80px",
-                                "resize": "vertical",
-                            },
-                        ),
-                    ]),
-
-                    # Validation message
-                    html.Div(id="sm-modal-validation", style={"marginBottom": "10px", "minHeight": "18px"}),
-
-                    # Cancel / Schedule buttons — right-aligned
-                    html.Div(
-                        style={
-                            "display": "flex",
-                            "justifyContent": "flex-end",
-                            "gap": "10px",
-                        },
-                        children=[
-                            html.Button(
-                                "Cancel",
-                                id="sm-modal-cancel",
-                                n_clicks=0,
-                                style={
-                                    "background": "rgba(74,158,255,0.06)",
-                                    "border": "1px solid rgba(74,158,255,0.25)",
-                                    "borderRadius": "8px",
-                                    "color": "rgba(168,212,255,0.7)",
-                                    "fontSize": "13px",
-                                    "fontWeight": "600",
-                                    "padding": "9px 20px",
-                                    "cursor": "pointer",
-                                }
-                            ),
-                            html.Button(
-                                "Schedule",
-                                id="sm-modal-schedule",
-                                n_clicks=0,
-                                style={
-                                    "background": "rgba(74,158,255,0.18)",
-                                    "border": "1px solid rgba(74,158,255,0.55)",
-                                    "borderRadius": "8px",
-                                    "color": "#7ab8ff",
-                                    "fontSize": "13px",
-                                    "fontWeight": "700",
-                                    "padding": "9px 22px",
-                                    "cursor": "pointer",
-                                }
-                            ),
-                        ]
-                    ),
-                ]
-            )
-        ]
-    )
-
-
-# ─────────────────────────────────────────────
-#  WEEK NAVIGATION BAR
-# ─────────────────────────────────────────────
-
 def _build_week_nav(offset: int = 0) -> html.Div:
     """Today button, prev/next arrows, week range label."""
     label = _week_label(offset)
@@ -602,200 +368,23 @@ def _build_week_nav(offset: int = 0) -> html.Div:
 #  EDIT / DELETE MODAL
 # ─────────────────────────────────────────────
 
-def _build_edit_modal(engine_options: list[dict]) -> html.Div:
-    """Modal for viewing, editing, or deleting an existing scheduled event."""
-    input_style = {
-        "width": "100%",
-        "background": "rgba(13,32,69,0.9)",
-        "border": "1px solid rgba(74,158,255,0.25)",
-        "borderRadius": "8px",
-        "color": "white",
-        "padding": "10px 14px",
-        "fontSize": "13px",
-        "outline": "none",
-        "boxSizing": "border-box",
-        "fontFamily": "'Segoe UI', sans-serif",
-    }
-    label_style = {
-        "color": "rgba(168,212,255,0.8)",
-        "fontSize": "11px",
-        "fontWeight": "600",
-        "marginBottom": "5px",
-        "letterSpacing": "0.5px",
-        "display": "block",
-    }
-
-    return html.Div(
-        id="sm-edit-modal-overlay",
-        style={
-            "display": "none",
-            "position": "fixed",
-            "top": "0", "left": "0",
-            "width": "100vw", "height": "100vh",
-            "background": "rgba(5,12,28,0.75)",
-            "zIndex": "1000",
-            "alignItems": "center",
-            "justifyContent": "center",
-        },
-        children=[
-            html.Div(
-                style={
-                    "background": "linear-gradient(135deg, #0d1e3a 0%, #071530 100%)",
-                    "border": "1px solid rgba(74,158,255,0.25)",
-                    "borderRadius": "16px",
-                    "padding": "28px 32px",
-                    "width": "480px",
-                    "maxWidth": "92vw",
-                    "boxShadow": "0 20px 60px rgba(0,0,0,0.6)",
-                },
-                children=[
-                    # Title row
-                    html.Div(
-                        style={"display": "flex", "alignItems": "center",
-                               "justifyContent": "space-between", "marginBottom": "22px"},
-                        children=[
-                            html.H3("Edit Maintenance Event",
-                                    style={"margin": "0", "color": "white",
-                                           "fontSize": "16px", "fontWeight": "700"}),
-                            html.Span("×", id="sm-edit-modal-close", n_clicks=0,
-                                      style={"color": "rgba(168,212,255,0.5)", "fontSize": "22px",
-                                             "cursor": "pointer", "lineHeight": "1", "padding": "0 4px"}),
-                        ]
-                    ),
-
-                    # Engine (read-only display)
-                    html.Div(style={"marginBottom": "16px"}, children=[
-                        html.Label("ENGINE", style=label_style),
-                        dcc.Dropdown(
-                            id="sm-edit-engine",
-                            options=engine_options,
-                            clearable=False,
-                            className="dark-dropdown",
-                            style={"fontSize": "13px", "background": "rgba(13,32,69,0.9)",
-                                   "border": "1px solid rgba(74,158,255,0.25)", "borderRadius": "8px"},
-                        ),
-                    ]),
-
-                    # Date
-                    html.Div(style={"marginBottom": "16px"}, children=[
-                        html.Label("DATE", style=label_style),
-                        dcc.Input(id="sm-edit-date", type="date",
-                                  min=date.today().isoformat(),
-                                  style={**input_style, "colorScheme": "dark"}),
-                    ]),
-
-                    # Start / End time
-                    html.Div(
-                        style={"display": "flex", "gap": "14px", "marginBottom": "16px"},
-                        children=[
-                            html.Div(style={"flex": "1"}, children=[
-                                html.Label("START TIME", style=label_style),
-                                dcc.Input(id="sm-edit-start-time", type="time",
-                                          style={**input_style, "colorScheme": "dark"}),
-                            ]),
-                            html.Div(style={"flex": "1"}, children=[
-                                html.Label("END TIME", style=label_style),
-                                dcc.Input(id="sm-edit-end-time", type="time",
-                                          style={**input_style, "colorScheme": "dark"}),
-                            ]),
-                        ]
-                    ),
-
-                    # Notes
-                    html.Div(style={"marginBottom": "24px"}, children=[
-                        html.Label("NOTES", style=label_style),
-                        dcc.Textarea(id="sm-edit-notes",
-                                     style={**input_style, "height": "80px", "resize": "vertical"}),
-                    ]),
-
-                    html.Div(id="sm-edit-modal-validation",
-                             style={"marginBottom": "10px", "minHeight": "18px"}),
-
-                    # Delete | Cancel + Save row
-                    html.Div(
-                        style={"display": "flex", "justifyContent": "space-between",
-                               "alignItems": "center"},
-                        children=[
-                            # Delete on the left
-                            html.Button(
-                                "Delete",
-                                id="sm-edit-delete-btn",
-                                n_clicks=0,
-                                style={
-                                    "background": "rgba(255,77,77,0.1)",
-                                    "border": "1px solid rgba(255,77,77,0.4)",
-                                    "borderRadius": "8px",
-                                    "color": "#ff6b6b",
-                                    "fontSize": "13px", "fontWeight": "600",
-                                    "padding": "9px 20px", "cursor": "pointer",
-                                }
-                            ),
-                            # Cancel + Save on the right
-                            html.Div(
-                                style={"display": "flex", "gap": "10px"},
-                                children=[
-                                    html.Button(
-                                        "Cancel",
-                                        id="sm-edit-cancel-btn",
-                                        n_clicks=0,
-                                        style={
-                                            "background": "rgba(74,158,255,0.06)",
-                                            "border": "1px solid rgba(74,158,255,0.25)",
-                                            "borderRadius": "8px",
-                                            "color": "rgba(168,212,255,0.7)",
-                                            "fontSize": "13px", "fontWeight": "600",
-                                            "padding": "9px 20px", "cursor": "pointer",
-                                        }
-                                    ),
-                                    html.Button(
-                                        "Save",
-                                        id="sm-edit-save-btn",
-                                        n_clicks=0,
-                                        style={
-                                            "background": "rgba(74,158,255,0.18)",
-                                            "border": "1px solid rgba(74,158,255,0.55)",
-                                            "borderRadius": "8px",
-                                            "color": "#7ab8ff",
-                                            "fontSize": "13px", "fontWeight": "700",
-                                            "padding": "9px 22px", "cursor": "pointer",
-                                        }
-                                    ),
-                                ]
-                            ),
-                        ]
-                    ),
-                ]
-            )
-        ]
-    )
-
-
-# ─────────────────────────────────────────────
-#  PAGE LAYOUT
-# ─────────────────────────────────────────────
-
 def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                                        org_id: str = None, role: str = None,
                                        user_id: str = None):
     """Build the Schedule Maintenance page."""
 
     # ── Fetch engines for dropdown, scoped by role ─────────────────────────
-    # admin → engines in their organization
-    # user → only engines assigned to them
+    # admin → all engines across all orgs
+    # user  → only engines in their organisation
     engine_options = []
     engine_label_map = {}
     if supabase:
         try:
-            q = dict(
-                client=supabase,
-                table="engines",
-                columns="id, engine_id, model_type",
-                filters=[('eq', "is_deleted", True)],
-            )
-            q["filters"].append(('eq', "organization_id", org_id or "00000000-0000-0000-0000-000000000000"))
-            if role != "admin":
-                q["filters"].append(('eq', "responsible_by", user_id or "00000000-0000-0000-0000-000000000000"))
-            eng_resp = db.fetch_records(**q)
+            q = supabase.table("engines").select("id, engine_id, model_type") \
+                .eq("is_deleted", True)
+            if role != "admin" and org_id:
+                q = q.eq("organization_id", org_id)
+            eng_resp = q.execute()
             for row in (eng_resp.data or []):
                 label = f"ENGINE-{str(row.get('engine_id', '?')).zfill(2)} ({row.get('model_type', '')})"
                 eid = str(row["id"])
@@ -811,13 +400,9 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 
     if supabase:
         try:
-            q = dict(
-                client=supabase,
-                table="maintenance_schedules",
-                columns="id, engine_id, scheduled_date, start_time, end_time, notes, status, created_by",
-                filters=[],
-                order_by=[("scheduled_date", False)],
-            )
+            q = supabase.table("maintenance_schedules") \
+                .select("id, engine_id, scheduled_date, start_time, end_time, status, created_by") \
+                .order("scheduled_date", desc=False)
 
             print(f"[SM] Loading schedules: role={role}, org_id={org_id}, user_id={user_id}")
 
@@ -825,12 +410,11 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 # Admin sees all schedules for any engine in their org
                 if org_id:
                     try:
-                        e_resp = db.fetch_records(
-                            supabase,
-                            "engines",
-                            "id",
-                            filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", True)],
-                        )
+                        e_resp = supabase.table("engines") \
+                            .select("id") \
+                            .eq("organization_id", org_id) \
+                            .eq("is_deleted", True) \
+                            .execute()
                         org_engine_ids = [str(r["id"]) for r in (e_resp.data or [])]
                         print(f"[SM] Admin org engine IDs: {org_engine_ids}")
                     except Exception as e:
@@ -838,23 +422,22 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                         print(f"[SM] Failed to fetch org engines: {e}")
 
                     if org_engine_ids:
-                        q["filters"].append(('in_', "engine_id", org_engine_ids))
+                        q = q.in_("engine_id", org_engine_ids)
                     else:
                         print(f"[SM] No engines found for org_id={org_id}, showing all schedules")
                         # org has no engines — nothing to show
-                        q["filters"].append(('eq', "id", "00000000-0000-0000-0000-000000000000"))
+                        q = q.eq("id", "00000000-0000-0000-0000-000000000000")
                 else:
                     # No org_id for admin — show everything (super-admin)
                     print("[SM] Admin with no org_id — showing all schedules")
             else:
-                # Scope by current engine responsibility, not historical booking creator.
-                allowed_ids = list(engine_label_map)
-                if allowed_ids:
-                    q["filters"].append(('in_', "engine_id", allowed_ids))
+                # Regular users only see their own schedules
+                if user_id:
+                    q = q.eq("created_by", user_id)
                 else:
-                    q["filters"].append(('eq', "id", "00000000-0000-0000-0000-000000000000"))
+                    q = q.eq("created_by", "00000000-0000-0000-0000-000000000000")
 
-            sched_resp = db.fetch_records(**q)
+            sched_resp = q.execute()
 
             # ── For admin: batch-fetch usernames for all created_by IDs ──────
             user_name_map: dict[str, str] = {}  # user_id → display name
@@ -865,12 +448,10 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 })
                 if created_by_ids:
                     try:
-                        u_resp = db.fetch_records(
-                            supabase,
-                            "users",
-                            "id, username, first_name, last_name",
-                            filters=[('in_', "id", created_by_ids)],
-                        )
+                        u_resp = supabase.table("users") \
+                            .select("id, username, first_name, last_name") \
+                            .in_("id", created_by_ids) \
+                            .execute()
                         for u in (u_resp.data or []):
                             uid = str(u["id"])
                             first = u.get("first_name") or ""
@@ -936,7 +517,6 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                     "label":            engine_label,
                     "engine_id":        eid,
                     "status":           row.get("status", "scheduled"),
-                    "notes":            row.get("notes", ""),
                     "db_id":            str(row.get("id", "")),
                     "created_by_name":  cb_name,
                     "user_color":       cb_color,
@@ -945,9 +525,9 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
             print(f"[SM] Could not load existing schedules: {e}")
 
     # Pre-select the engine if navigated from a specific engine card
-    default_engine = str(engine_db_id) if str(engine_db_id) in engine_label_map else None
+    default_engine = engine_db_id if engine_db_id else None
 
-    topbar = build_topbar()
+    topbar = build_topbar(show_sidebar_toggle=False)
 
     return html.Div(
         style={
@@ -967,6 +547,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
             dcc.Store(id="sm-preselect-engine",     data=default_engine),
             dcc.Store(id="sm-selected-event-store", data=None),
             dcc.Store(id="sm-week-offset-store",    data=0),
+            dcc.Store(id="sm-role-store",           data=role or "user"),
 
             topbar,
 
@@ -1053,11 +634,36 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
             ),
 
             # ── Modal (fixed overlay) ─────────────────────────────────────
-            _build_modal(engine_options),
-            build_scheduling_agent(engine_options, default_engine),
+            build_schedule_modal(
+                engine_options, namespace="sm-new", show_engine=True, show_context=False,
+                id_map={
+                    "al-sched-modal-overlay": "sm-modal-overlay",
+                    "al-sched-modal-close": "sm-modal-close",
+                    "al-sched-engine": "sm-modal-engine",
+                    "al-sched-date": "sm-modal-date",
+                    "al-sched-start": "sm-modal-start-time",
+                    "al-sched-end": "sm-modal-end-time",
+                    "al-sched-modal-msg": "sm-modal-validation",
+                    "al-sched-modal-cancel": "sm-modal-cancel",
+                    "al-sched-modal-confirm": "sm-modal-schedule",
+                },
+            ),
 
             # ── Edit/Delete modal ─────────────────────────────────────────
-            _build_edit_modal(engine_options),
+            build_schedule_modal(
+                engine_options, namespace="sm-edit", show_engine=True, show_context=False,
+                edit=True,
+                id_map={
+                    "al-sched-engine": "sm-edit-engine",
+                    "al-sched-date": "sm-edit-date",
+                    "al-sched-start": "sm-edit-start-time",
+                    "al-sched-end": "sm-edit-end-time",
+                    "al-sched-modal-msg": "sm-edit-modal-validation",
+                    "al-sched-modal-cancel": "sm-edit-cancel-btn",
+                    "al-sched-modal-confirm": "sm-edit-save-btn",
+                    "al-sched-modal-delete": "sm-edit-delete-btn",
+                },
+            ),
         ]
     )
 
@@ -1067,19 +673,20 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 # ─────────────────────────────────────────────
 
 def register_schedule_maintenance_callbacks(app, supabase=None):
-    register_scheduling_agent(app, supabase)
 
     # ── Open modal ────────────────────────────────────────────────────────
     @app.callback(
-        Output("sm-modal-overlay",  "style"),
-        Output("sm-modal-engine",   "value"),
-        Input("sm-new-btn",         "n_clicks"),
-        Input("sm-modal-cancel",    "n_clicks"),
-        Input("sm-modal-close",     "n_clicks"),
-        State("sm-preselect-engine","data"),
+        Output("sm-modal-overlay",        "style"),
+        Output("sm-modal-engine",         "value"),
+        Input("sm-new-btn",               "n_clicks"),
+        Input("sm-modal-cancel",          "n_clicks"),
+        Input("sm-modal-close",           "n_clicks"),
+        State("sm-preselect-engine",      "data"),
+        State("sm-role-store",            "data"),
         prevent_initial_call=True,
     )
-    def toggle_modal(open_clicks, cancel_clicks, close_clicks, preselect):
+    def toggle_modal(open_clicks, cancel_clicks, close_clicks,
+                     preselect, role):
         triggered = callback_context.triggered[0]["prop_id"].split(".")[0]
 
         hidden = {
@@ -1108,13 +715,14 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         State("sm-modal-date",          "value"),
         State("sm-modal-start-time",    "value"),
         State("sm-modal-end-time",      "value"),
-        State("sm-modal-notes",         "value"),
         State("sm-events-store",        "data"),
         State("session-store",          "data"),
+        State("sm-role-store",          "data"),
         prevent_initial_call=True,
     )
     def handle_schedule(n_clicks, engine_id, sel_date,
-                        start_time, end_time, notes, existing_events, session):
+                        start_time, end_time,
+                        existing_events, session, role):
 
         hidden_style = {
             "display": "none",
@@ -1166,11 +774,18 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         status = "warning"
         if supabase:
             try:
-                resp = db.get_engine(supabase, engine_id, "engine_id, model_type")
+                resp = supabase.table("engines") \
+                    .select("engine_id, model_type") \
+                    .eq("id", engine_id) \
+                    .single().execute()
                 if resp.data:
                     engine_label = f"ENGINE-{str(resp.data.get('engine_id', '?')).zfill(2)}"
                 # Fetch latest RUL to derive status
-                pred = db.get_latest_prediction(supabase, engine_id, "predicted_rul")
+                pred = supabase.table("rul_predictions") \
+                    .select("predicted_rul") \
+                    .eq("engine_id", engine_id) \
+                    .order("predicted_at", desc=True) \
+                    .limit(1).execute()
                 if pred.data:
                     rul = float(pred.data[0].get("predicted_rul", 100))
                     status = "critical" if rul <= 30 else "warning" if rul <= 62 else "healthy"
@@ -1189,7 +804,6 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
             "label":      engine_label,
             "engine_id":  engine_id,
             "status":     status,
-            "notes":      notes or "",
             "db_id":      "",  # filled after insert below
         }
 
@@ -1198,15 +812,24 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # ── Persist to Supabase if available ─────────────────────────────
         if supabase:
             try:
-                from maintenance_recommendations import create_manual_booking
-                result = create_manual_booking(supabase, engine_id, sel_date,
-                                               start_time, end_time, notes, session)
+                session_user_id = (session or {}).get("user_id") or None
+                responsible_user_id = get_responsible_user(supabase, engine_id)
+                result = supabase.table("maintenance_schedules").insert({
+                    "engine_id":      engine_id,
+                    "scheduled_date": sel_date,
+                    "start_time":     start_time,
+                    "end_time":       end_time,
+                    "status":         "scheduled",
+                    "created_by":     session_user_id,
+                    "assigned_to":    responsible_user_id,
+                    "created_at":     datetime.utcnow().isoformat(),
+                }).execute()
                 if result.data:
                     new_event["db_id"] = str(result.data[0].get("id", ""))
             except Exception as e:
-                message = str(e) if isinstance(e, ValueError) else "Unable to save maintenance. Please try again."
-                return dash.no_update, dash.no_update, dash.no_update, html.Span(
-                    message, style={"color": "#ff6b6b"})
+                print(f"[SM][WARN] Supabase insert failed: {e}")
+                return (dash.no_update, dash.no_update, dash.no_update,
+                        html.Span("Save failed. Please try again.", style={"color": "#ff6b6b"}))
 
         return (
             updated_events,
@@ -1247,7 +870,6 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         Output("sm-edit-date",            "value"),
         Output("sm-edit-start-time",      "value"),
         Output("sm-edit-end-time",        "value"),
-        Output("sm-edit-notes",           "value"),
         Input({"type": "sm-event-card", "index": ALL}, "n_clicks"),
         State("sm-events-store", "data"),
         prevent_initial_call=True,
@@ -1288,7 +910,6 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
             ev.get("date"),
             ev.get("start_time"),
             ev.get("end_time"),
-            ev.get("notes", ""),
         )
 
     # ── Close edit modal (Cancel or ×) ────────────────────────────────────
@@ -1321,14 +942,13 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         State("sm-edit-date",               "value"),
         State("sm-edit-start-time",         "value"),
         State("sm-edit-end-time",           "value"),
-        State("sm-edit-notes",              "value"),
         State("sm-selected-event-store",    "data"),
         State("sm-events-store",            "data"),
         State("session-store",              "data"),
         prevent_initial_call=True,
     )
     def save_or_delete_event(save_clicks, delete_clicks,
-                             engine_id, sel_date, start_time, end_time, notes,
+                             engine_id, sel_date, start_time, end_time,
                              selected_ev, existing_events, session):
 
         hidden_style = {
@@ -1346,33 +966,13 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         ev_idx = (selected_ev or {}).get("_idx")
         db_id  = (selected_ev or {}).get("db_id", "")
 
-        # Resolve the persisted booking; browser event data is not authorization.
-        try:
-            from scheduling_agent_service import authorized_engine
-            if not supabase or not db_id:
-                raise ValueError("No saved maintenance booking was selected.")
-            saved = db.fetch_records(
-                supabase,
-                "maintenance_schedules",
-                "engine_id",
-                filters=[('eq', "id", db_id)],
-                single=True,
-            ).data
-            if not saved:
-                raise ValueError("This booking no longer exists.")
-            authorized_engine(supabase, saved["engine_id"], session)
-            if triggered != "sm-edit-delete-btn":
-                authorized_engine(supabase, engine_id, session)
-        except Exception as exc:
-            message = str(exc) if isinstance(exc, ValueError) else "Unable to verify permission for this booking."
-            return dash.no_update, dash.no_update, dash.no_update, html.Span(message, style={"color": "#ff6b6b"})
-
         # ── DELETE ────────────────────────────────────────────────────────
         if triggered == "sm-edit-delete-btn":
             updated = [e for e in events if e.get("_idx") != ev_idx]
             if supabase and db_id:
                 try:
-                    db.delete_records(supabase, "maintenance_schedules", filters=[('eq', "id", db_id)])
+                    supabase.table("maintenance_schedules") \
+                        .delete().eq("id", db_id).execute()
                 except Exception as e:
                     print(f"[SM][WARN] Delete failed: {e}")
             return updated, [_build_calendar(updated, 0)], hidden_style, ""
@@ -1407,7 +1007,8 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         status = (selected_ev or {}).get("status", "warning")
         if supabase:
             try:
-                resp = db.get_engine(supabase, engine_id, "engine_id")
+                resp = supabase.table("engines").select("engine_id") \
+                    .eq("id", engine_id).single().execute()
                 if resp.data:
                     engine_label = f"ENGINE-{str(resp.data.get('engine_id', '?')).zfill(2)}"
             except Exception:
@@ -1423,7 +1024,6 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
             "label":      engine_label,
             "engine_id":  engine_id,
             "status":     status,
-            "notes":      notes or "",
             "db_id":      db_id,
         }
 
@@ -1433,14 +1033,17 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # Persist to Supabase
         if supabase and db_id:
             try:
-                db.update_records(supabase, "maintenance_schedules", {
+                responsible_user_id = get_responsible_user(supabase, engine_id)
+                supabase.table("maintenance_schedules").update({
+                    "assigned_to":    responsible_user_id,
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
                     "start_time":     start_time,
                     "end_time":       end_time,
-                    "notes":          notes or "",
-                }, filters=[('eq', "id", db_id)])
+                }).eq("id", db_id).execute()
             except Exception as e:
                 print(f"[SM][WARN] Update failed: {e}")
+                return (dash.no_update, dash.no_update, dash.no_update,
+                        html.Span("Save failed. Please try again.", style={"color": "#ff6b6b"}))
 
         return updated, [_build_calendar(updated, 0)], hidden_style, ""
