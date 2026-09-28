@@ -7,6 +7,8 @@ import plotly.graph_objects as go
 import json as _json
 import io
 import base64
+import math
+from html import escape
 from datetime import datetime, timezone, timedelta
 
 # Malaysia Standard Time — UTC+8
@@ -489,9 +491,14 @@ def _maintenance_section(alert, report=None):
     mstatus = (alert.get("maintenance_status") or "maintenance_required").lower().strip()
     color   = MAINT_COLORS.get(mstatus, "#a8d4ff")
 
+    heading = _section_heading(
+        "MAINTENANCE OUTCOME" if mstatus in ("completed", "follow_up_required") else "MAINTENANCE"
+    )
+    heading.style = {**heading.style, "marginTop": "0", "marginBottom": "0"}
     header = html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px",
+                              "justifyContent": "space-between",
                               "marginBottom": "10px"}, children=[
-        _section_heading("MAINTENANCE"),
+        heading,
         maintenance_status_badge(mstatus),
     ])
 
@@ -515,13 +522,10 @@ def _maintenance_section(alert, report=None):
         rows.append(_detail_row("Started At", started, "#4a9eff"))
 
     elif mstatus == "completed":
-        completed_at = "—"
-        if report and report.get("completed_at"):
-            completed_at = _fmt_myt(report["completed_at"])
-        fault  = (report or {}).get("fault_confirmed", "—").replace("_", " ").title() if report else "—"
-        ai_use = (report or {}).get("ai_recommendation_usefulness", "—").replace("_", " ").title() if report else "—"
+        completed_at = _fmt_myt((report or {}).get("completed_at") or alert.get("maintenance_completed_at"))
+        fault  = str((report or {}).get("fault_confirmed") or "—").replace("_", " ").title()
+        ai_use = str((report or {}).get("ai_recommendation_usefulness") or "—").replace("_", " ").title()
         rows += [
-            _section_heading("MAINTENANCE OUTCOME"),
             _detail_row("Completed At", completed_at, "#00c875"),
             _detail_row("Fault Confirmed", fault, "white"),
             _detail_row("AI Rec. Usefulness", ai_use, "white"),
@@ -534,7 +538,6 @@ def _maintenance_section(alert, report=None):
         if report and report.get("completed_at"):
             prev_date = _fmt_myt(report["completed_at"])
         rows += [
-            _section_heading("MAINTENANCE OUTCOME"),
             _detail_row("Reason", reason, "#c084fc"),
             _detail_row("Previous Maintenance", prev_date, "white"),
         ]
@@ -581,6 +584,8 @@ def _diag_chips(degradation_type, rul, severity):
 
 
 def alert_detail_panel(alert, report=None):
+    if report is None:
+        report = alert.get("report")
     ts = _to_myt(alert["timestamp"]).strftime("%Y/%m/%d %H:%M")
     children = [
         # Header
@@ -703,6 +708,16 @@ def _report_modal():
                    "boxShadow": "0 24px 72px rgba(0,0,0,0.65)", "position": "relative"},
             children=[
                 # Close button
+                html.Div([
+                    html.H3("MAINTENANCE REPORT", style={"margin": "0", "color": "white",
+                            "fontSize": "20px", "fontWeight": "800"}),
+                    html.Div(html.Button("Export PDF", id="al-report-export-pdf", n_clicks=0,
+                    style={"background": "#1557b8", "color": "white", "border": "1px solid #4a9eff",
+                           "borderRadius": "7px", "padding": "8px 14px", "cursor": "pointer",
+                           "fontSize": "12px", "fontWeight": "700", "whiteSpace": "nowrap"}),
+                        id="al-report-export-container", style={"display": "none"}),
+                    ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                              "gap": "16px", "paddingRight": "28px", "marginBottom": "14px"}),
                 html.Span("×", id="al-report-modal-close", n_clicks=0,
                           style={"position": "absolute", "top": "20px", "right": "24px",
                                  "color": "rgba(168,212,255,0.5)", "fontSize": "26px",
@@ -1224,7 +1239,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                 eng_resp = db.fetch_records(
                     supabase,
                     "engines",
-                    "id,engine_id,degradation_type,llm_explanation",
+                    "id,engine_id,degradation_type,degradation_confidence,llm_explanation",
                     filters=[('in_', "id", engine_ids)],
                 )
                 for e in (eng_resp.data or []):
@@ -1372,10 +1387,12 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                     "alert_no":              str(i + 1).zfill(2),
                     "alert_id":              log.get("id"),
                     "engine_id":             alert_engine_id,
+                    "engine_id_display":     eng.get("engine_id"),
                     "timestamp":             timestamp,
                     "severity":              severity,
                     "rul":                   alert_rul,
                     "degradation_pattern":   eng.get("degradation_type") or "Unknown",
+                    "similarity_score":      eng.get("degradation_confidence"),
                     "llm_explanation":       eng.get("llm_explanation") or "",
                     "shap":                  [],
                     "rul_progression":       rul_progression,
@@ -1446,6 +1463,37 @@ def _fetch_report(supabase, maintenance_schedule_id):
         return None
 
 
+def _start_maintenance_report(supabase, schedule_id, user_id=None):
+    """Persist the first report opening as the start; preserve it on reopen."""
+    response = db.fetch_records(supabase, "maintenance_reports", "*",
+        filters=[('eq', "maintenance_schedule_id", schedule_id)],
+        order_by=[("created_at", True)], limit=1)
+    report = dict(response.data[0]) if response.data else {}
+    if report.get("outcome") in ("completed", "follow_up_required"):
+        return report
+    started_at = report.get("started_at")
+    if not started_at:
+        schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
+            filters=[('eq', "id", schedule_id)], single=True)
+        started_at = (schedule.data or {}).get("started_at") or datetime.now(timezone.utc).isoformat()
+        if report.get("id"):
+            db.update_records(supabase, "maintenance_reports", {"started_at": started_at},
+                filters=[('eq', "id", report["id"])])
+            report["started_at"] = started_at
+        else:
+            payload = {"maintenance_schedule_id": schedule_id, "started_at": started_at,
+                       "outcome": "in_progress"}
+            if user_id:
+                payload["user_id"] = user_id
+            result = db.insert_records(supabase, "maintenance_reports", payload)
+            if not result.data:
+                raise ValueError("The maintenance report could not be started.")
+            report = result.data[0]
+    db.update_records(supabase, "maintenance_schedules",
+        {"started_at": started_at, "status": "in_progress"}, filters=[('eq', "id", schedule_id)])
+    return report
+
+
 def _fetch_alert_row(supabase, alert_id):
     """Return a single alert_logs row dict."""
     if not supabase or not alert_id:
@@ -1466,6 +1514,17 @@ def _alert_from_store(a):
 
 
 #  PDF GENERATION
+def _report_similarity(alert, report):
+    value = (report or {}).get("similarity_score_snapshot")
+    if value is None:
+        value = alert.get("similarity_score")
+    try:
+        score = float(value)
+        return f"{score:.3f}" if math.isfinite(score) else "N/A"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
 def _generate_pdf(alert, report):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -1495,7 +1554,7 @@ def _generate_pdf(alert, report):
                                   textColor=colors.black, leading=13, fontName="Helvetica-Bold")
 
     def kv(label, value):
-        return [Paragraph(label, label_style), Paragraph(str(value or "—"), value_style)]
+        return [Paragraph(label, label_style), Paragraph(escape(str(value if value is not None else "—")), value_style)]
 
     story = []
 
@@ -1519,12 +1578,13 @@ def _generate_pdf(alert, report):
     def fmt_ts(v):
         if not v or v == "—":
             return "—"
-        return _fmt_myt(v)
+        return _fmt_myt(v, "%Y/%m/%d %H:%M:%S")
 
     meta_data = [
         kv("Report ID",       report_id),
-        kv("Alert ID",        alert.get("alert_id", "—")),
-        kv("Engine",          f"ENGINE-{alert.get('engine_id_display','—')}"),
+        kv("Engine",          f"ENGINE-{str(alert['engine_id_display']).zfill(2)}"
+                              if alert.get("engine_id_display") is not None
+                              else alert.get("engine_id", "—")),
         kv("Maintenance ID",  maint_id),
         kv("Technician",      technician),
         kv("Alert Generated", ts_alert),
@@ -1547,11 +1607,11 @@ def _generate_pdf(alert, report):
 
     # ── A: Predictive Analysis ──
     story.append(Paragraph("A. PREDICTIVE ANALYSIS (System-Generated)", section_style))
-    snap = lambda k: (report or {}).get(k) or alert.get(k, "—")
+    snap = lambda k: (report or {}).get(k) or alert.get(k)
     pred_rul  = snap("predicted_rul_snapshot") or alert.get("rul", "—")
     severity  = snap("severity_snapshot")      or alert.get("severity", "—")
     deg_pat   = snap("degradation_pattern_snapshot") or alert.get("degradation_pattern", "—")
-    sim_score = snap("similarity_score_snapshot")
+    sim_score = _report_similarity(alert, report)
     top_driv  = snap("top_drivers_snapshot")
     ai_rec    = snap("ai_recommendation_snapshot") or alert.get("llm_explanation", "—")
 
@@ -1559,9 +1619,9 @@ def _generate_pdf(alert, report):
         ["Predicted RUL",       str(pred_rul)],
         ["Alert Severity",      str(severity).upper()],
         ["Degradation Pattern", str(deg_pat)],
-        ["Similarity Score",    str(sim_score) if sim_score else "N/A"],
+        ["Similarity Score",    sim_score],
     ]
-    pred_table = Table(pred_data, colWidths=[60*mm, 105*mm])
+    pred_table = Table([[Paragraph(escape(str(v)), body_style) for v in row] for row in pred_data], colWidths=[60*mm, 105*mm])
     pred_table.setStyle(TableStyle([
         ("FONT",     (0,0), (-1,-1), "Helvetica", 9),
         ("FONT",     (0,0), (0,-1), "Helvetica-Bold", 9),
@@ -1578,13 +1638,13 @@ def _generate_pdf(alert, report):
         drivers_text = str(top_driv) if not isinstance(top_driv, list) else ", ".join(
             [f"{d[0]}: {d[1]:+.3f}" if isinstance(d, (list, tuple)) and len(d)==2 else str(d)
              for d in top_driv])
-        story.append(Paragraph(f"<b>Top SHAP Drivers:</b> {drivers_text}", body_style))
+        story.append(Paragraph(f"<b>Top SHAP Drivers:</b> {escape(drivers_text)}", body_style))
 
     story.append(Spacer(1, 4))
     story.append(Paragraph("<b>AI-Generated Maintenance Recommendations:</b>", body_style))
     # Strip markdown for PDF
     ai_text = str(ai_rec).replace("**", "").replace("*", "").replace("#", "") if ai_rec else "—"
-    story.append(Paragraph(ai_text[:2000], body_style))
+    story.append(Paragraph(escape(ai_text).replace("\n", "<br/>"), body_style))
     story.append(Spacer(1, 8))
 
     # ── B: Maintenance Work ──
@@ -1597,7 +1657,7 @@ def _generate_pdf(alert, report):
         ("Inspection Findings",           "inspection_findings"),
     ]:
         story.append(Paragraph(f"<b>{heading}:</b>", body_style))
-        story.append(Paragraph(str(r.get(key) or "—"), body_style))
+        story.append(Paragraph(escape(str(r.get(key) or "—")).replace("\n", "<br/>"), body_style))
         story.append(Spacer(1, 4))
 
     # ── C: Prediction Feedback ──
@@ -1608,7 +1668,7 @@ def _generate_pdf(alert, report):
     story.append(Paragraph(f"<b>AI Recommendation Usefulness:</b> {ai_us}", body_style))
     story.append(Spacer(1, 4))
     story.append(Paragraph("<b>Technician Notes:</b>", body_style))
-    story.append(Paragraph(str(r.get("technician_notes") or "—"), body_style))
+    story.append(Paragraph(escape(str(r.get("technician_notes") or "—")).replace("\n", "<br/>"), body_style))
     story.append(Spacer(1, 8))
 
     # ── D: Outcome ──
@@ -1618,7 +1678,7 @@ def _generate_pdf(alert, report):
     story.append(Paragraph(f"<b>Started At:</b> {fmt_ts(r.get('started_at'))}", body_style))
     story.append(Paragraph(f"<b>Completed At:</b> {fmt_ts(r.get('completed_at'))}", body_style))
     if r.get("follow_up_reason"):
-        story.append(Paragraph(f"<b>Follow-up Reason:</b> {r['follow_up_reason']}", body_style))
+        story.append(Paragraph(f"<b>Follow-up Reason:</b> {escape(str(r['follow_up_reason']))}", body_style))
 
     doc.build(story)
     return buf.getvalue()
@@ -1626,6 +1686,43 @@ def _generate_pdf(alert, report):
 
 #  CALLBACKS
 def register_alert_log_callbacks(app, supabase=None):
+    @app.callback(
+        Output("al-report-export-container", "style"),
+        Input("al-report-readonly-store", "data"),
+    )
+    def show_completed_report_export(readonly):
+        # The report is opened read-only only for completed maintenance.
+        return {"display": "block" if readonly else "none"}
+
+    @app.callback(
+        Output("al-pdf-download", "data"),
+        Input("al-report-export-pdf", "n_clicks"),
+        State("al-report-schedule-id-store", "data"),
+        State("al-report-id-store", "data"),
+        State("alerts-data", "data"),
+        *[State(component_id, "value") for component_id in (
+            "al-report-actions", "al-report-components-inspected", "al-report-components-repaired",
+            "al-report-findings", "al-report-fault-confirmed", "al-report-ai-usefulness",
+            "al-report-technician-notes")],
+        prevent_initial_call=True,
+    )
+    def export_report_pdf(n_clicks, schedule_id, report_id, alerts_data, *values):
+        if not n_clicks or not schedule_id:
+            raise dash.exceptions.PreventUpdate
+        alert = next((a for a in (alerts_data or [])
+                      if a.get("maintenance_schedule_id") == schedule_id), None)
+        if alert is None:
+            raise dash.exceptions.PreventUpdate
+        report = dict((_fetch_report(supabase, schedule_id) if supabase else None) or {})
+        report.update(zip(("actions_performed", "components_inspected", "components_repaired",
+                           "inspection_findings", "fault_confirmed", "ai_recommendation_usefulness",
+                           "technician_notes"), values))
+        report.setdefault("id", report_id or "Draft")
+        report.setdefault("maintenance_schedule_id", schedule_id)
+        report.setdefault("outcome", alert.get("maintenance_status"))
+        return dcc.send_bytes(_generate_pdf(_alert_from_store(alert), report),
+                              "maintenance-report.pdf", type="application/pdf")
+
     @app.callback(
         Output("al-engine-action-btn", "children", allow_duplicate=True),
         Output("al-engine-action-btn", "style", allow_duplicate=True),
@@ -1773,11 +1870,12 @@ def register_alert_log_callbacks(app, supabase=None):
         State("al-sched-role-store",            "data"),
         State("al-sched-org-users-store",       "data"),
         State("al-sched-current-user-label-store","data"),
+        State("session-store", "data"),
         prevent_initial_call=True,
     )
     def handle_action(n_clicks,
                       alerts_data, selected_idx,
-                      role, org_users, current_user_label):
+                      role, org_users, current_user_label, session):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
 
@@ -1850,10 +1948,12 @@ def register_alert_log_callbacks(app, supabase=None):
                 print("[ALERT] No maintenance_schedule_id found for report")
                 raise dash.exceptions.PreventUpdate
 
-            report = _fetch_report(
-                supabase,
-                schedule_id
-            ) if supabase else None
+            if supabase and not readonly:
+                report = _start_maintenance_report(supabase, schedule_id, (session or {}).get("user_id"))
+                alert["maintenance_started_at"] = report.get("started_at")
+                alert["maintenance_status"] = report.get("outcome") or "in_progress"
+            else:
+                report = _fetch_report(supabase, schedule_id) if supabase else None
 
             r = report or {}
 
@@ -1945,8 +2045,6 @@ def register_alert_log_callbacks(app, supabase=None):
             started_at = _fmt_myt(started_at)
 
         header = html.Div([
-            html.H3("MAINTENANCE REPORT",
-                    style={"margin": "0 0 4px", "color": "white", "fontSize": "20px", "fontWeight": "800"}),
             html.Div(style={"display": "flex", "gap": "18px", "flexWrap": "wrap", "marginTop": "10px",
                             "marginBottom": "4px"}, children=[
                 html.Div([html.Div("REPORT ID", style={"color": "#4a9eff", "fontSize": "10px", "fontWeight": "700", "letterSpacing": "0.8px"}),
@@ -1966,7 +2064,7 @@ def register_alert_log_callbacks(app, supabase=None):
         snap_rul   = r.get("predicted_rul_snapshot") or alert.get("rul", "—")
         snap_sev   = r.get("severity_snapshot")      or alert.get("severity", "—")
         snap_deg   = r.get("degradation_pattern_snapshot") or alert.get("degradation_pattern", "—")
-        snap_sim   = r.get("similarity_score_snapshot")
+        snap_sim   = _report_similarity(alert, report)
         snap_driv  = r.get("top_drivers_snapshot")
         snap_ai    = r.get("ai_recommendation_snapshot") or alert.get("llm_explanation", "")
 
@@ -1974,7 +2072,7 @@ def register_alert_log_callbacks(app, supabase=None):
             _detail_row("Predicted RUL",       f"{snap_rul} cycles", "#ff6b6b"),
             _detail_row("Severity",            (snap_sev or "—").upper(), "white"),
             _detail_row("Degradation Pattern", snap_deg or "—", "white"),
-            _detail_row("Similarity Score",    f"{snap_sim:.3f}" if snap_sim else "N/A", "#a8d4ff"),
+            _detail_row("Similarity Score",    snap_sim, "#a8d4ff"),
             html.Div(style={"marginTop": "10px"}) if snap_driv else html.Div(),
             html.Div([
                 html.Div("Top SHAP Drivers", style={"color": "#4a9eff", "fontSize": "11px",
@@ -2454,6 +2552,9 @@ def register_alert_log_callbacks(app, supabase=None):
 
         if supabase:
             try:
+                if not report_id and maintenance_schedule_id:
+                    existing_report = _fetch_report(supabase, maintenance_schedule_id)
+                    report_id = (existing_report or {}).get("id")
                 if report_id:
                     db.update_records(
                         supabase,
@@ -2464,8 +2565,10 @@ def register_alert_log_callbacks(app, supabase=None):
 
                 elif maintenance_schedule_id:
                     payload["maintenance_schedule_id"] = maintenance_schedule_id
-                    payload["started_at"] = now
-
+                    schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
+                        filters=[("eq", "id", maintenance_schedule_id)], single=True)
+                    if (schedule.data or {}).get("started_at"):
+                        payload["started_at"] = schedule.data["started_at"]
                     db.insert_records(supabase, "maintenance_reports", payload)
                 schedule_upd = {
                     "status": new_status,
@@ -2483,13 +2586,16 @@ def register_alert_log_callbacks(app, supabase=None):
 
         # Update local store
         idx = selected_idx or 0
-        if idx < len(alerts_data):
-            alerts_data[idx]["maintenance_status"] = new_status
-            if is_followup:
-                alerts_data[idx]["follow_up_reason"] = followup_reason
+        report = _fetch_report(supabase, maintenance_schedule_id) if supabase else None
+        for stored_alert in alerts_data:
+            if maintenance_schedule_id and stored_alert.get("maintenance_schedule_id") == maintenance_schedule_id:
+                stored_alert["maintenance_status"] = new_status
+                stored_alert["maintenance_completed_at"] = now
+                stored_alert["report"] = report
+                if is_followup:
+                    stored_alert["follow_up_reason"] = followup_reason
 
         alerts  = [_alert_from_store(a) for a in alerts_data]
-        report  = _fetch_report(supabase, maintenance_schedule_id) if supabase else None
         detail  = alert_detail_panel(alerts[idx], report=report) if idx < len(alerts) else []
         rows    = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
         badge, btn_children, btn_style = _engine_status_bar_contents(alerts)
