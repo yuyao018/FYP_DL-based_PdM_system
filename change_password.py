@@ -270,8 +270,13 @@ def register_change_password_callbacks(app, supabase=None, supabase_admin=None):
         admin_client = supabase_admin or supabase
 
         try:
+            if not supabase or not admin_client:
+                raise RuntimeError("Database unavailable")
             # Hash the new password with bcrypt
             hashed_pw = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+            # Change Auth first; do not complete first login if this fails.
+            admin_client.auth.admin.update_user_by_id(user_id, {"password": new_password})
 
             # Update password_hash in the users table
             if supabase:
@@ -281,15 +286,6 @@ def register_change_password_callbacks(app, supabase=None, supabase_admin=None):
                     {"password_hash": hashed_pw, "last_login_at": "now()"},
                     filters=[('eq', "id", user_id)],
                 )
-
-            # Also update via Supabase Auth Admin API (keeps auth.users in sync)
-            try:
-                admin_client.auth.admin.update_user_by_id(
-                    user_id,
-                    {"password": new_password}
-                )
-            except Exception:
-                pass  # Non-critical if auth.users update fails
 
             # Update session — remove the must_change_password flag
             updated_session = {**session}

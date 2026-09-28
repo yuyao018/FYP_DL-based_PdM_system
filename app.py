@@ -453,11 +453,11 @@ def authenticate_login(username, password, selected_role, next_url=None):
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 
-        # Step 4: Update last_login_at
+        # Keep first-login status until the password change actually succeeds.
         db.update_records(
             supabase,
             "users",
-            {"last_login_at": "now()", "status": "active"},
+            {"status": "active"} if is_first_login else {"last_login_at": "now()", "status": "active"},
             filters=[('eq', "username", username)],
         )
 
@@ -597,11 +597,10 @@ def handle_dev_login(n_clicks, username, password):
 
         is_first_login = user_profile.get("last_login_at") is None
 
-        # Update last_login_at
-        supabase.table("users") \
-            .update({"last_login_at": "now()"}) \
-            .eq("username", username) \
-            .execute()
+        # Only the password-change handler completes a first login.
+        if not is_first_login:
+            db.update_records(supabase, "users", {"last_login_at": "now()"},
+                              filters=[("eq", "username", username)])
 
         # Build session data
         session_data = {

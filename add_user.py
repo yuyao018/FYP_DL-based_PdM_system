@@ -4,6 +4,7 @@ from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
 import bcrypt
+from account_credentials import create_user_with_credentials, username_prefix
 
 # ─────────────────────────────────────────────
 #  SVG ICON HELPERS
@@ -249,7 +250,7 @@ def form_label(text):
     })
 
 
-def text_input(input_id, placeholder="", value="", input_type="text", icon=None):
+def text_input(input_id, placeholder="", value="", input_type="text", icon=None, disabled=False):
     inner = []
     if icon:
         inner.append(html.Div(style={"display": "flex", "alignItems": "center",
@@ -260,6 +261,7 @@ def text_input(input_id, placeholder="", value="", input_type="text", icon=None)
             type=input_type,
             placeholder=placeholder,
             value=value,
+            disabled=disabled,
             style={
                 "flex": "1", "background": "transparent", "border": "none",
                 "outline": "none", "color": "white", "fontSize": "14px",
@@ -278,10 +280,10 @@ def text_input(input_id, placeholder="", value="", input_type="text", icon=None)
     )
 
 
-def form_field(label_text, input_id, placeholder="", value="", input_type="text", icon=None):
+def form_field(label_text, input_id, placeholder="", value="", input_type="text", icon=None, disabled=False):
     return html.Div(style={"flex": "1"}, children=[
         form_label(label_text),
-        text_input(input_id, placeholder, value, input_type, icon),
+        text_input(input_id, placeholder, value, input_type, icon, disabled),
     ])
 
 
@@ -427,33 +429,32 @@ def build_add_user_body(edit_user=None):
                     children=[
                         panel("Personal Information", icon_person_outline, [
                             html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "16px"}, children=[
-                                form_field("First Name", "new-user-first-name", "John", value=first_name),
-                                form_field("Last Name",  "new-user-last-name",  "Doe", value=last_name),
+                                form_field("First Name", "new-user-first-name", value=first_name),
+                                form_field("Last Name",  "new-user-last-name", value=last_name),
                             ]),
                             html.Div(style={"marginBottom": "16px"}, children=[
-                                form_field("Email Address", "new-user-email", "doe@example.com",
+                                form_field("Email Address", "new-user-email",
                                            input_type="email", value=email),
                             ]),
                             html.Div(children=[
-                                form_field("Department", "new-user-department", "R&D", value=department),
+                                form_field("Department", "new-user-department", value=department),
                             ]),
                         ]),
 
                         panel("Account Credentials", icon_lock_outline, [
                             html.Div(style={"marginBottom": "16px"}, children=[
-                                form_field("Username", "new-user-username", "John01", value=username),
+                                form_field("Username", "new-user-username", value=username, disabled=not is_edit),
                             ]),
                             html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "14px"}, children=[
                                 form_field("Password", "new-user-password",
-                                           "Leave blank to keep current" if is_edit else "",
-                                           input_type="password", icon=icon_lock_outline()),
+                                           input_type="password", icon=icon_lock_outline(), disabled=not is_edit),
                                 form_field("Confirm Password", "new-user-confirm-password",
-                                           "Leave blank to keep current" if is_edit else "",
-                                           input_type="password", icon=icon_lock_outline()),
+                                           input_type="password", icon=icon_lock_outline()) if is_edit else
+                                dcc.Input(id="new-user-confirm-password", value="", type="password", disabled=True, style={"display": "none"}),
                             ]),
                             html.Div(
                                 "Leave password fields empty to keep the current password" if is_edit else
-                                "User will be prompted to change password on first login",
+                                "Username: first two letters of each name + two random digits. A 12-character temporary password is emailed to the user and must be changed on first login.",
                                 style={
                                     "color": "#4a9eff", "fontSize": "12px", "textAlign": "center",
                                     "background": "rgba(74,158,255,0.06)",
@@ -560,6 +561,19 @@ def create_add_user_layout(supabase=None, edit_user_id=None):
 # ─────────────────────────────────────────────
 
 def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
+    @app.callback(
+        Output("new-user-username", "value"),
+        Input("new-user-first-name", "value"),
+        Input("new-user-last-name", "value"),
+        State("edit-user-id-store", "data"),
+    )
+    def preview_username(first_name, last_name, edit_user_id):
+        if edit_user_id:
+            return dash.no_update
+        try:
+            return username_prefix(first_name, last_name) + "##"
+        except ValueError:
+            return ""
 
     # Role card selection toggles styling + access preview
     @app.callback(
@@ -601,6 +615,7 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
         State("session-store", "data"),
         State("edit-user-id-store", "data"),
         prevent_initial_call=True,
+        running=[(Output("create-user-btn", "disabled"), True, False)],
     )
     def create_or_update_user(n_clicks, first_name, last_name, email, department,
                               username, password, confirm_password, role, session, edit_user_id):
@@ -609,20 +624,18 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
 
         is_edit = edit_user_id is not None
 
-        if not all([first_name, last_name, email, username]):
+        first_name = (first_name or "").strip()
+        last_name = (last_name or "").strip()
+        email = (email or "").strip()
+        if not all([first_name, last_name, email]) or (is_edit and not username):
             return html.Span("Please fill in all required fields.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
-        # For new users, password is required
-        if not is_edit and not password:
-            return html.Span("Password is required for new accounts.",
-                            style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
-
-        if password and password != confirm_password:
+        if is_edit and password and password != confirm_password:
             return html.Span("Passwords do not match.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
-        if password and len(password) < 8:
+        if is_edit and password and len(password) < 8:
             return html.Span("Password must be at least 8 characters.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
@@ -632,6 +645,10 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
 
         # Get admin's organization_id from session
         admin_org_id = (session or {}).get("organization_id") or None
+
+        if not is_edit and ((session or {}).get("role") != "admin" or not admin_org_id):
+            return html.Span("An organization administrator must create this account.",
+                             style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
 
         try:
             if is_edit:
@@ -665,42 +682,24 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                 )
 
             else:
-                # ── CREATE new user ──
-                sb_admin = supabase_admin or supabase
-                auth_resp = sb_admin.auth.admin.create_user({
-                    "email": email,
-                    "password": password,
-                    "email_confirm": True,
-                })
-                user_id = auth_resp.user.id
-
-                hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                user_data = {
-                    "id": user_id,
-                    "username": username,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "email_address": email,
-                    "department": department,
-                    "role": "admin" if role == "admin" else "user",
-                    "status": "active",
-                    "password_hash": hashed_pw,
-                    "created_at": "now()",
-                }
-                if admin_org_id:
-                    user_data["organization_id"] = admin_org_id
-
-                db.insert_records(supabase, "users", user_data)
-
-                return (
-                    "",
-                    "/user-management",
-                    "✓ Account created successfully!"
+                # Generate credentials on the server; never trust preview values.
+                generated_username, delivered = create_user_with_credentials(
+                    supabase, supabase_admin or supabase,
+                    first_name=first_name, last_name=last_name, email=email,
+                    department=department, role="admin" if role == "admin" else "user",
+                    organization_id=admin_org_id,
                 )
+                message = (
+                    f"Account {generated_username} created. First-login credentials emailed to {email}."
+                    if delivered else
+                    f"Account {generated_username} created, but the credentials email failed. "
+                    "Do not create the account again. Correct email delivery and reset its password from Edit User."
+                )
+                return "", "/user-management", message
 
         except Exception as e:
-            print(f"[ERROR] {'update' if is_edit else 'create'} user: {e}")
-            return html.Span(f"Failed: {str(e)}",
+            message = str(e) if isinstance(e, ValueError) else "Account could not be saved. Check for an existing email or username and try again."
+            return html.Span(message,
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
 
