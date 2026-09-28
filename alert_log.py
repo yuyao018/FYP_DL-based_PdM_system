@@ -1,3 +1,4 @@
+from assets import database_integration as db
 from assets.schedule_modal import build_schedule_modal
 import dash
 from dash import dcc, html, Input, Output, State, ALL, MATCH
@@ -1136,11 +1137,12 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
     # Fetch org users for admin assignee dropdown
     if supabase and role == "admin" and org_id:
         try:
-            u_resp = supabase.table("users") \
-                .select("id,username,first_name,last_name") \
-                .eq("organization_id", org_id) \
-                .eq("is_deleted", False) \
-                .execute()
+            u_resp = db.fetch_records(
+                supabase,
+                "users",
+                "id,username,first_name,last_name",
+                filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", False)],
+            )
             for u in (u_resp.data or []):
                 first = u.get("first_name") or ""
                 last  = u.get("last_name")  or ""
@@ -1154,9 +1156,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
             # Fetch thresholds
             warn_thresh, crit_thresh = 62, 30
             try:
-                t_resp = supabase.table("alert_thresholds") \
-                    .select("warning_threshold,critical_threshold") \
-                    .order("updated_at", desc=True).limit(1).execute()
+                t_resp = db.get_alert_thresholds(supabase, "warning_threshold,critical_threshold")
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", 62))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", 30))
@@ -1165,39 +1165,50 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
 
             # Fetch alert_logs — select only columns that exist in the DB.
             # All maintenance state lives in maintenance_schedules, not alert_logs.
-            query = supabase.table("alert_logs").select(
-                "id, engine_id, triggered_at, severity, predicted_rul, trigger_cycle"
+            query = dict(
+                client=supabase,
+                table="alert_logs",
+                columns="id, engine_id, triggered_at, severity, predicted_rul, trigger_cycle",
+                filters=[],
             )
             if engine_db_id:
-                query = query.eq("engine_id", engine_db_id)
-                logs_resp = query.order("triggered_at", desc=True).execute()
+                query["filters"].append(("eq", "engine_id", engine_db_id))
+                logs_resp = db.fetch_records(**query, order_by=[("triggered_at", True)])
                 logs = logs_resp.data or []
             elif org_id:
                 # Scope to engines belonging to this org
                 try:
-                    eng_scope_resp = supabase.table("engines").select("id").eq("organization_id", org_id).eq("is_deleted", False).execute()
+                    eng_scope_resp = db.fetch_records(
+                        supabase,
+                        "engines",
+                        "id",
+                        filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", False)],
+                    )
                     org_engine_ids = [e["id"] for e in (eng_scope_resp.data or [])]
                 except Exception:
                     org_engine_ids = []
                 if org_engine_ids:
-                    query = query.in_("engine_id", org_engine_ids)
-                    logs_resp = query.order("triggered_at", desc=True).execute()
+                    query["filters"].append(("in_", "engine_id", org_engine_ids))
+                    logs_resp = db.fetch_records(**query, order_by=[("triggered_at", True)])
                     logs = logs_resp.data or []
                 else:
                     # Org has no engines — nothing to show
                     logs = []
             else:
                 # No engine and no org — fetch all (dev/standalone mode)
-                logs_resp = query.order("triggered_at", desc=True).execute()
+                logs_resp = db.fetch_records(**query, order_by=[("triggered_at", True)])
                 logs = logs_resp.data or []
 
             # Collect engine IDs referenced
             engine_ids = list({log["engine_id"] for log in logs if log.get("engine_id")})
             engines_lookup = {}
             if engine_ids:
-                eng_resp = supabase.table("engines") \
-                    .select("id,engine_id,degradation_type,llm_explanation") \
-                    .in_("id", engine_ids).execute()
+                eng_resp = db.fetch_records(
+                    supabase,
+                    "engines",
+                    "id,engine_id,degradation_type,llm_explanation",
+                    filters=[('in_', "id", engine_ids)],
+                )
                 for e in (eng_resp.data or []):
                     engines_lookup[e["id"]] = e
 
@@ -1215,14 +1226,14 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
             if engine_ids:
                 try:
                     sched_resp = (
-                        supabase.table("maintenance_schedules")
-                        .select(
+                        db.fetch_records(
+                            supabase,
+                            "maintenance_schedules",
                             "id,engine_id,scheduled_date,created_by,status,"
-                            "started_at,completed_at"
+                            "started_at,completed_at",
+                            filters=[('in_', "engine_id", engine_ids)],
+                            order_by=[("created_at", True)],
                         )
-                        .in_("engine_id", engine_ids)
-                        .order("created_at", desc=True)
-                        .execute()
                     )
                     # Keep the most-recent schedule per engine
                     for s in (sched_resp.data or []):
@@ -1239,15 +1250,15 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
             if schedule_ids:
                 try:
                     rpt_resp = (
-                        supabase.table("maintenance_reports")
-                        .select(
+                        db.fetch_records(
+                            supabase,
+                            "maintenance_reports",
                             "id,maintenance_schedule_id,"
                             "fault_confirmed,ai_recommendation_usefulness,"
-                            "follow_up_reason,completed_at,outcome,user_id"
+                            "follow_up_reason,completed_at,outcome,user_id",
+                            filters=[('in_', "maintenance_schedule_id", schedule_ids)],
+                            order_by=[("created_at", True)],
                         )
-                        .in_("maintenance_schedule_id", schedule_ids)
-                        .order("created_at", desc=True)
-                        .execute()
                     )
                     for r in (rpt_resp.data or []):
                         sid = r.get("maintenance_schedule_id")
@@ -1290,10 +1301,13 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                 rul_progression = []
                 alert_rul = 0
                 try:
-                    pred_resp = supabase.table("rul_predictions") \
-                        .select("cycle,predicted_rul") \
-                        .eq("engine_id", alert_engine_id) \
-                        .order("cycle", desc=False).execute()
+                    pred_resp = db.fetch_records(
+                        supabase,
+                        "rul_predictions",
+                        "cycle,predicted_rul",
+                        filters=[('eq', "engine_id", alert_engine_id)],
+                        order_by=[("cycle", False)],
+                    )
                     all_preds = pred_resp.data or []
                     if snapshot_cycle is not None:
                         preds = [r for r in all_preds
@@ -1374,12 +1388,14 @@ def _fetch_report(supabase, maintenance_schedule_id):
 
     try:
         resp = (
-            supabase.table("maintenance_reports")
-            .select("*")
-            .eq("maintenance_schedule_id", maintenance_schedule_id)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
+            db.fetch_records(
+                supabase,
+                "maintenance_reports",
+                "*",
+                filters=[('eq', "maintenance_schedule_id", maintenance_schedule_id)],
+                limit=1,
+                order_by=[("created_at", True)],
+            )
         )
 
         return resp.data[0] if resp.data else None
@@ -1394,7 +1410,7 @@ def _fetch_alert_row(supabase, alert_id):
     if not supabase or not alert_id:
         return {}
     try:
-        resp = supabase.table("alert_logs").select("*").eq("id", alert_id).single().execute()
+        resp = db.fetch_records(supabase, "alert_logs", "*", filters=[('eq', "id", alert_id)], single=True)
         return resp.data or {}
     except Exception:
         return {}
@@ -1825,9 +1841,13 @@ def register_alert_log_callbacks(app, supabase=None):
             sched_row  = {}
             if supabase and sched_id:
                 try:
-                    sr = supabase.table("maintenance_schedules") \
-                        .select("id,scheduled_date,start_time,end_time") \
-                        .eq("id", sched_id).single().execute()
+                    sr = db.fetch_records(
+                        supabase,
+                        "maintenance_schedules",
+                        "id,scheduled_date,start_time,end_time",
+                        filters=[('eq', "id", sched_id)],
+                        single=True,
+                    )
                     sched_row = sr.data or {}
                 except Exception as _e:
                     print(f"[ALERT] fetch schedule for view: {_e}")
@@ -2039,10 +2059,12 @@ def register_alert_log_callbacks(app, supabase=None):
                     }
 
                     result = (
-                        supabase.table("maintenance_schedules")
-                        .update(update_payload)
-                        .eq("id", existing_schedule_id)
-                        .execute()
+                        db.update_records(
+                            supabase,
+                            "maintenance_schedules",
+                            update_payload,
+                            filters=[('eq', "id", existing_schedule_id)],
+                        )
                     )
 
                     sched_db_id = existing_schedule_id
@@ -2058,11 +2080,7 @@ def register_alert_log_callbacks(app, supabase=None):
                     if engine_db_id:
                         try:
                             engine_resp = (
-                                supabase.table("engines")
-                                .select("responsible_by")
-                                .eq("id", engine_db_id)
-                                .single()
-                                .execute()
+                                db.get_engine(supabase, engine_db_id, "responsible_by")
                             )
 
                             if engine_resp.data:
@@ -2075,13 +2093,17 @@ def register_alert_log_callbacks(app, supabase=None):
                     if engine_db_id:
                         try:
                             ex_resp = (
-                                supabase.table("maintenance_schedules")
-                                .select("id,scheduled_date,created_by")
-                                .eq("engine_id", engine_db_id)
-                                .not_.in_("status", ["completed", "cancelled"])
-                                .order("created_at", desc=True)
-                                .limit(1)
-                                .execute()
+                                db.fetch_records(
+                                    supabase,
+                                    "maintenance_schedules",
+                                    "id,scheduled_date,created_by",
+                                    filters=[
+                                        ("eq", "engine_id", engine_db_id),
+                                        ("not_in", "status", ["completed", "cancelled"]),
+                                    ],
+                                    limit=1,
+                                    order_by=[("created_at", True)],
+                                )
                             )
 
                             if ex_resp.data:
@@ -2099,17 +2121,19 @@ def register_alert_log_callbacks(app, supabase=None):
                         )
                     else:
                         result = (
-                            supabase.table("maintenance_schedules")
-                            .insert({
-                                "engine_id": engine_db_id,
-                                "scheduled_date": sel_date,
-                                "start_time": start_time or "09:00",
-                                "end_time": end_time or "10:00",
-                                "status": "scheduled",
-                                "created_by": user_id,
-                                "assigned_to": responsible_user_id,
-                            })
-                            .execute()
+                            db.insert_records(
+                                supabase,
+                                "maintenance_schedules",
+                                {
+                                    "engine_id": engine_db_id,
+                                    "scheduled_date": sel_date,
+                                    "start_time": start_time or "09:00",
+                                    "end_time": end_time or "10:00",
+                                    "status": "scheduled",
+                                    "created_by": user_id,
+                                    "assigned_to": responsible_user_id,
+                                },
+                            )
                         )
 
                         if result.data:
@@ -2125,10 +2149,12 @@ def register_alert_log_callbacks(app, supabase=None):
                             try:
                                 # Get alerts for this engine
                                 engine_alerts_resp = (
-                                    supabase.table("alert_logs")
-                                    .select("id")
-                                    .eq("engine_id", engine_db_id)
-                                    .execute()
+                                    db.fetch_records(
+                                        supabase,
+                                        "alert_logs",
+                                        "id",
+                                        filters=[('eq', "engine_id", engine_db_id)],
+                                    )
                                 )
 
                                 engine_alert_ids = [
@@ -2139,10 +2165,12 @@ def register_alert_log_callbacks(app, supabase=None):
                                 if engine_alert_ids:
                                     # Find alerts already linked to a maintenance schedule
                                     linked_resp = (
-                                        supabase.table("maintenance_alerts")
-                                        .select("alert_id")
-                                        .in_("alert_id", engine_alert_ids)
-                                        .execute()
+                                        db.fetch_records(
+                                            supabase,
+                                            "maintenance_alerts",
+                                            "alert_id",
+                                            filters=[('in_', "alert_id", engine_alert_ids)],
+                                        )
                                     )
 
                                     linked_alert_ids = {
@@ -2162,9 +2190,11 @@ def register_alert_log_callbacks(app, supabase=None):
 
                                     if rows_to_insert:
                                         (
-                                            supabase.table("maintenance_alerts")
-                                            .insert(rows_to_insert)
-                                            .execute()
+                                            db.insert_records(
+                                                supabase,
+                                                "maintenance_alerts",
+                                                rows_to_insert,
+                                            )
                                         )
 
                                         print(
@@ -2253,11 +2283,16 @@ def register_alert_log_callbacks(app, supabase=None):
         if supabase:
             try:
                 if report_id:
-                    supabase.table("maintenance_reports").update(payload).eq("id", report_id).execute()
+                    db.update_records(
+                        supabase,
+                        "maintenance_reports",
+                        payload,
+                        filters=[('eq', "id", report_id)],
+                    )
                 elif schedule_id:
                     payload["maintenance_schedule_id"] = schedule_id
                     payload["started_at"] = now
-                    supabase.table("maintenance_reports").insert(payload).execute()
+                    db.insert_records(supabase, "maintenance_reports", payload)
             except Exception as _e:
                 print(f"[ALERT] save progress: {_e}")
                 return html.Span("⚠ Save failed. Please try again.",
@@ -2374,19 +2409,29 @@ def register_alert_log_callbacks(app, supabase=None):
         if supabase:
             try:
                 if report_id:
-                    supabase.table("maintenance_reports").update(payload).eq("id", report_id).execute()
+                    db.update_records(
+                        supabase,
+                        "maintenance_reports",
+                        payload,
+                        filters=[('eq', "id", report_id)],
+                    )
 
                 elif maintenance_schedule_id:
                     payload["maintenance_schedule_id"] = maintenance_schedule_id
                     payload["started_at"] = now
 
-                    supabase.table("maintenance_reports").insert(payload).execute()
+                    db.insert_records(supabase, "maintenance_reports", payload)
                 schedule_upd = {
                     "status": new_status,
                     "completed_at": now,
                 }
 
-                supabase.table("maintenance_schedules").update(schedule_upd).eq("id", maintenance_schedule_id).execute()
+                db.update_records(
+                    supabase,
+                    "maintenance_schedules",
+                    schedule_upd,
+                    filters=[('eq', "id", maintenance_schedule_id)],
+                )
             except Exception as _e:
                 print(f"[ALERT] confirm outcome: {_e}")
 

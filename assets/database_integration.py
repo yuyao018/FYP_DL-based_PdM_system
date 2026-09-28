@@ -1,5 +1,9 @@
 def _apply_filters(query, filters):
+    """Apply supported filters; not_in excludes records with listed values."""
     for operator, column, value in filters:
+        if operator == "not_in":
+            query = query.not_.in_(column, value)
+            continue
         if operator not in {"eq", "in_", "lte"}:
             raise ValueError(f"Unsupported database filter: {operator}")
         query = getattr(query, operator)(column, value)

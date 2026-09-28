@@ -16,7 +16,7 @@ def authorized_engine(sb, engine_id, session):
     engine = _engine(sb, engine_id)
     if str(engine["organization_id"]) != str(session.get("organization_id")):
         raise ValueError("This engine is outside your organization.")
-    if session.get("role") != "admin" and str(engine["responsible_by"]) != str(session["user_id"]):
+    if str(engine["responsible_by"]) != str(session["user_id"]):
         raise ValueError("Choose an engine assigned to you.")
     return engine
 

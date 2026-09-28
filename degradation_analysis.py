@@ -225,12 +225,12 @@ def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "al
             zeroline=True,
             zerolinecolor="rgba(74,158,255,0.3)",
             color="#a8d4ff",
-            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            tickfont=dict(size=10),
         ),
         yaxis=dict(
             showgrid=False,
             color="#a8d4ff",
-            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            tickfont=dict(size=11, color="white"),
             autorange="reversed",
         ),
         hoverlabel=dict(
@@ -380,8 +380,8 @@ def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest", bas
         height=380,
         xaxis=dict(
             title="Model output (cumulative SHAP)",
-            title_font=dict(color="#ffffff", size=11),
-            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
+            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
             gridcolor="rgba(74,158,255,0.08)",
             zeroline=False,
             showline=False,
@@ -391,7 +391,7 @@ def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest", bas
             tickmode="array",
             tickvals=list(range(n)),
             ticktext=sensors,
-            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            tickfont=dict(color="rgba(168,212,255,0.85)", size=10),
             showgrid=False,
             zeroline=False,
             range=[n - 0.5, -0.5],
@@ -498,14 +498,14 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
         ),
         xaxis=dict(
             title="Cycle",
-            title_font=dict(color="#ffffff", size=11),
-            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
+            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
             gridcolor="rgba(74,158,255,0.1)",
         ),
         yaxis=dict(
             title="SHAP Attribution Score",
-            title_font=dict(color="#ffffff", size=11),
-            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
+            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
             gridcolor="rgba(74,158,255,0.1)",
             zeroline=True, zerolinecolor="rgba(74,158,255,0.2)", zerolinewidth=1,
         ),
@@ -603,13 +603,16 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
     OUTPUT INSTRUCTIONS — you MUST follow this structure exactly. Use Markdown. Do NOT produce a single paragraph.
 
     ### Why It Was Detected
-    Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why it points to {degradation_type}. Only use the sensors listed above — do not invent others.
+    Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why 
+    it points to {degradation_type}. Only use the sensors listed above — do not invent others.
 
     ### Engineering Interpretation
-    Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what is likely happening inside the engine. Do not repeat the sensor list.
+    Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what 
+    is likely happening inside the engine. Do not repeat the sensor list.
 
     ### Recommended Action
-    Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, wash schedules, vibration checks, monitoring intervals, etc.
+    Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, 
+    wash schedules, vibration checks, monitoring intervals, etc.
 
     RULES:
     - The degradation profile name "{degradation_type}" and similarity "{confidence:.1%}" MUST appear verbatim in the output.
@@ -618,7 +621,7 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
     - Do not repeat information across sections.
     - No hedging phrases. Professional, engineering-focused tone.
     - Total output: no more than 180 words.
-"""
+    """
     return prompt
 
 
@@ -1223,7 +1226,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                 style={"display": "flex", "alignItems": "center", "gap": "8px"},
                                 children=[
                                     html.Div("AI EXPLANATION", style={
-                                        "color": "#ffffff", "fontSize": "16px",
+                                        "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
                                         "fontWeight": "700", "letterSpacing": "1px",
                                     }),
                                     html.Span("GPT-OSS 120B", style={

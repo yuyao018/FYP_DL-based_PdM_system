@@ -1,4 +1,6 @@
 from assets.schedule_modal import build_schedule_modal, get_responsible_user
+from scheduling_agent import build_scheduling_agent, register_scheduling_agent
+from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State, callback_context, ALL
 import dash_bootstrap_components as dbc
@@ -373,18 +375,17 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                                        user_id: str = None):
     """Build the Schedule Maintenance page."""
 
-    # ── Fetch engines for dropdown, scoped by role ─────────────────────────
-    # admin → all engines across all orgs
-    # user  → only engines in their organisation
+    # Scheduling choices are limited to the logged-in user's assigned engines.
     engine_options = []
     engine_label_map = {}
-    if supabase:
+    if supabase and user_id and org_id:
         try:
-            q = supabase.table("engines").select("id, engine_id, model_type") \
-                .eq("is_deleted", True)
-            if role != "admin" and org_id:
-                q = q.eq("organization_id", org_id)
-            eng_resp = q.execute()
+            eng_resp = db.fetch_records(
+                supabase, "engines", "id, engine_id, model_type",
+                filters=[("eq", "is_deleted", True),
+                         ("eq", "organization_id", org_id),
+                         ("eq", "responsible_by", user_id)],
+            )
             for row in (eng_resp.data or []):
                 label = f"ENGINE-{str(row.get('engine_id', '?')).zfill(2)} ({row.get('model_type', '')})"
                 eid = str(row["id"])
@@ -633,6 +634,11 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 ]
             ),
 
+            build_scheduling_agent(
+                engine_options,
+                str(engine_db_id) if engine_db_id and str(engine_db_id) in engine_label_map else None,
+            ),
+
             # ── Modal (fixed overlay) ─────────────────────────────────────
             build_schedule_modal(
                 engine_options, namespace="sm-new", show_engine=True, show_context=False,
@@ -673,6 +679,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 # ─────────────────────────────────────────────
 
 def register_schedule_maintenance_callbacks(app, supabase=None):
+    register_scheduling_agent(app, supabase)
 
     # ── Open modal ────────────────────────────────────────────────────────
     @app.callback(

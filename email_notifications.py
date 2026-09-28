@@ -240,6 +240,7 @@ def _threshold_alert_html(
     threshold: int,
     engine_db_id: str,
     triggered_at: Optional[datetime] = None,
+    recommendation_html: str = "",
 ) -> str:
     base_url = _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com")
     # Deep link: after login, navigate directly to this engine's alert log
@@ -301,6 +302,7 @@ def _threshold_alert_html(
       <tr><td>Alert threshold</td><td>{threshold} cycles</td></tr>
       <tr><td>Timestamp</td>      <td>{date_str}</td></tr>
     </table>
+    {recommendation_html}
     <p>{dashboard_link_text}</p>
     <a class="btn" href="{dashboard_url}" style="color: #ffffff !important; text-decoration: none;">Open Dashboard</a>
   </div>
@@ -540,19 +542,25 @@ def check_and_send_threshold_alert(
         if level == "critical"
         else f"⚠️ RUL Warning — {display_id}"
     )
-    html = _threshold_alert_html(
-        engine_display_id=str(engine_display_id).zfill(2),
-        level=level,
-        pred_rul=pred_rul,
-        threshold=threshold,
-        engine_db_id=engine_db_id,
-        triggered_at=now,
-    )
-
     # ── Resolve recipients: org admin(s) + responsible user ──
     dynamic_recipients = _get_alert_recipients(supabase, engine_db_id)
 
     def _send():
+        from maintenance_recommendations import email_section
+
+        recommendation_html = email_section(
+            supabase, engine_db_id, pred_rul,
+            _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com"),
+        )
+        html = _threshold_alert_html(
+            engine_display_id=str(engine_display_id).zfill(2),
+            level=level,
+            pred_rul=pred_rul,
+            threshold=threshold,
+            engine_db_id=engine_db_id,
+            triggered_at=now,
+            recommendation_html=recommendation_html,
+        )
         _send_email(subject, html, recipients_override=dynamic_recipients)
 
     threading.Thread(target=_send, daemon=True, name=f"email-alert-{engine_db_id}").start()

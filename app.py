@@ -5,6 +5,7 @@ from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
+from login_page import validate_login_inputs
 from dev_login_page import create_dev_login_layout
 from dev_dashboard import create_dev_dashboard_layout
 from dev_new_organization import create_new_organization_layout, register_new_organization_callbacks
@@ -153,7 +154,12 @@ def display_page(pathname, search, session):
 
     if pathname.startswith("/alert-log/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_alert_log_layout(sb, engine_db_id=engine_db_id)
+        return create_alert_log_layout(sb, engine_db_id=engine_db_id,
+                                       org_id=org_id, role=user_role,
+                                       user_id=(session or {}).get("user_id"),
+                                       username=(session or {}).get("username"),
+                                       first_name=(session or {}).get("first_name"),
+                                       last_name=(session or {}).get("last_name"))
 
     if pathname.startswith("/degradation-analysis/"):
         engine_db_id = pathname.split("/")[-1]
@@ -193,7 +199,11 @@ def display_page(pathname, search, session):
         "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role, username=(session or {}).get("username"), first_name=(session or {}).get("first_name"), user_id=(session or {}).get("user_id")),
         "/overview":          lambda: create_overview_layout(sb),
         "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
-        "/alert-log":         lambda: create_alert_log_layout(sb),
+        "/alert-log":         lambda: create_alert_log_layout(sb, org_id=org_id, role=user_role,
+                                                               user_id=(session or {}).get("user_id"),
+                                                               username=(session or {}).get("username"),
+                                                               first_name=(session or {}).get("first_name"),
+                                                               last_name=(session or {}).get("last_name")),
         "/degradation-analysis": lambda: create_degradation_analysis_layout(sb),
         "/engine-management": lambda: create_engine_management_layout(sb, org_id=org_id),
         "/add-engine":        lambda: create_add_engine_layout(sb, org_id=org_id),
@@ -331,10 +341,16 @@ def toggle_sidebar(n, is_open):
     prevent_initial_call=True,
 )
 def handle_login(n_clicks, username, password, selected_role, next_url):
+    return authenticate_login(username, password, selected_role, next_url)
+
+
+def authenticate_login(username, password, selected_role, next_url=None):
+    """Shared credential verification, role validation, and session creation."""
     print(f"[DEBUG] Login attempt: username={username}, selected_role={selected_role}")
 
-    if not username or not password:
-        return dash.no_update, html.Span("Please enter your credentials.",
+    validation_error = validate_login_inputs(username, password)
+    if validation_error:
+        return dash.no_update, html.Span(validation_error,
                               style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
     if not supabase:
@@ -427,8 +443,13 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
         selected = (selected_role or "user").lower()
         if actual_role != selected:
             print(f"[DEBUG] Role mismatch: actual={actual_role}, selected={selected}")
+            message = (
+                "Access denied. Developer account required."
+                if selected == "developer"
+                else f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}."
+            )
             return dash.no_update, html.Span(
-                f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}.",
+                message,
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 
@@ -458,7 +479,10 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
                                                  style={"color": "#4a9eff", "fontSize": "13px"}), session_data
 
         print(f"[OK] Login: {username} | role: {actual_role} | user_id: {user_id} | org_id: {organization_id}")
-        redirect_to = next_url if next_url else "/dashboard"
+        if actual_role == "developer":
+            redirect_to = "/dev-dashboard"
+        else:
+            redirect_to = next_url if next_url else "/dashboard"
         return redirect_to, html.Span("Login successful!",
                                        style={"color": "#4aff9e", "fontSize": "13px"}), session_data
 
@@ -547,23 +571,21 @@ def handle_dev_login(n_clicks, username, password):
 
     try:
         # Verify credentials via RPC
-        resp = db.call_database_function(supabase, "verify_login", {
+        resp = supabase.rpc("verify_login", {
             "p_username": username,
             "p_password": password,
-        })
+        }).execute()
 
         if not resp.data:
             return dash.no_update, html.Span("Invalid username or password.",
                                   style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
         # Fetch user profile
-        user_resp = db.fetch_records(
-            supabase,
-            "users",
-            "id, username, first_name, last_name, role, organization_id, last_login_at",
-            filters=[('eq', "username", username)],
-            single=True,
-        )
+        user_resp = supabase.table("users") \
+            .select("id, username, first_name, last_name, role, organization_id, last_login_at") \
+            .eq("username", username) \
+            .single() \
+            .execute()
 
         user_profile = user_resp.data or {}
         role = user_profile.get("role", "")
@@ -576,12 +598,10 @@ def handle_dev_login(n_clicks, username, password):
         is_first_login = user_profile.get("last_login_at") is None
 
         # Update last_login_at
-        db.update_records(
-            supabase,
-            "users",
-            {"last_login_at": "now()", "status": "active"},
-            filters=[('eq', "username", username)],
-        )
+        supabase.table("users") \
+            .update({"last_login_at": "now()"}) \
+            .eq("username", username) \
+            .execute()
 
         # Build session data
         session_data = {
