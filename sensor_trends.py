@@ -234,13 +234,12 @@ def build_sensor_checklist():
                     children=[
                         dcc.Checklist(
                             id={"type": "sensor-check", "index": s["id"]},
-                            options=[{"label": "", "value": s["id"]}],
+                            options=[{"label": "", "value": s["id"],
+                                      "title": s["desc"]}],
                             value=[s["id"]] if s["id"] in DEFAULT_SELECTED else [],
-                            style={"display": "inline"},
-                            inputStyle={
-                                "width": "14px", "height": "14px",
-                                "accentColor": "#4a9eff", "cursor": "pointer",
-                            },
+                            className="sensor-checklist",
+                            labelClassName="sensor-check-label",
+                            inputClassName="sensor-check-input",
                         ),
                         html.Div(style={
                             "width": "10px", "height": "10px", "borderRadius": "50%",
@@ -632,8 +631,7 @@ def register_sensor_callbacks(app, supabase=None):
             except Exception:
                 pass
 
-        fig = build_sensor_chart(selected, sensor_history=sensor_history,
-                                 normalize=is_norm, cluster_info=cluster_info)
+        fig = build_sensor_chart(selected, sensor_history=sensor_history, normalize=is_norm, cluster_info=cluster_info)
 
         legend = [
             html.Div(
@@ -672,43 +670,31 @@ def register_sensor_callbacks(app, supabase=None):
             }
 
             // ── Plot geometry ─────────────────────────────────────────────
-            var layout = figure.layout || {};
-            var margin = layout.margin || {l:10, r:20, t:30, b:10};
-            var plotW = 800, plotH = 420;
-
+            // Plotly expands margins for axis labels and changes ranges on zoom.
+            // Use the rendered axes so overlays share the trace coordinate system.
             var graphEl = document.getElementById('sensor-chart');
-            if (graphEl) {
-                var inner = graphEl.querySelector('.main-svg');
-                if (inner) {
-                    var rect = inner.getBoundingClientRect();
-                    plotW = rect.width  || plotW;
-                    plotH = rect.height || plotH;
-                }
+            var plotEl = graphEl && graphEl.querySelector('.js-plotly-plot');
+            var fullLayout = plotEl && plotEl._fullLayout;
+            var xa = fullLayout && fullLayout.xaxis;
+            var ya = fullLayout && fullLayout.yaxis;
+            // The tooltip starts with display:none, so offsetParent is null.
+            // Its direct parent is the positioned chart wrapper even when hidden.
+            var overlayParent = tooltipEl && tooltipEl.parentElement;
+            if (!xa || !ya || !overlayParent) {
+                return [hidden, hidden];
             }
+            var plotRect = plotEl.getBoundingClientRect();
+            var parentRect = overlayParent.getBoundingClientRect();
+            var l = plotRect.left - parentRect.left + xa._offset;
+            var t = plotRect.top - parentRect.top + ya._offset;
+            var innerW = xa._length;
+            var innerH = ya._length;
+            if (innerW <= 12 || innerH <= 12) return [hidden, hidden];
 
-            var l = margin.l || 10;
-            var r = margin.r || 20;
-            var t = margin.t || 30;
-            var b = margin.b || 10;
-            var innerW = plotW - l - r;
-            var innerH = plotH - t - b;
-
-            // ── X pixel position of hovered cycle ────────────────────────
             var hoveredX = hoverData.points[0].x;
-            var xaxis = layout.xaxis || {};
-            var xMin = xaxis.range ? xaxis.range[0] : null;
-            var xMax = xaxis.range ? xaxis.range[1] : null;
-            if (xMin === null || xMax === null) {
-                var allX = [];
-                figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
-                if (allX.length) {
-                    xMin = Math.min.apply(null, allX);
-                    xMax = Math.max.apply(null, allX);
-                }
-            }
-            var xFrac = (xMin !== null && xMax !== xMin)
-                ? (hoveredX - xMin) / (xMax - xMin) : 0.5;
-            var xPx = l + xFrac * innerW;
+            var xPx = l + xa.d2p(hoveredX);
+            if (!Number.isFinite(xPx)) return [hidden, hidden];
+            xPx = Math.max(l, Math.min(xPx, l + innerW - 1));
 
             // ── Vertical line ─────────────────────────────────────────────
             var vlineStyle = {
@@ -746,7 +732,7 @@ def register_sensor_callbacks(app, supabase=None):
             }
 
             // ── Single vs two-column layout ───────────────────────────────
-            var twoCol = rows.length > 8;
+            var twoCol = rows.length > 8 && innerW >= 352;
 
             function makeCell(row) {
                 var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
@@ -791,31 +777,29 @@ def register_sensor_callbacks(app, supabase=None):
             var footerHtml = '<div style="color:rgba(168,212,255,0.35);font-size:10px;'
                            + 'margin-top:5px;">Hover to view values</div>';
 
-            if (tooltipEl) {
-                tooltipEl.style.maxHeight = '';
-                tooltipEl.style.overflowY = '';
-                tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
-            }
+            var padding = 6;
+            var tooltipW = Math.min(twoCol ? 340 : 190, innerW - 2 * padding);
+            var tooltipMaxH = innerH - 2 * padding;
 
-            // ── Sizing ────────────────────────────────────────────────────
-            var tooltipW = twoCol ? 340 : 190;
-            var offsetX  = 12;
-            var padding  = 6;
-
-            // ── Horizontal: default right, flip left near right edge ──────
+            // Apply the final dimensions before measuring, including on first hover.
+            tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
+            Object.assign(tooltipEl.style, {
+                display: 'block', boxSizing: 'border-box',
+                width: tooltipW + 'px', minWidth: '0',
+                maxHeight: tooltipMaxH + 'px', overflow: 'auto',
+                padding: '10px 14px',
+                border: '1px solid rgba(74,158,255,0.35)'
+            });
+            var tooltipH = tooltipEl.offsetHeight;
+            var offsetX = 12;
             var leftPos = xPx + offsetX;
-            if (leftPos + tooltipW > plotW - r - padding) {
+            if (leftPos + tooltipW > l + innerW - padding) {
                 leftPos = xPx - tooltipW - offsetX;
             }
-            if (leftPos < l) leftPos = l;
-
-            // ── Vertical: clamp within plot area ─────────────────────────
-            var tooltipH  = tooltipEl ? tooltipEl.scrollHeight : 200;
-            var topPos    = t + padding;
-            var bottomEdge = topPos + tooltipH;
-            var plotBottom = plotH - b - padding;
-            if (bottomEdge > plotBottom) topPos = plotBottom - tooltipH;
-            if (topPos < t + padding)    topPos = t + padding;
+            leftPos = Math.max(l + padding,
+                Math.min(leftPos, l + innerW - padding - tooltipW));
+            var topPos = Math.max(t + padding,
+                Math.min(t + padding, t + innerH - padding - tooltipH));
 
             var tooltipStyle = {
                 display:       'block',
@@ -828,7 +812,11 @@ def register_sensor_callbacks(app, supabase=None):
                 padding:       '10px 14px',
                 pointerEvents: 'none',
                 zIndex:        '20',
-                minWidth:      tooltipW + 'px',
+                boxSizing:     'border-box',
+                width:         tooltipW + 'px',
+                minWidth:      '0',
+                maxHeight:     tooltipMaxH + 'px',
+                overflow:      'auto',
                 boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
             };
 

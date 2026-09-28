@@ -246,8 +246,7 @@ def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "al
 #  SHAP BEESWARM CHART
 # ─────────────────────────────────────────────
 
-def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest",
-                         base_value: float = None) -> go.Figure:
+def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest", base_value: float = None) -> go.Figure:
     """
     SHAP waterfall — arrow-tipped bars, hover to see values, no overlapping labels.
     Blue = negative SHAP, Red = positive. Cumulative from E[f(x)] to f(x).
@@ -593,33 +592,32 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
         rul_str = "\nPREDICTED RUL: not yet available"
 
     prompt = f"""You are an aircraft engine prognostics expert writing a degradation briefing for a maintenance engineer.
+    ANALYSIS DATA:
+    - Degradation profile: {degradation_type}
+    - Pattern similarity: {confidence:.1%} (cosine similarity to the {degradation_type} reference profile)
+    - Top SHAP contributors (negative score = drives predicted RUL down):
+    {features_str}
+    {rul_str}
+    {trend_str}
 
-ANALYSIS DATA:
-- Degradation profile: {degradation_type}
-- Pattern similarity: {confidence:.1%} (cosine similarity to the {degradation_type} reference profile)
-- Top SHAP contributors (negative score = drives predicted RUL down):
-{features_str}
-{rul_str}
-{trend_str}
+    OUTPUT INSTRUCTIONS — you MUST follow this structure exactly. Use Markdown. Do NOT produce a single paragraph.
 
-OUTPUT INSTRUCTIONS — you MUST follow this structure exactly. Use Markdown. Do NOT produce a single paragraph.
+    ### Why It Was Detected
+    Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why it points to {degradation_type}. Only use the sensors listed above — do not invent others.
 
-### Why It Was Detected
-Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why it points to {degradation_type}. Only use the sensors listed above — do not invent others.
+    ### Engineering Interpretation
+    Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what is likely happening inside the engine. Do not repeat the sensor list.
 
-### Engineering Interpretation
-Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what is likely happening inside the engine. Do not repeat the sensor list.
+    ### Recommended Action
+    Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, wash schedules, vibration checks, monitoring intervals, etc.
 
-### Recommended Action
-Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, wash schedules, vibration checks, monitoring intervals, etc.
-
-RULES:
-- The degradation profile name "{degradation_type}" and similarity "{confidence:.1%}" MUST appear verbatim in the output.
-- Each section must have its ### heading exactly as shown.
-- Do not add a Diagnosis section — that is rendered separately by the UI.
-- Do not repeat information across sections.
-- No hedging phrases. Professional, engineering-focused tone.
-- Total output: no more than 180 words.
+    RULES:
+    - The degradation profile name "{degradation_type}" and similarity "{confidence:.1%}" MUST appear verbatim in the output.
+    - Each section must have its ### heading exactly as shown.
+    - Do not add a Diagnosis section — that is rendered separately by the UI.
+    - Do not repeat information across sections.
+    - No hedging phrases. Professional, engineering-focused tone.
+    - Total output: no more than 180 words.
 """
     return prompt
 
@@ -754,12 +752,8 @@ def _fallback_explanation(degradation_type: str, confidence: float,
     )
 
 
-def generate_llm_explanation(degradation_type: str, confidence: float,
-                             top_features: list[dict],
-                             sensor_trends: dict | None = None,
-                             predicted_rul: float | None = None,
-                             warn_threshold: int = 80,
-                             crit_threshold: int = 30) -> str:
+def generate_llm_explanation(degradation_type: str, confidence: float, top_features: list[dict], sensor_trends: dict | None = None,
+                             predicted_rul: float | None = None, warn_threshold: int = 80, crit_threshold: int = 30) -> str:
     """
     Call Groq API (GPT-OSS 120B) to generate natural language explanation.
     Falls back to a templated string if the API is unavailable or validation fails.
@@ -787,13 +781,11 @@ def generate_llm_explanation(degradation_type: str, confidence: float,
             return text
         else:
             print("[DEGRAD] LLM output failed validation, using fallback.")
-            return _fallback_explanation(degradation_type, confidence, top_features,
-                                         predicted_rul, warn_threshold, crit_threshold)
+            return _fallback_explanation(degradation_type, confidence, top_features, predicted_rul, warn_threshold, crit_threshold)
 
     except ImportError:
         print("[DEGRAD] groq package not installed. Using fallback.")
-        return _fallback_explanation(degradation_type, confidence, top_features,
-                                     predicted_rul, warn_threshold, crit_threshold)
+        return _fallback_explanation(degradation_type, confidence, top_features, predicted_rul, warn_threshold, crit_threshold)
     except Exception as e:
         print(f"[DEGRAD] Groq API error: {e}")
         return _fallback_explanation(degradation_type, confidence, top_features,
@@ -1939,43 +1931,31 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             }
 
             // ── Plot geometry ─────────────────────────────────────────────
-            var layout = figure.layout || {};
-            var margin = layout.margin || {l:50, r:20, t:60, b:40};
-            var plotW = 800, plotH = 380;
-
+            // Plotly expands margins for axis labels and changes ranges on zoom.
+            // Use the rendered axes so overlays share the trace coordinate system.
             var graphEl = document.getElementById('da-shap-trend');
-            if (graphEl) {
-                var inner = graphEl.querySelector('.main-svg');
-                if (inner) {
-                    var rect = inner.getBoundingClientRect();
-                    plotW = rect.width  || plotW;
-                    plotH = rect.height || plotH;
-                }
+            var plotEl = graphEl && graphEl.querySelector('.js-plotly-plot');
+            var fullLayout = plotEl && plotEl._fullLayout;
+            var xa = fullLayout && fullLayout.xaxis;
+            var ya = fullLayout && fullLayout.yaxis;
+            // The tooltip starts with display:none, so offsetParent is null.
+            // Its direct parent is the positioned chart wrapper even when hidden.
+            var overlayParent = tooltipEl && tooltipEl.parentElement;
+            if (!xa || !ya || !overlayParent) {
+                return [hidden, hidden];
             }
+            var plotRect = plotEl.getBoundingClientRect();
+            var parentRect = overlayParent.getBoundingClientRect();
+            var l = plotRect.left - parentRect.left + xa._offset;
+            var t = plotRect.top - parentRect.top + ya._offset;
+            var innerW = xa._length;
+            var innerH = ya._length;
+            if (innerW <= 12 || innerH <= 12) return [hidden, hidden];
 
-            var l = margin.l || 50;
-            var r = margin.r || 20;
-            var t = margin.t || 60;
-            var b = margin.b || 40;
-            var innerW = plotW - l - r;
-            var innerH = plotH - t - b;
-
-            // ── X pixel position of the hovered cycle ────────────────────
             var hoveredCycle = hoverData.points[0].x;
-            var xaxis = layout.xaxis || {};
-            var xMin = xaxis.range ? xaxis.range[0] : null;
-            var xMax = xaxis.range ? xaxis.range[1] : null;
-            if (xMin === null || xMax === null) {
-                var allX = [];
-                figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
-                if (allX.length) {
-                    xMin = Math.min.apply(null, allX);
-                    xMax = Math.max.apply(null, allX);
-                }
-            }
-            var xFrac = (xMin !== null && xMax !== xMin)
-                ? (hoveredCycle - xMin) / (xMax - xMin) : 0.5;
-            var xPx = l + xFrac * innerW;
+            var xPx = l + xa.d2p(hoveredCycle);
+            if (!Number.isFinite(xPx)) return [hidden, hidden];
+            xPx = Math.max(l, Math.min(xPx, l + innerW - 1));
 
             // ── Vertical line ─────────────────────────────────────────────
             var vlineStyle = {
@@ -2013,7 +1993,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             }
 
             // ── Choose layout: single column ≤8 rows, two columns otherwise ─
-            var twoCol = rows.length > 8;
+            var twoCol = rows.length > 8 && innerW >= 352;
 
             // ── Build a single feature row cell ──────────────────────────
             function makeCell(row) {
@@ -2066,39 +2046,29 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             var footerHtml = '<div style="color:rgba(168,212,255,0.35);font-size:10px;'
                            + 'margin-top:5px;">Hover to view values</div>';
 
-            if (tooltipEl) {
-                tooltipEl.style.maxHeight = '';
-                tooltipEl.style.overflowY = '';
-                tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
-            }
+            var padding = 6;
+            var tooltipW = Math.min(twoCol ? 340 : 190, innerW - 2 * padding);
+            var tooltipMaxH = innerH - 2 * padding;
 
-            // ── Sizing: wider for two-column ──────────────────────────────
-            var tooltipW = twoCol ? 340 : 190;
-            var offsetX  = 12;
-            var padding  = 6;
-
-            // ── Horizontal: default right, flip left if near right edge ───
+            // Apply the final dimensions before measuring, including on first hover.
+            tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
+            Object.assign(tooltipEl.style, {
+                display: 'block', boxSizing: 'border-box',
+                width: tooltipW + 'px', minWidth: '0',
+                maxHeight: tooltipMaxH + 'px', overflow: 'auto',
+                padding: '10px 14px',
+                border: '1px solid rgba(74,158,255,0.35)'
+            });
+            var tooltipH = tooltipEl.offsetHeight;
+            var offsetX = 12;
             var leftPos = xPx + offsetX;
-            if (leftPos + tooltipW > plotW - r - padding) {
+            if (leftPos + tooltipW > l + innerW - padding) {
                 leftPos = xPx - tooltipW - offsetX;
             }
-            // Keep inside left edge
-            if (leftPos < l) leftPos = l;
-
-            // ── Vertical: read actual rendered height, then clamp ─────────
-            var tooltipH = tooltipEl ? tooltipEl.scrollHeight : 200;
-            var availH   = innerH;          // plot area height
-
-            // Start at the top of the plot area
-            var topPos = t + padding;
-            // If it still overflows the bottom, push it up
-            var bottomEdge = topPos + tooltipH;
-            var plotBottom = plotH - b - padding;
-            if (bottomEdge > plotBottom) {
-                topPos = plotBottom - tooltipH;
-            }
-            // Never go above the top margin
-            if (topPos < t + padding) topPos = t + padding;
+            leftPos = Math.max(l + padding,
+                Math.min(leftPos, l + innerW - padding - tooltipW));
+            var topPos = Math.max(t + padding,
+                Math.min(t + padding, t + innerH - padding - tooltipH));
 
             var tooltipStyle = {
                 display:       'block',
@@ -2111,7 +2081,11 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 padding:       '10px 14px',
                 pointerEvents: 'none',
                 zIndex:        '20',
-                minWidth:      tooltipW + 'px',
+                boxSizing:     'border-box',
+                width:         tooltipW + 'px',
+                minWidth:      '0',
+                maxHeight:     tooltipMaxH + 'px',
+                overflow:      'auto',
                 boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
             };
 

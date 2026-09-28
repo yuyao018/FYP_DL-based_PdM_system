@@ -1130,8 +1130,7 @@ def register_overview_callbacks(app, supabase=None):
 
     # ── Sensor mini-charts callback ──
     # All 14 informative CMAPSS sensors (the ones with actual variance)
-    _ALL_SENSORS_MINI = ["T24", "T30", "T50", "Nf", "Ps30", "htBleed", "NRf",
-                         "P30", "phi", "NRc", "BPR", "W31", "W32", "Nc"]
+    _ALL_SENSORS_MINI = ["T24", "T30", "T50", "Nf", "Ps30", "htBleed", "NRf", "P30", "phi", "NRc", "BPR", "W31", "W32", "Nc"]
 
     # Sensor JSON key mapping (same as sensor_trends.py)
     _SENSOR_KEY = {

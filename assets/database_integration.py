@@ -1,14 +1,3 @@
-"""Shared Supabase access for the monitoring application.
-
-Callers provide their existing client: this module never creates a privileged
-client or changes authentication. Responses and exceptions are returned unchanged
-so UI fallbacks, retry policies, and authorization remain with their callers.
-
-Filters are (operator, column, value) tuples, for example
-[("eq", "organization_id", org_id), ("in_", "engine_id", engine_ids)].
-"""
-
-
 def _apply_filters(query, filters):
     for operator, column, value in filters:
         if operator not in {"eq", "in_", "lte"}:
@@ -17,8 +6,7 @@ def _apply_filters(query, filters):
     return query
 
 
-def fetch_records(client, table, columns="*", *, filters=(), order_by=(),
-                  limit=None, row_range=None, single=False, count=None):
+def fetch_records(client, table, columns="*", *, filters=(), order_by=(), limit=None, row_range=None, single=False, count=None):
     """Retrieve rows; optionally sort, paginate, count, or request one row.
 
     order_by contains (column, descending) pairs. row_range is an inclusive
