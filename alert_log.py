@@ -530,6 +530,7 @@ def _maintenance_section(alert, report=None):
             _detail_row("Fault Confirmed", fault, "white"),
             _detail_row("AI Rec. Usefulness", ai_use, "white"),
             _detail_row("Follow-up Required", "No", "#00c875"),
+            _detail_row("Verification", "Awaiting post-maintenance verification", "#ffd93d"),
         ]
 
     elif mstatus == "follow_up_required":
@@ -2583,6 +2584,16 @@ def register_alert_log_callbacks(app, supabase=None):
                 )
             except Exception as _e:
                 print(f"[ALERT] confirm outcome: {_e}")
+                return (dash.no_update, dash.no_update,
+                        html.Span("Unable to complete maintenance. Please try again.", style={"color": "#ff6b6b"}),
+                        *([dash.no_update] * 6))
+
+        if new_status == "completed" and supabase:
+            from engine_simulation_manager import pause_for_maintenance_verification
+            for stored_alert in alerts_data:
+                if stored_alert.get("maintenance_schedule_id") == maintenance_schedule_id:
+                    pause_for_maintenance_verification(stored_alert.get("engine_id"))
+                    break
 
         # Update local store
         idx = selected_idx or 0

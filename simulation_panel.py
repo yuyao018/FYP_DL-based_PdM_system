@@ -97,6 +97,9 @@ def register_simulation_callbacks(app, supabase):
         state = get_simulation_state(engine_id)
         if not state or not state["running"]:
             return "Simulation inactive or completed.", "", True, True, True, True
+        if state.get("awaiting_verification"):
+            return (f"Engine {result.data[0].get('engine_id', engine_id)} · Paused · Cycle {state['cycle']} · Maintenance completed.",
+                    "", True, True, True, True)
         action = ctx.triggered_id
         changes = {}
         if action == "simulation-apply":

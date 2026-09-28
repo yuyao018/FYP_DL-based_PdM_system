@@ -1419,6 +1419,14 @@ def start_engine_simulation(
 
         stop_event = threading.Event()
         clock = SimulationClock()
+        # Completed work remains unverified: do not replay more degradation data
+        # after an application restart either.
+        schedules = db.fetch_records(supabase, "maintenance_schedules", "status",
+            filters=[('eq', "engine_id", engine_db_id)],
+            order_by=[("created_at", True)], limit=1)
+        awaiting_verification = bool(schedules.data and schedules.data[0].get("status") == "completed")
+        if awaiting_verification:
+            clock.configure(paused=True)
         thread = threading.Thread(
             target=_simulation_loop,
             args=(engine_db_id, json_path, model_type, supabase, stop_event, clock),
@@ -1426,6 +1434,7 @@ def start_engine_simulation(
             name=f"sim-{engine_db_id}",
         )
         _RUNNING_SIMULATIONS[engine_db_id] = {"thread": thread, "stop": stop_event, "model_type": model_type, "clock": clock}
+        _RUNNING_SIMULATIONS[engine_db_id]["awaiting_verification"] = awaiting_verification
         thread.start()
         print(f"[SIM] Spawned simulation thread for engine {engine_db_id}")
         return True
@@ -1604,14 +1613,26 @@ def get_simulation_state(engine_db_id):
         if not entry or not entry.get("clock"):
             return None
         state = entry["clock"].snapshot()
+        state["awaiting_verification"] = entry.get("awaiting_verification", False)
         state["running"] = entry["thread"].is_alive() and not entry["stop"].is_set()
         return state
+
+
+def pause_for_maintenance_verification(engine_db_id):
+    """Hold this engine's next cycle until post-maintenance verification exists."""
+    with _LOCK:
+        entry = _RUNNING_SIMULATIONS.get(engine_db_id)
+        if entry:
+            entry["awaiting_verification"] = True
+            entry["clock"].configure(paused=True)
 
 
 def configure_simulation(engine_db_id, **changes):
     with _LOCK:
         entry = _RUNNING_SIMULATIONS.get(engine_db_id)
         if not entry or not entry["thread"].is_alive() or entry["stop"].is_set():
+            return False
+        if entry.get("awaiting_verification") and changes.get("paused") is False:
             return False
         entry["clock"].configure(**changes)
         return True
