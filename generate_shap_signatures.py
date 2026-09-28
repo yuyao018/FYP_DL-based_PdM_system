@@ -21,6 +21,7 @@ Usage
 
 Requires SUPABASE_URL and SUPABASE_KEY to be set in the environment (or .env).
 """
+from assets import database_integration as db
 
 import json
 import os
@@ -98,10 +99,9 @@ def generate_signatures(supabase_url: str, supabase_key: str,
         print(f"\n[SIG] Processing {dataset}...")
 
         # ── Step 1: find all engine IDs for this dataset ──────────────────────
-        eng_resp = sb.table("engines") \
-            .select("id") \
-            .eq("model_type", dataset) \
-            .execute()
+        eng_resp = db.fetch_records(
+            sb, "engines", "id", filters=[("eq", "model_type", dataset)]
+        )
         engine_ids = [r["id"] for r in (eng_resp.data or [])]
         if not engine_ids:
             print(f"[SIG][WARN] No engines found for {dataset} — skipping.")
@@ -114,12 +114,12 @@ def generate_signatures(supabase_url: str, supabase_key: str,
         PAGE = 1000
         while True:
             resp = (
-                sb.table("rul_predictions")
-                  .select("shap_values, predicted_rul")
-                  .in_("engine_id", engine_ids)
-                  .lte("predicted_rul", warn_threshold)
-                  .range(offset, offset + PAGE - 1)
-                  .execute()
+                db.fetch_records(
+                    sb, "rul_predictions", "shap_values, predicted_rul",
+                    filters=[("in_", "engine_id", engine_ids),
+                             ("lte", "predicted_rul", warn_threshold)],
+                    row_range=(offset, offset + PAGE - 1),
+                )
             )
             batch = resp.data or []
             all_rows.extend(batch)
