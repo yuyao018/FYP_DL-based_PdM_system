@@ -197,13 +197,6 @@ def build_schedule_modal(engine_options=None, *, id_map=None, namespace=None,
 _REGISTERED_APPS = set()
 
 
-def get_responsible_user(supabase, engine_id):
-    """Resolve the engine owner for automatic maintenance assignment."""
-    response = (supabase.table("engines").select("responsible_by")
-                .eq("id", engine_id).single().execute())
-    return (response.data or {}).get("responsible_by")
-
-
 def register_schedule_modal_callbacks(app, supabase=None):
     if id(app) in _REGISTERED_APPS:
         return
@@ -314,7 +307,6 @@ def register_schedule_modal_callbacks(app, supabase=None):
                             "end_time":       end_time or "10:00",
                         }).eq("id", schedule_id).execute()
                     else:
-                        responsible_user_id = get_responsible_user(supabase, engine_db_id)
 
                         result = supabase.table("maintenance_schedules").insert({
                             "engine_id":      engine_db_id,
@@ -323,7 +315,6 @@ def register_schedule_modal_callbacks(app, supabase=None):
                             "end_time":       end_time or "10:00",
                             "status":         "scheduled",
                             "created_by":     user_id,
-                            "assigned_to":    responsible_user_id,
                         }).execute()
                         if result.data:
                             schedule_id = result.data[0]["id"]

@@ -155,7 +155,7 @@ def email_section(sb, engine_id, rul, base_url):
                 'planning margin. The slot is rechecked when accepted; this is not a reservation.</p>'
                 f'<p><a class="btn" href="{escape(url)}?answer=yes">Yes — accept this time</a> '
                 f'<a class="btn" href="{escape(url)}?answer=no">No — choose another time</a></p>'
-                '<p>Yes opens a confirmation page. Links expire after seven days; a past slot cannot be accepted.</p>')
+                '<p>Yes books this time immediately. Links expire after seven days; a past slot cannot be accepted.</p>')
     except ValueError as exc:
         return f'<h3>Recommended maintenance time</h3><p>{escape(str(exc))}</p>'
     except Exception:
@@ -213,7 +213,7 @@ def register_response_routes(server, sb):
         if request.method == "GET" and request.args.get("answer") == "no":
             return redirect("/?next=" + quote(edit_path, safe=""))
         status = 200
-        if request.method == "POST":
+        if request.method == "POST" or (request.method == "GET" and request.args.get("answer") == "yes"):
             try:
                 message = accept(sb, proposal)
             except ValueError as exc:

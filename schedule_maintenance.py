@@ -1,4 +1,4 @@
-from assets.schedule_modal import build_schedule_modal, get_responsible_user
+from assets.schedule_modal import build_schedule_modal
 from scheduling_agent import build_scheduling_agent, register_scheduling_agent
 from assets import database_integration as db
 import dash
@@ -820,7 +820,6 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         if supabase:
             try:
                 session_user_id = (session or {}).get("user_id") or None
-                responsible_user_id = get_responsible_user(supabase, engine_id)
                 result = supabase.table("maintenance_schedules").insert({
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
@@ -828,7 +827,6 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                     "end_time":       end_time,
                     "status":         "scheduled",
                     "created_by":     session_user_id,
-                    "assigned_to":    responsible_user_id,
                     "created_at":     datetime.utcnow().isoformat(),
                 }).execute()
                 if result.data:
@@ -1040,9 +1038,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # Persist to Supabase
         if supabase and db_id:
             try:
-                responsible_user_id = get_responsible_user(supabase, engine_id)
                 supabase.table("maintenance_schedules").update({
-                    "assigned_to":    responsible_user_id,
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
                     "start_time":     start_time,

@@ -344,7 +344,22 @@ def shap_mini_bars(shap_values):
 #  ALERT TABLE ROW
 ALERT_TABLE_COLUMNS = "55px minmax(130px,1.6fr) minmax(130px,1.6fr) minmax(60px,0.8fr)"
 
-def _status_button_props(mstatus):
+def _schedule_is_due(schedule, now=None):
+    """Schedule date/time values are local Malaysia time (UTC+8)."""
+    if not schedule or not schedule.get("scheduled_date") or not schedule.get("start_time"):
+        return False
+    try:
+        start = datetime.fromisoformat(
+            f"{schedule['scheduled_date']}T{schedule['start_time']}"
+        )
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=_MYT)
+        return start <= (now or datetime.now(_MYT))
+    except (TypeError, ValueError):
+        return False
+
+
+def _status_button_props(mstatus, schedule=None):
     # Primary blue gradient — schedule / open report actions
     primary = {
         "display": "inline-flex", "alignItems": "center", "gap": "7px",
@@ -377,6 +392,8 @@ def _status_button_props(mstatus):
 
     if s == "maintenance_required":
         return [icon_cal, "Schedule Maintenance"], primary
+    elif s == "scheduled" and _schedule_is_due(schedule):
+        return [icon_doc, "Open Report"], secondary
     elif s == "scheduled":
         return [icon_cal, "View Schedule"], secondary
     elif s == "in_progress":
@@ -884,7 +901,7 @@ def _engine_status_bar_contents(alerts, current_schedule=None):
         }
 
         badge = [maintenance_status_badge(mstatus, alert=status_data)]
-        btn_children, btn_style = _status_button_props(mstatus)
+        btn_children, btn_style = _status_button_props(mstatus, current_schedule)
         return badge, btn_children, btn_style
 
     if alerts:
@@ -899,7 +916,7 @@ def _engine_status_bar_contents(alerts, current_schedule=None):
                 "maintenance_completed_at": first.get("maintenance_completed_at"),
             }
         )]
-        btn_children, btn_style = _status_button_props(derived_status)
+        btn_children, btn_style = _status_button_props(derived_status, first)
         return badge, btn_children, btn_style
 
     return [], ["—"], {"color": "rgba(168,212,255,0.3)", "fontSize": "12px"}
@@ -1098,6 +1115,7 @@ def build_alert_log_body(engine_id="—", alerts=None, selected_idx=0,
         ),
 
         # ── Stores ────────────────────────────────────────────────────
+        dcc.Interval(id="al-schedule-clock", interval=1000, n_intervals=0),
         dcc.Store(id="alerts-data", data=[
             {**a, "timestamp": a["timestamp"].isoformat()} for a in alerts
         ]),
@@ -1230,7 +1248,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                             supabase,
                             "maintenance_schedules",
                             "id,engine_id,scheduled_date,created_by,status,"
-                            "started_at,completed_at",
+                            "started_at,completed_at,start_time,end_time",
                             filters=[('in_', "engine_id", engine_ids)],
                             order_by=[("created_at", True)],
                         )
@@ -1244,6 +1262,27 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                             schedules_by_id[s["id"]] = s
                 except Exception as e:
                     print(f"[ALERT] schedules fetch: {e}")
+
+            assigned_user_ids = list({
+                s.get("created_by")
+                for s in schedules_by_engine.values()
+                if s.get("created_by")
+            })
+            usernames_by_id = {}
+            if assigned_user_ids:
+                try:
+                    users_resp = db.fetch_records(
+                        supabase,
+                        "users",
+                        "id,username",
+                        filters=[('in_', "id", assigned_user_ids)],
+                    )
+                    usernames_by_id = {
+                        u["id"]: u.get("username")
+                        for u in (users_resp.data or [])
+                    }
+                except Exception as e:
+                    print(f"[ALERT] assigned usernames fetch: {e}")
 
             schedule_ids = list(schedules_by_id.keys())
 
@@ -1295,7 +1334,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
 
                 # Scheduled date + user from linked schedule
                 sched_date_v = sched_info.get("scheduled_date", "")
-                assigned_uid = sched_info.get("created_by", "")
+                assigned_uid = sched_info.get("created_by")
 
                 # RUL progression
                 rul_progression = []
@@ -1347,7 +1386,9 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                     "maintenance_started_at":  maint_started,
                     "maintenance_completed_at": maint_completed,
                     "scheduled_date":        sched_date_v,
-                    "assigned_user":         assigned_uid,
+                    "start_time":            sched_info.get("start_time"),
+                    "end_time":              sched_info.get("end_time"),
+                    "assigned_user":         usernames_by_id.get(assigned_uid) or "—",
                     "report":                report,
                 })
 
@@ -1585,6 +1626,19 @@ def _generate_pdf(alert, report):
 
 #  CALLBACKS
 def register_alert_log_callbacks(app, supabase=None):
+    @app.callback(
+        Output("al-engine-action-btn", "children", allow_duplicate=True),
+        Output("al-engine-action-btn", "style", allow_duplicate=True),
+        Input("al-schedule-clock", "n_intervals"),
+        Input("alerts-data", "data"),
+        prevent_initial_call=True,
+    )
+    def refresh_schedule_action(n_intervals, alerts_data):
+        if not alerts_data:
+            raise dash.exceptions.PreventUpdate
+        first = alerts_data[0]
+        return _status_button_props(first.get("maintenance_status"), first)
+
     app.clientside_callback(
         """
         function(hoverData) {
@@ -1852,6 +1906,9 @@ def register_alert_log_callbacks(app, supabase=None):
                 except Exception as _e:
                     print(f"[ALERT] fetch schedule for view: {_e}")
 
+            if _schedule_is_due(sched_row or alert):
+                return _open_report_modal(readonly=False)
+
             prefill_date  = sched_row.get("scheduled_date") or ""
             prefill_start = sched_row.get("start_time", "09:00") or "09:00"
             prefill_end   = sched_row.get("end_time", "10:00") or "10:00"
@@ -2076,19 +2133,6 @@ def register_alert_log_callbacks(app, supabase=None):
 
                 else:
                     # ── NEW SCHEDULE / FOLLOW-UP ───────────────────────────
-                    responsible_user_id = None
-                    if engine_db_id:
-                        try:
-                            engine_resp = (
-                                db.get_engine(supabase, engine_db_id, "responsible_by")
-                            )
-
-                            if engine_resp.data:
-                                responsible_user_id = engine_resp.data.get("responsible_by")
-
-                        except Exception as _e:
-                            print(f"[ALERT] Failed to fetch engine responsible user: {_e}")
-
                     existing_sched = None
                     if engine_db_id:
                         try:
@@ -2131,7 +2175,6 @@ def register_alert_log_callbacks(app, supabase=None):
                                     "end_time": end_time or "10:00",
                                     "status": "scheduled",
                                     "created_by": user_id,
-                                    "assigned_to": responsible_user_id,
                                 },
                             )
                         )
@@ -2217,17 +2260,20 @@ def register_alert_log_callbacks(app, supabase=None):
                         not in ("completed", "follow_up_required"):
                     alerts_data[i]["maintenance_status"]      = "scheduled"
                     alerts_data[i]["scheduled_date"]          = sel_date
+                    alerts_data[i]["start_time"]              = start_time or "09:00"
                     alerts_data[i]["maintenance_schedule_id"] = sched_db_id
         else:
             # No schedule created — at minimum update the clicked row in the store
             alerts_data[idx]["maintenance_status"]    = "scheduled"
             alerts_data[idx]["scheduled_date"]        = sel_date
+            alerts_data[idx]["start_time"]            = start_time or "09:00"
 
         alerts = [_alert_from_store(a) for a in alerts_data]
         report = (alerts[idx].get("report")) if idx < len(alerts) else None
         detail = alert_detail_panel(alerts[idx], report=report)
         rows   = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
-        current_schedule = {"status": "scheduled", "scheduled_date": sel_date} if sched_db_id else None
+        current_schedule = {"status": "scheduled", "scheduled_date": sel_date,
+                            "start_time": start_time or "09:00"} if sched_db_id else None
         badge, btn_children, btn_style = _engine_status_bar_contents(alerts, current_schedule=current_schedule)
         return hidden, "", alerts_data, badge, btn_children, btn_style, detail, rows
 
