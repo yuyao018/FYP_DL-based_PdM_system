@@ -718,6 +718,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                         style={
                                             "display": "grid",
                                             "gridTemplateColumns": "repeat(3, 1fr)",
+                                            "alignContent": "start",
                                             "gap": "16px",
                                             "overflowY": "auto",
                                             "flex": "1",
