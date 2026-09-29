@@ -197,9 +197,25 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
             print(f"[DEBUG] Parsed engine_data: {engine_data}")
 
-            # ── Fetch maintenance alerts scoped to this org's engines ──
+            # Admins see all organization engines; other users see their own.
+            responsible_engine_ids = [e["db_id"] for e in engine_data
+                                      if role == "admin" or
+                                      (user_id and str(e.get("responsible_by")) == str(user_id))]
+            latest_maintenance = {}
+            if responsible_engine_ids:
+                schedules = db.fetch_records(
+                    supabase, "maintenance_schedules", "engine_id,status",
+                    filters=[('in_', "engine_id", responsible_engine_ids)],
+                    order_by=[("created_at", True)],
+                )
+                for schedule in schedules.data or []:
+                    latest_maintenance.setdefault(schedule["engine_id"], schedule.get("status"))
+            alert_engine_ids = [eid for eid in responsible_engine_ids
+                                if latest_maintenance.get(eid) != "completed"]
+
+            # ── Fetch unresolved maintenance alerts for responsible engines ──
             # One alert per engine: critical beats warning, latest wins within same severity.
-            if org_id and not engine_ids:
+            if not alert_engine_ids:
                 pass
             else:
                 alert_query = dict(
@@ -210,8 +226,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                     order_by=[("triggered_at", True)],
                 )
 
-                if org_id and engine_ids:
-                    alert_query["filters"].append(('in_', "engine_id", engine_ids))
+                alert_query["filters"].append(('in_', "engine_id", alert_engine_ids))
 
                 alerts_resp = db.fetch_records(**alert_query)
 
@@ -337,14 +352,14 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                     style={"display": "flex", "justifyContent": "space-between"},
                                     children=[
                                         html.Span("Model", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
-                                        html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "14px"})
+                                        html.Span(engine.get("model_type"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "700", "fontSize": "14px"})
                                     ]
                                 ),
                                 html.Div(
                                     style={"display": "flex", "justifyContent": "space-between"},
                                     children=[
                                         html.Span("Created", style={"color": "rgba(180, 210, 255, 0.7)", "fontSize": "12px"}),
-                                        html.Span(engine.get("created_at", "N/A"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"})
+                                        html.Span(engine.get("created_at"), style={"color": "rgba(200,220,255,0.9)", "fontWeight": "600", "fontSize": "11px"})
                                     ]
                                 ),
                                 html.Div(
