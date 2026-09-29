@@ -49,8 +49,8 @@ def _send_email(subject: str, html_body: str, recipients_override: list = None) 
     """Send an HTML email via SMTP (Gmail)."""
     sender    = _cfg("EMAIL_SENDER")
     password  = _cfg("EMAIL_PASSWORD")
-    smtp_host = _cfg("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(_cfg("SMTP_PORT", "587"))
+    smtp_host = _cfg("SMTP_HOST")
+    smtp_port = int(_cfg("SMTP_PORT"))
 
     # Use dynamic recipients if provided, else skip
     if recipients_override:
@@ -175,62 +175,62 @@ def _daily_report_html(summary: dict) -> str:
     date_str = _fmt_date()
 
     return f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8">
-<style>
-  body {{ font-family: Georgia, serif; background: #f4f4f4; margin: 0; padding: 0; }}
-  .wrapper {{ max-width: 640px; margin: 30px auto; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
-  .header {{ background: #1a3a6b; padding: 18px 28px; }}
-  .header h1 {{ color: #fff; margin: 0; font-size: 18px; font-weight: normal; letter-spacing: 0.3px; }}
-  .header span {{ color: #a8c4f0; font-size: 14px; }}
-  .body {{ padding: 28px 28px 20px; color: #222; font-size: 14px; line-height: 1.6; }}
-  .cards {{ display: flex; gap: 12px; margin: 22px 0; }}
-  .card {{ flex: 1; text-align: center; padding: 14px 10px; border-radius: 6px; border: 1px solid #ddd; }}
-  .card .label {{ font-size: 12px; color: #666; margin-bottom: 6px; }}
-  .card .value {{ font-size: 28px; font-weight: bold; }}
-  .card-monitored {{ background: #f0f4ff; }}
-  .card-critical  {{ background: #fff0f0; }} .card-critical .value {{ color: #c0392b; }}
-  .card-warning   {{ background: #fffbea; }} .card-warning  .value {{ color: #b8860b; }}
-  .card-normal    {{ background: #f0fff4; }} .card-normal   .value {{ color: #27ae60; }}
-  .btn {{ display: inline-block; background: #1a3a6b; color: #ffffff !important; padding: 11px 22px; border-radius: 4px; text-decoration: none; font-size: 13px; margin-top: 6px; font-weight: 600; }}
-  .footer {{ padding: 14px 28px; border-top: 1px solid #eee; color: #999; font-size: 11px; }}
-</style>
-</head>
-<body>
-<div class="wrapper">
-  <div class="header">
-    <h1>Daily RUL Status Report &mdash; <span>{date_str}</span></h1>
-  </div>
-  <div class="body">
-    <p>Hi <strong>Team</strong>,</p>
-    <p>Here is your fleet status summary for today.</p>
-    <div class="cards">
-      <div class="card card-monitored">
-        <div class="label">Monitored</div>
-        <div class="value">{summary['total']}</div>
-      </div>
-      <div class="card card-critical">
-        <div class="label" style="color:#c0392b">Critical</div>
-        <div class="value">{summary['critical']}</div>
-      </div>
-      <div class="card card-warning">
-        <div class="label" style="color:#b8860b">Warning</div>
-        <div class="value">{summary['warning']}</div>
-      </div>
-      <div class="card card-normal">
-        <div class="label" style="color:#27ae60">Normal</div>
-        <div class="value">{summary['normal']}</div>
-      </div>
+    <html>
+    <head><meta charset="utf-8">
+    <style>
+    body {{ font-family: Georgia, serif; background: #f4f4f4; margin: 0; padding: 0; }}
+    .wrapper {{ max-width: 640px; margin: 30px auto; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
+    .header {{ background: #1a3a6b; padding: 18px 28px; }}
+    .header h1 {{ color: #fff; margin: 0; font-size: 18px; font-weight: normal; letter-spacing: 0.3px; }}
+    .header span {{ color: #a8c4f0; font-size: 14px; }}
+    .body {{ padding: 28px 28px 20px; color: #222; font-size: 14px; line-height: 1.6; }}
+    .cards {{ display: flex; gap: 12px; margin: 22px 0; }}
+    .card {{ flex: 1; text-align: center; padding: 14px 10px; border-radius: 6px; border: 1px solid #ddd; }}
+    .card .label {{ font-size: 12px; color: #666; margin-bottom: 6px; }}
+    .card .value {{ font-size: 28px; font-weight: bold; }}
+    .card-monitored {{ background: #f0f4ff; }}
+    .card-critical  {{ background: #fff0f0; }} .card-critical .value {{ color: #c0392b; }}
+    .card-warning   {{ background: #fffbea; }} .card-warning  .value {{ color: #b8860b; }}
+    .card-normal    {{ background: #f0fff4; }} .card-normal   .value {{ color: #27ae60; }}
+    .btn {{ display: inline-block; background: #1a3a6b; color: #ffffff !important; padding: 11px 22px; border-radius: 4px; text-decoration: none; font-size: 13px; margin-top: 6px; font-weight: 600; }}
+    .footer {{ padding: 14px 28px; border-top: 1px solid #eee; color: #999; font-size: 11px; }}
+    </style>
+    </head>
+    <body>
+    <div class="wrapper">
+    <div class="header">
+        <h1>Daily RUL Status Report &mdash; <span>{date_str}</span></h1>
     </div>
-    <p>For detailed sensor data and RUL predictions, visit the dashboard:</p>
-    <a class="btn" href="{login_url}" style="color: #ffffff !important; text-decoration: none;">Open Dashboard</a>
-  </div>
-  <div class="footer">
-    This is an automated message from the Predictive Maintenance Monitoring System. Do not reply to this email.
-  </div>
-</div>
-</body>
-</html>"""
+    <div class="body">
+        <p>Hi <strong>Team</strong>,</p>
+        <p>Here is your fleet status summary for today.</p>
+        <div class="cards">
+        <div class="card card-monitored">
+            <div class="label">Monitored</div>
+            <div class="value">{summary['total']}</div>
+        </div>
+        <div class="card card-critical">
+            <div class="label" style="color:#c0392b">Critical</div>
+            <div class="value">{summary['critical']}</div>
+        </div>
+        <div class="card card-warning">
+            <div class="label" style="color:#b8860b">Warning</div>
+            <div class="value">{summary['warning']}</div>
+        </div>
+        <div class="card card-normal">
+            <div class="label" style="color:#27ae60">Normal</div>
+            <div class="value">{summary['normal']}</div>
+        </div>
+        </div>
+        <p>For detailed sensor data and RUL predictions, visit the dashboard:</p>
+        <a class="btn" href="{login_url}" style="color: #ffffff !important; text-decoration: none;">Open Dashboard</a>
+    </div>
+    <div class="footer">
+        This is an automated message from the Predictive Maintenance Monitoring System. Do not reply to this email.
+    </div>
+    </div>
+    </body>
+    </html>"""
 
 
 def _threshold_alert_html(
@@ -268,50 +268,50 @@ def _threshold_alert_html(
     )
 
     return f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8">
-<style>
-  body {{ font-family: Georgia, serif; background: #f4f4f4; margin: 0; padding: 0; }}
-  .wrapper {{ max-width: 640px; margin: 30px auto; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
-  .header {{ background: {header_bg}; padding: 16px 24px; display: flex; align-items: center; gap: 12px; }}
-  .header h1 {{ color: #fff; margin: 0; font-size: 17px; font-weight: normal; }}
-  .engine-badge {{ background: rgba(255,255,255,0.18); color: #fff; padding: 3px 10px; border-radius: 4px; font-size: 13px; font-family: monospace; }}
-  .body {{ padding: 28px 28px 20px; color: #222; font-size: 14px; line-height: 1.7; }}
-  .detail-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-  .detail-table td {{ padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 14px; }}
-  .detail-table td:first-child {{ color: #555; width: 38%; }}
-  .detail-table td:last-child {{ font-weight: bold; text-align: right; }}
-  .badge {{ display: inline-block; background: {badge_bg}; color: {badge_color}; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; letter-spacing: 0.5px; }}
-  .btn {{ display: inline-block; background: {btn_bg}; color: #ffffff !important; padding: 11px 22px; border-radius: 4px; text-decoration: none; font-size: 13px; margin-top: 6px; font-weight: 600; }}
-  .footer {{ padding: 14px 28px; border-top: 1px solid #eee; color: #999; font-size: 11px; }}
-</style>
-</head>
-<body>
-<div class="wrapper">
-  <div class="header">
-    <h1>{title} &mdash; Engine</h1>
-    <span class="engine-badge">#{engine_display_id}</span>
-  </div>
-  <div class="body">
-    <p>Hi <strong>Team</strong>,</p>
-    <p>{intro}</p>
-    <table class="detail-table">
-      <tr><td>Engine ID</td>      <td>#{engine_display_id}</td></tr>
-      <tr><td>Alert level</td>    <td><span class="badge">{badge_text}</span></td></tr>
-      <tr><td>Estimated RUL</td>  <td>{int(round(pred_rul))} cycles</td></tr>
-      <tr><td>Alert threshold</td><td>{threshold} cycles</td></tr>
-      <tr><td>Timestamp</td>      <td>{date_str}</td></tr>
-    </table>
-    {recommendation_html}
-    <p>{dashboard_link_text}</p>
-    <a class="btn" href="{dashboard_url}" style="color: #ffffff !important; text-decoration: none;">Open Dashboard</a>
-  </div>
-  <div class="footer">
-    This is an automated message from the Predictive Maintenance Monitoring System. Do not reply to this email.
-  </div>
-</div>
-</body>
-</html>"""
+    <html>
+    <head><meta charset="utf-8">
+    <style>
+    body {{ font-family: Georgia, serif; background: #f4f4f4; margin: 0; padding: 0; }}
+    .wrapper {{ max-width: 640px; margin: 30px auto; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
+    .header {{ background: {header_bg}; padding: 16px 24px; display: flex; align-items: center; gap: 12px; }}
+    .header h1 {{ color: #fff; margin: 0; font-size: 17px; font-weight: normal; }}
+    .engine-badge {{ background: rgba(255,255,255,0.18); color: #fff; padding: 3px 10px; border-radius: 4px; font-size: 13px; font-family: monospace; }}
+    .body {{ padding: 28px 28px 20px; color: #222; font-size: 14px; line-height: 1.7; }}
+    .detail-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+    .detail-table td {{ padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 14px; }}
+    .detail-table td:first-child {{ color: #555; width: 38%; }}
+    .detail-table td:last-child {{ font-weight: bold; text-align: right; }}
+    .badge {{ display: inline-block; background: {badge_bg}; color: {badge_color}; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; letter-spacing: 0.5px; }}
+    .btn {{ display: inline-block; background: {btn_bg}; color: #ffffff !important; padding: 11px 22px; border-radius: 4px; text-decoration: none; font-size: 13px; margin-top: 6px; font-weight: 600; }}
+    .footer {{ padding: 14px 28px; border-top: 1px solid #eee; color: #999; font-size: 11px; }}
+    </style>
+    </head>
+    <body>
+    <div class="wrapper">
+    <div class="header">
+        <h1>{title} &mdash; Engine</h1>
+        <span class="engine-badge">#{engine_display_id}</span>
+    </div>
+    <div class="body">
+        <p>Hi <strong>Team</strong>,</p>
+        <p>{intro}</p>
+        <table class="detail-table">
+        <tr><td>Engine ID</td>      <td>#{engine_display_id}</td></tr>
+        <tr><td>Alert level</td>    <td><span class="badge">{badge_text}</span></td></tr>
+        <tr><td>Estimated RUL</td>  <td>{int(round(pred_rul))} cycles</td></tr>
+        <tr><td>Alert threshold</td><td>{threshold} cycles</td></tr>
+        <tr><td>Timestamp</td>      <td>{date_str}</td></tr>
+        </table>
+        {recommendation_html}
+        <p>{dashboard_link_text}</p>
+        <a class="btn" href="{dashboard_url}" style="color: #ffffff !important; text-decoration: none;">Open Dashboard</a>
+    </div>
+    <div class="footer">
+        This is an automated message from the Predictive Maintenance Monitoring System. Do not reply to this email.
+    </div>
+    </div>
+    </body>
+    </html>"""
 
 
 # ─────────────────────────────────────────────

@@ -1,0 +1,59 @@
+/* Keep sensor controls independent of Dash's shared dropdown option styles. */
+.sensor-checklist {
+    display: flex;
+    flex: 0 0 22px;
+    align-items: center;
+}
+
+.sensor-checklist label.dash-options-list-option,
+.sensor-checklist label.sensor-check-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin: 0;
+    padding: 0;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.sensor-checklist .dash-options-list-option-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sensor-checklist input.sensor-check-input {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #587596;
+    border-radius: 4px;
+    background: #0a1628;
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.sensor-checklist input.sensor-check-input:checked {
+    border-color: #4a9eff;
+    background-color: #4a9eff;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4 8 2.5 2.5L12 5' fill='none' stroke='%230a1628' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-size: 100% 100%;
+}
+
+.sensor-checklist label:hover input.sensor-check-input {
+    border-color: #a8d4ff;
+}
+
+.sensor-checklist input.sensor-check-input:focus-visible {
+    outline: 2px solid #a8d4ff !important;
+    outline-offset: 3px;
+}

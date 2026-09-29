@@ -670,11 +670,6 @@ def alert_detail_panel(alert, report=None):
 
 #  SCHEDULE MAINTENANCE MODAL (inline in Alert Log)
 def _report_modal():
-    """
-    Full-screen overlay containing the maintenance report form.
-    Read-only system info + editable technician fields.
-    Shown for both In Progress (editable) and Completed/Follow-up (read-only view).
-    """
     ls  = _label_style()
     is_ = _input_style()
     ta  = {**is_, "height": "90px", "resize": "vertical"}

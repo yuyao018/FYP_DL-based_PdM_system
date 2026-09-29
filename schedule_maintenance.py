@@ -820,7 +820,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         if supabase:
             try:
                 session_user_id = (session or {}).get("user_id") or None
-                result = supabase.table("maintenance_schedules").insert({
+                result = db.insert_records(supabase, "maintenance_schedules", {
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
                     "start_time":     start_time,
@@ -828,7 +828,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                     "status":         "scheduled",
                     "created_by":     session_user_id,
                     "created_at":     datetime.utcnow().isoformat(),
-                }).execute()
+                })
                 if result.data:
                     new_event["db_id"] = str(result.data[0].get("id", ""))
             except Exception as e:
