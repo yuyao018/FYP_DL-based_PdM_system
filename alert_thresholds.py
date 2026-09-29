@@ -70,63 +70,14 @@ def threshold_input(label, dot_color, input_id, value, helper_text):
     )
 
 
-def max_rul_input(input_id, value):
-    return html.Div(
-        style={"flex": "1"},
-        children=[
-            html.Div(
-                style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "10px"},
-                children=[
-                    html.Span("●", style={"color": "#7b9aff", "fontSize": "12px"}),
-                    html.Span("MAX RUL CAP", style={"color": "#4a9eff", "fontSize": "11px",
-                                                      "fontWeight": "700", "letterSpacing": "0.8px"}),
-                ]
-            ),
-            html.Div(
-                style={
-                    "display": "flex", "alignItems": "center", "gap": "8px",
-                    "background": "rgba(10,20,45,0.6)",
-                    "border": "1.5px solid rgba(74,158,255,0.3)",
-                    "borderRadius": "8px", "padding": "6px 10px",
-                },
-                children=[
-                    stepper_button("−", f"{input_id}-minus", "#7b9aff"),
-                    dcc.Input(
-                        id=f"{input_id}-display",
-                        type="text",
-                        value=str(value),
-                        pattern="[0-9]*",
-                        inputMode="numeric",
-                        style={
-                            "flex": "1", "textAlign": "center", "color": "white",
-                            "fontSize": "24px", "fontWeight": "800", "fontFamily": "inherit",
-                            "background": "transparent", "border": "none", "outline": "none",
-                            "width": "100%",
-                        }
-                    ),
-                    stepper_button("+", f"{input_id}-plus", "#7b9aff"),
-                    html.Div("cycles", style={
-                        "background": "rgba(74,158,255,0.1)", "color": "#a8d4ff",
-                        "fontSize": "12px", "fontWeight": "600", "padding": "6px 12px",
-                        "borderRadius": "6px", "whiteSpace": "nowrap",
-                    }),
-                ]
-            ),
-            dcc.Store(id=input_id, data=value),
-        ]
-    )
+def build_threshold_bar(crit, warn):
+    # Display scale only; does not cap predictions or saved thresholds.
+    display_max = max(100, crit + 10, warn + 10)
+    crit = max(0, min(crit, display_max))
+    warn = max(crit, min(warn, display_max))
 
-
-# ─────────────────────────────────────────────
-#  THRESHOLD VISUALIZATION BAR
-# ─────────────────────────────────────────────
-
-def build_threshold_bar(crit, warn, max_rul):
-    crit = max(0, min(crit, max_rul))
-    warn = max(crit, min(warn, max_rul))
-
-    crit_pct = (crit / max_rul) * 100 if max_rul else 0
-    warn_pct = (warn / max_rul) * 100 if max_rul else 0
+    crit_pct = (crit / display_max) * 100 if display_max else 0
+    warn_pct = (warn / display_max) * 100 if display_max else 0
 
     return html.Div(
         children=[
@@ -172,7 +123,7 @@ def build_threshold_bar(crit, warn, max_rul):
                         "position": "absolute", "left": f"{warn_pct}%",
                         "transform": "translateX(-50%)"
                     }),
-                    html.Span(str(max_rul), style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "position": "absolute", "right": "0"}),
+                    html.Span(str(display_max), style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "position": "absolute", "right": "0"}),
                 ]
             ),
         ]
@@ -229,7 +180,7 @@ def build_status_preview(crit, warn):
 #  MAIN PAGE BODY
 # ─────────────────────────────────────────────
 
-def build_threshold_body(warn=80, crit=30, max_rul=125):
+def build_threshold_body(warn=80, crit=30):
     return [
         html.Div(style={"marginBottom": "8px"}, children=[
             html.H2("ALERT THRESHOLDS", style={"margin": "0", "color": "white",
@@ -260,13 +211,12 @@ def build_threshold_body(warn=80, crit=30, max_rul=125):
                                        "Alert fires when RUL ≤ this value"),
                         threshold_input("Critical Threshold", "#ff4d4d", "crit-threshold-input", crit,
                                        "Alert fires when RUL ≤ this value"),
-                        max_rul_input("max-rul-input", max_rul),
                     ]
                 ),
 
                 # Threshold visualization
                 html.Div(id="threshold-bar-container", style={"marginBottom": "26px"},
-                         children=[build_threshold_bar(crit, warn, max_rul)]),
+                         children=[build_threshold_bar(crit, warn)]),
 
                 # Status preview
                 html.Div(id="status-preview-container", style={"marginBottom": "26px"},
@@ -288,7 +238,7 @@ def build_threshold_body(warn=80, crit=30, max_rul=125):
             ]
         ),
 
-        dcc.Store(id="threshold-current-values", data={"warn": warn, "crit": crit, "max_rul": max_rul}),
+        dcc.Store(id="threshold-current-values", data={"warn": warn, "crit": crit}),
     ]
 
 
@@ -297,7 +247,7 @@ def build_threshold_body(warn=80, crit=30, max_rul=125):
 # ─────────────────────────────────────────────
 
 def create_alert_thresholds_layout(supabase=None):
-    warn, crit, max_rul = 80, 30, 125
+    warn, crit = 80, 30
 
     try:
         if supabase:
@@ -306,7 +256,6 @@ def create_alert_thresholds_layout(supabase=None):
                 t = resp.data[0]
                 warn = t.get("warning_threshold", warn)
                 crit = t.get("critical_threshold", crit)
-                max_rul = t.get("max_rul_cap", max_rul)
     except Exception as e:
         import traceback
         print(f"[ERROR] alert thresholds fetch: {traceback.format_exc()}")
@@ -327,7 +276,7 @@ def create_alert_thresholds_layout(supabase=None):
                     html.Div(
                         style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
                                "minWidth": "0"},
-                        children=build_threshold_body(warn=warn, crit=crit, max_rul=max_rul),
+                        children=build_threshold_body(warn=warn, crit=crit),
                     )
                 ]
             )
@@ -397,48 +346,18 @@ def register_alert_thresholds_callbacks(app, supabase=None):
         
         return new_val, str(new_val)
 
-    # ── Max RUL cap stepper ──
-    @app.callback(
-        Output("max-rul-input", "data"),
-        Output("max-rul-input-display", "value"),
-        Input("max-rul-input-plus", "n_clicks"),
-        Input("max-rul-input-minus", "n_clicks"),
-        Input("max-rul-input-display", "value"),
-        State("max-rul-input", "data"),
-        prevent_initial_call=True,
-    )
-    def step_max_rul(plus_clicks, minus_clicks, input_value, current):
-        ctx = dash.callback_context
-        if not ctx.triggered:
-            raise dash.exceptions.PreventUpdate
-        trigger = ctx.triggered[0]["prop_id"]
-        
-        if "plus" in trigger:
-            new_val = current + 1
-        elif "minus" in trigger:
-            new_val = max(1, current - 1)
-        else:  # direct input
-            try:
-                new_val = max(1, int(input_value)) if input_value and str(input_value).strip() else current
-            except (ValueError, TypeError):
-                new_val = current
-        
-        return new_val, str(new_val)
-
     # ── Live-update visualization + status preview whenever any value changes ──
     @app.callback(
         Output("threshold-bar-container", "children"),
         Output("status-preview-container", "children"),
         Input("warn-threshold-input", "data"),
         Input("crit-threshold-input", "data"),
-        Input("max-rul-input", "data"),
         prevent_initial_call=True,
     )
-    def update_preview(warn, crit, max_rul):
+    def update_preview(warn, crit):
         warn = warn or 0
         crit = crit or 0
-        max_rul = max_rul or 1
-        bar = build_threshold_bar(crit, warn, max_rul)
+        bar = build_threshold_bar(crit, warn)
         preview = build_status_preview(crit, warn)
         return bar, preview
 
@@ -448,11 +367,10 @@ def register_alert_thresholds_callbacks(app, supabase=None):
         Input("save-threshold-btn", "n_clicks"),
         State("warn-threshold-input", "data"),
         State("crit-threshold-input", "data"),
-        State("max-rul-input", "data"),
         State("session-store", "data"),
         prevent_initial_call=True,
     )
-    def save_thresholds(n_clicks, warn, crit, max_rul, session_data):
+    def save_thresholds(n_clicks, warn, crit, session_data):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
 
@@ -477,16 +395,14 @@ def register_alert_thresholds_callbacks(app, supabase=None):
                 previous = resp.data[0]
                 prev_warn = previous.get("warning_threshold")
                 prev_crit = previous.get("critical_threshold")
-                prev_max_rul = previous.get("max_rul_cap")
                 
-                if prev_warn == warn and prev_crit == crit and prev_max_rul == max_rul:
+                if prev_warn == warn and prev_crit == crit:
                     return html.Span("No changes detected. Threshold values are the same as previously saved.",
                                     style={"color": "#ffa500", "fontSize": "13px"})
             
             threshold_data = {
                 "warning_threshold": warn,
                 "critical_threshold": crit,
-                "max_rul_cap": max_rul,
                 "updated_at": "now()",
             }
             
