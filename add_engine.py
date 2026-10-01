@@ -5,10 +5,6 @@ import dash_bootstrap_components as dbc
 import base64
 import os
 
-# ─────────────────────────────────────────────
-#  SVG ICON HELPERS
-# ─────────────────────────────────────────────
-
 def _svg_img(svg_str, size="22px"):
     b64 = base64.b64encode(svg_str.strip().encode("utf-8")).decode("utf-8")
     return html.Img(src=f"data:image/svg+xml;base64,{b64}",
@@ -96,81 +92,6 @@ def icon_hash():
       <line x1="16" y1="3" x2="14" y2="21"/>
     </svg>''', size="20px")
 
-
-# ─────────────────────────────────────────────
-#  SIDEBAR  (Admin Panel variant)
-# ─────────────────────────────────────────────
-
-def build_admin_sidebar(active_page="engines"):
-    nav_item_base = {
-        "display": "flex", "alignItems": "center", "gap": "10px",
-        "padding": "10px 14px", "borderRadius": "10px", "cursor": "pointer",
-        "fontSize": "14px", "fontWeight": "500", "color": "#a8d4ff",
-        "marginBottom": "4px", "whiteSpace": "nowrap",
-    }
-
-    def nav_link(icon_fn, label, page_key, href="/"):
-        style = {**nav_item_base}
-        if active_page == page_key:
-            style.update({
-                "background": "rgba(74,158,255,0.18)", "color": "white",
-                "fontWeight": "700", "borderLeft": "3px solid #4a9eff", "paddingLeft": "11px",
-            })
-        return html.A(href=href, style={"textDecoration": "none"},
-                      children=[html.Div(style=style, children=[icon_fn(), html.Span(label)])])
-
-    return html.Div(
-        id="sidebar",
-        style={
-            "width": "210px", "flexShrink": "0", "height": "100%",
-            "background": "#0d1e3a", "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex", "flexDirection": "column",
-            "overflow": "hidden", "transition": "width 0.3s ease",
-        },
-        children=[
-            html.A(href="/dashboard", style={"textDecoration": "none"}, children=[
-                html.Div(style={
-                    "padding": "20px 20px 18px",
-                    "borderBottom": "1px solid rgba(74,158,255,0.12)",
-                    "display": "flex", "alignItems": "center", "gap": "10px", "cursor": "pointer",
-                }, children=[
-                    icon_dashboard(),
-                    html.Span("Dashboard", style={"color": "#a8d4ff", "fontWeight": "700",
-                                                   "fontSize": "15px", "whiteSpace": "nowrap"}),
-                ])
-            ]),
-            html.Div(style={"padding": "18px 12px 0"}, children=[
-                html.Div("ADMIN PANEL", style={
-                    "color": "rgba(168,212,255,0.5)", "fontSize": "10px", "fontWeight": "700",
-                    "letterSpacing": "1.5px", "padding": "0 6px", "marginBottom": "10px",
-                }),
-                nav_link(icon_engine,    "Engine Management", "engines",   "/engine-management"),
-                nav_link(icon_users,     "User Management",  "users",     "/user-management"),
-                nav_link(icon_threshold, "Alert Thresholds", "threshold", "/alert-thresholds"),
-            ]),
-            html.Div(style={"flex": "1"}),
-            html.Div(style={
-                "padding": "16px 20px", "borderTop": "1px solid rgba(74,158,255,0.12)",
-                "display": "flex", "alignItems": "center", "justifyContent": "space-between",
-            }, children=[
-                html.Div(children=[
-                    html.Div("LOGGED IN AS", style={"color": "rgba(168,212,255,0.5)", "fontSize": "9px",
-                                                     "fontWeight": "700", "letterSpacing": "1.2px",
-                                                     "marginBottom": "2px"}),
-                    html.Div("admin_ds", style={"color": "white", "fontWeight": "700", "fontSize": "13px"}),
-                    html.Div("Admin", style={"color": "rgba(168,212,255,0.6)", "fontSize": "11px"}),
-                ]),
-                html.Div(id="logout-btn", n_clicks=0, style={"cursor": "pointer"},
-                         children=[icon_logout()])
-            ])
-        ]
-    )
-
-
-# ─────────────────────────────────────────────
-#  TOPBAR
-# ─────────────────────────────────────────────
-
 def build_topbar():
     return html.Div(
         style={
@@ -185,15 +106,8 @@ def build_topbar():
                 "margin": "0", "fontSize": "18px", "fontWeight": "700",
                 "color": "white", "letterSpacing": "1.2px",
             }),
-            html.Div(id="sidebar-toggle", n_clicks=0, style={"cursor": "pointer"},
-                     children=[icon_sidebar()]),
         ]
     )
-
-
-# ─────────────────────────────────────────────
-#  FORM FIELD HELPERS
-# ─────────────────────────────────────────────
 
 def form_label(text):
     return html.Label(text.upper(), style={
@@ -305,11 +219,6 @@ def form_field_dropdown(label_text, input_id, options, value=None, placeholder="
         )
     ])
 
-
-# ─────────────────────────────────────────────
-#  PANEL WRAPPER
-# ─────────────────────────────────────────────
-
 def panel(title, icon_fn, children, subtitle=None):
     header_children = [
         icon_fn(),
@@ -329,11 +238,6 @@ def panel(title, icon_fn, children, subtitle=None):
             *children,
         ]
     )
-
-
-# ─────────────────────────────────────────────
-#  MAIN PAGE BODY
-# ─────────────────────────────────────────────
 
 def build_add_engine_body(edit_engine=None):
     is_edit = edit_engine is not None
@@ -514,7 +418,6 @@ def create_add_engine_layout(supabase=None, org_id=None, edit_engine_id=None):
                 style={"flex": "1", "display": "flex", "flexDirection": "row",
                        "overflow": "hidden", "minHeight": "0"},
                 children=[
-                    build_admin_sidebar(active_page="engines"),
                     html.Div(
                         style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
                                "minWidth": "0"},

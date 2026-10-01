@@ -24,8 +24,8 @@ Multiple engines run in parallel (each in their own thread). Threads are
 tracked in _RUNNING_SIMULATIONS so we don't double-start the same engine.
 """
 from assets import database_integration as db
-
 import json
+import io
 import gc
 import os
 from pathlib import Path
@@ -35,21 +35,17 @@ import traceback
 from simulation_clock import SimulationClock
 from datetime import datetime, timezone
 from typing import Callable, Optional
-
 import numpy as np
 import pandas as pd
+import httpx
+import httpcore
+import shap
+import torch
 
-# ─────────────────────────────────────────────
-#  CONSTANTS
-# ─────────────────────────────────────────────
 
 TICK_INTERVAL    = 5          # healthy default; pacing is controlled per engine
 RUL_CAP          = 100        # clamp predicted RUL — matches training rul_cap in model metadata
 
-# How often (in prediction cycles) to run the SHAP GradientExplainer.
-# SHAP is expensive (~150–200 MB peak RAM) — running every cycle OOMs on
-# Render's free tier (512 MB).  Every 5 cycles keeps memory pressure low
-# while still giving the dashboard fresh attributions every ~15 seconds.
 SHAP_INTERVAL = 5
 
 # Per-dataset window sizes (must match training)
@@ -80,29 +76,15 @@ N_CLUSTERS = {
 }
 
 # Sensor columns the model was trained on (CMAPSS selected sensors)
-SENSOR_COLS = [
-    "s2", "s3", "s4", "s7", "s8", "s9",
-    "s11", "s12", "s13", "s14", "s15",
-    "s17", "s20", "s21",
-]
+SENSOR_COLS = ["s2", "s3", "s4", "s7", "s8", "s9", "s11", "s12", "s13", "s14", "s15", "s17", "s20", "s21"]
+
 # Operational setting columns (used for FD002/FD004)
-OP_COLS = [
-    "operational_setting_1",
-    "operational_setting_2",
-    "operational_setting_3",
-]
+OP_COLS = ["operational_setting_1", "operational_setting_2", "operational_setting_3"]
+
 FEATURE_COLS = SENSOR_COLS          # 14 sensor features only (FD001/FD003)
 BASE_FEATURE_COLS = FEATURE_COLS    # alias used by _extract_raw_sensors
 
-# Path to shared model directory (local dev) or temp cache (deployment)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_LOCAL_MODELS_DIR = os.path.join(_BASE_DIR, "data", "shared_models")
-if os.path.isdir(_LOCAL_MODELS_DIR):
-    SHARED_MODELS_DIR = _LOCAL_MODELS_DIR
-else:
-    import tempfile as _tf
-    SHARED_MODELS_DIR = os.path.join(_tf.gettempdir(), "pdm_cache", "models")
-    os.makedirs(SHARED_MODELS_DIR, exist_ok=True)
 
 # Active simulation threads: engine_db_id → threading.Thread
 _RUNNING_SIMULATIONS: dict = {}
@@ -116,25 +98,8 @@ _SENSOR_LOCK   = threading.Lock()
 SENSOR_BUFFER_MAX = 500   # keep last 500 cycles per engine
 
 
-# ─────────────────────────────────────────────
-#  SUPABASE RETRY HELPER
-# ─────────────────────────────────────────────
-
 def _supabase_execute(build_query: Callable, retries: int = 3, base_delay: float = 2.0):
-    """
-    Execute a Supabase query with retry on transient network errors.
-
-    ``build_query`` is a zero-argument callable that builds *and* executes the
-    query (i.e. it must call .execute() internally and return the response).
-
-    Retries on httpx.ReadError / httpcore.ReadError (WinError 10035 and similar
-    transient socket failures that are common on Windows with HTTP/2).
-    Other exceptions are re-raised immediately.
-    """
-    # Import lazily so the module loads even if httpx/httpcore aren't installed yet
     try:
-        import httpx
-        import httpcore
         _transient_exc = (httpx.ReadError, httpx.ConnectError, httpcore.ReadError, httpcore.ConnectError)
     except ImportError:
         _transient_exc = (OSError,)
@@ -150,10 +115,8 @@ def _supabase_execute(build_query: Callable, retries: int = 3, base_delay: float
                   f"retrying in {delay:.0f}s — {type(exc).__name__}: {exc}")
             time.sleep(delay)
         except Exception:
-            raise  # non-transient errors bubble up immediately
-
-    # All retries exhausted
-    raise last_exc  # type: ignore[misc]
+            raise
+    raise last_exc
 
 
 def get_sensor_history(engine_db_id: str) -> list:
@@ -169,14 +132,6 @@ def _push_sensor_row(engine_db_id: str, row: dict):
             _SENSOR_BUFFER[engine_db_id] = deque(maxlen=SENSOR_BUFFER_MAX)
         _SENSOR_BUFFER[engine_db_id].append(row)
 
-
-# ─────────────────────────────────────────────
-#  MODEL ARCHITECTURE  (Transformer-BiGRU)
-# ─────────────────────────────────────────────
-
-# ─────────────────────────────────────────────
-#  MODEL ARCHITECTURE  (exact copy of train.py TransformerBiGRU)
-# ─────────────────────────────────────────────
 
 def _load_state_dict_from_h5(path: str) -> dict:
     """Read a flat PyTorch state-dict stored in an HDF5 file under 'weights/'."""
@@ -291,74 +246,34 @@ _BIAS_CACHE: dict = {}     # model_type → float (bias_shift from training)
 _MODEL_LOCK  = threading.Lock()
 
 
+_MODEL_VERSION_CACHE = {}
+
+
 def _load_model(model_type: str, supabase=None):
-    """
-    Load and cache the active model for the given model_type.
-    First checks the model_versions table for the active version's stored_filename.
-    Falls back to the most recently modified .h5 in the model directory.
-    If no local files exist, downloads from Supabase Storage.
-    Returns None if no model file is found or loading fails.
-    """
+    """Load the active model's exact Storage object into memory; never use local files."""
     with _MODEL_LOCK:
-        if model_type in _MODEL_CACHE:
-            return _MODEL_CACHE[model_type]
-
-        model_dir = os.path.join(SHARED_MODELS_DIR, model_type)
-        os.makedirs(model_dir, exist_ok=True)
-
-        # Try to find the active model file from database
-        model_path = None
-        active_filename = None
-        if supabase:
-            try:
-                resp = db.fetch_records(
-                    supabase,
-                    "model_versions",
-                    "id, filename",
-                    filters=[('eq', "model_type", model_type), ('eq', "status", "active")],
-                    limit=1,
-                )
-                if resp.data:
-                    row = resp.data[0]
-                    active_filename = row.get("filename")
-                    if active_filename:
-                        candidate = os.path.join(model_dir, active_filename)
-                        if os.path.exists(candidate):
-                            model_path = candidate
-                            print(f"[SIM] Using active model from DB: {active_filename}")
-            except Exception:
-                pass
-
-        # Fallback: most recently modified .h5 on local disk
-        if not model_path:
-            h5_files = sorted(
-                [f for f in os.listdir(model_dir) if f.endswith(".h5")],
-                key=lambda f: os.path.getmtime(os.path.join(model_dir, f)),
-                reverse=True,
+        if supabase is None:
+            from storage_utils import _get_supabase_admin
+            supabase = _get_supabase_admin()
+        if supabase is None:
+            print("[SIM] Supabase is required to load a model")
+            return None
+        try:
+            response = db.fetch_records(
+                supabase, "model_versions", "id, filename",
+                filters=[('eq', "model_type", model_type), ('eq', "status", "active")],
+                limit=2,
             )
-            if h5_files:
-                model_path = os.path.join(model_dir, h5_files[0])
-                print(f"[SIM] Using most recent model file: {h5_files[0]}")
-
-        # Fallback: download from Supabase Storage
-        if not model_path:
-            try:
-                from storage_utils import download_model_file, list_model_files
-                # Try active filename first, then any available file
-                fname_to_try = active_filename or None
-                if fname_to_try:
-                    model_path = download_model_file(model_type, fname_to_try, model_dir)
-                if not model_path:
-                    available = list_model_files(model_type)
-                    for fname in reversed(available):  # most recent last
-                        model_path = download_model_file(model_type, fname, model_dir)
-                        if model_path:
-                            break
-            except Exception as e:
-                print(f"[SIM] Storage download failed: {e}")
-
-        if not model_path:
-            print(f"[SIM] No .h5 model found for {model_type}")
+            rows = response.data or []
+            if len(rows) != 1:
+                raise ValueError(f"Expected exactly one active model for {model_type}")
+            version_id = str(rows[0]["id"])
+            model_path = f"{model_type}/{version_id}.h5"
+            if _MODEL_VERSION_CACHE.get(model_type) == version_id and model_type in _MODEL_CACHE:
+                return _MODEL_CACHE[model_type]
+            model_bytes = db.download_file(supabase, "models", model_path)
+        except Exception as exc:
+            print(f"[SIM] Active Storage model unavailable for {model_type}: {exc}")
             return None
 
         try:
@@ -367,16 +282,17 @@ def _load_model(model_type: str, supabase=None):
             import torch.nn as nn
 
             # ── Read metadata ──
-            with h5py.File(model_path, "r") as f:
+            with h5py.File(io.BytesIO(model_bytes), "r") as f:
                 meta        = f["metadata"]
-                num_features    = int(meta.attrs.get("num_features",    14))
-                d_model         = int(meta.attrs.get("d_model",         32))
-                num_heads       = int(meta.attrs.get("num_heads",        2))
-                num_layers      = int(meta.attrs.get("num_layers",       2))
-                ff_dim          = int(meta.attrs.get("ff_dim",          128))
-                hidden_dim_gru  = int(meta.attrs.get("hidden_dim_gru",  32))
-                dropout         = float(meta.attrs.get("dropout",        0.3))
-                window_size_meta= int(meta.attrs.get("window_size",      45))
+                num_features    = int(meta.attrs.get("num_features"))
+                d_model         = int(meta.attrs.get("d_model"))
+                num_heads       = int(meta.attrs.get("num_heads"))
+                num_layers      = int(meta.attrs.get("num_layers"))
+                ff_dim          = int(meta.attrs.get("ff_dim"))
+                hidden_dim_gru  = int(meta.attrs.get("hidden_dim_gru"))
+                dropout         = float(meta.attrs.get("dropout"))
+                window_attn_meta = int(meta.attrs.get("window_attn"))
+                window_size_meta= int(meta.attrs.get("window_size"))
 
                 # ── Read scaler stats if saved ──
                 scaler_mean = None
@@ -410,22 +326,13 @@ def _load_model(model_type: str, supabase=None):
                 ff_dim         = ff_dim,
                 hidden_dim_gru = hidden_dim_gru,
                 dropout        = dropout,
-                window_attn    = int(meta.attrs.get("window_attn", 5)),
+                window_attn    = window_attn_meta,
                 seq_len        = window_size_meta,
             )
 
-            # ── Load weights with strict=True to catch any mismatch ──
-            try:
-                state_dict = _load_state_dict_from_h5(model_path)
-                model.load_state_dict(state_dict, strict=True)
-            except Exception as _load_err:
-                print(f"[SIM][ERROR] MODEL LOAD FAILED: {type(_load_err).__name__}: {str(_load_err)[:200]}")
-                try:
-                    model.load_state_dict(state_dict, strict=False)
-                    print(f"[SIM][WARN] Loaded with strict=False")
-                except Exception as _load_err2:
-                    print(f"[SIM][ERROR] strict=False also failed: {type(_load_err2).__name__}: {str(_load_err2)[:200]}")
-                    return None
+            # Reject incompatible weights instead of running a partially loaded model.
+            state_dict = _load_state_dict_from_h5(io.BytesIO(model_bytes))
+            model.load_state_dict(state_dict, strict=True)
             model.eval()
 
             _MODEL_CACHE[model_type] = model
@@ -437,12 +344,13 @@ def _load_model(model_type: str, supabase=None):
             # Cache cluster normalization info
             _CLUSTER_CACHE[model_type] = (kmeans_centroids, cluster_means, cluster_stds)
             # Cache bias shift (for test-time correction)
-            with h5py.File(model_path, "r") as _f:
+            with h5py.File(io.BytesIO(model_bytes), "r") as _f:
                 _bias_shift = float(_f["metadata"].attrs.get("bias_shift", 0.0))
             _BIAS_CACHE[model_type] = _bias_shift
             if _bias_shift != 0:
                 print(f"[SIM] Bias shift for {model_type}: {_bias_shift}")
 
+            _MODEL_VERSION_CACHE[model_type] = version_id
             return model
 
         except Exception:
@@ -455,6 +363,7 @@ def reload_model(model_type: str, supabase=None):
     Force-reload the model for model_type (call after a new model is deployed).
     """
     with _MODEL_LOCK:
+        _MODEL_VERSION_CACHE.pop(model_type, None)
         _MODEL_CACHE.pop(model_type, None)
         _SCALER_CACHE.pop(model_type, None)
         _CLUSTER_CACHE.pop(model_type, None)
@@ -701,18 +610,9 @@ SENSOR_SHORT = [
 ]
 
 
-def _compute_feature_importance(model, X: np.ndarray, num_features: int, background: np.ndarray = None,
-                                pred_raw: float = None, bias: float = 0.0,
+def _compute_feature_importance(model, X: np.ndarray, num_features: int, background: np.ndarray = None, pred_raw: float = None, bias: float = 0.0,
                                 rul_cap: float = None, sensor_labels=None) -> tuple[list[dict], float]:
-    """
-    Compute per-sensor SHAP values using shap.GradientExplainer.
-    Returns:
-        (shap_list, base_value) both in the post-processed RUL space.
-    """
     try:
-        import shap
-        import torch
-
         # Background: zero baseline (neutral reference)
         if background is not None:
             bg = background
@@ -727,8 +627,8 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
         explainer   = shap.GradientExplainer(model, bg_t)
         shap_values = explainer.shap_values(inp_t)
         # model.eval()
-        print(f"[SIM] GradientExplainer succeeded, shap_values type={type(shap_values)}, "
-              f"shape={np.array(shap_values).shape if not isinstance(shap_values, list) else len(shap_values)}")
+        # print(f"[SIM] GradientExplainer succeeded, shap_values type={type(shap_values)}, "
+        #       f"shape={np.array(shap_values).shape if not isinstance(shap_values, list) else len(shap_values)}")
 
         if isinstance(shap_values, list):
             shap_arr = np.array(shap_values[0])
@@ -746,7 +646,7 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
         mean_shap = shap_arr[0, :, n:2*n]
         std_shap = shap_arr[0, :, 2*n:3*n]
 
-        sensor_shap = (raw_shap + mean_shap + std_shap).sum(axis=0) # total contribution
+        sensor_shap = (raw_shap + mean_shap + std_shap).sum(axis=0) 
 
         # Base value E[f(background)] in raw model output space
         with torch.no_grad():
@@ -755,32 +655,23 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
 
         full_shap_sum = float(shap_arr.sum())
 
-        print("========== SHAP DEBUG ==========")
-        print(f"FULL SHAP SUM     = {full_shap_sum:.6f}")
-        print(f"BASE              = {base_raw:.6f}")
-        print(f"BASE + FULL SHAP  = {base_raw + full_shap_sum:.6f}")
-        print(f"MODEL OUTPUT      = {pred_raw:.6f}")
-        print(f"DIFFERENCE        = {(base_raw + full_shap_sum) - pred_raw:.6f}")
-        print("================================")
+        # print("========== SHAP DEBUG ==========")
+        # print(f"FULL SHAP SUM     = {full_shap_sum:.6f}")
+        # print(f"BASE              = {base_raw:.6f}")
+        # print(f"BASE + FULL SHAP  = {base_raw + full_shap_sum:.6f}")
+        # print(f"MODEL OUTPUT      = {pred_raw:.6f}")
+        # print(f"DIFFERENCE        = {(base_raw + full_shap_sum) - pred_raw:.6f}")
+        # print("================================")
 
         sensor_shap_sum = float(sensor_shap.sum())
 
-        print("========== SENSOR SHAP DEBUG ==========")
-        print(f"SENSOR SHAP SUM     = {sensor_shap_sum:.6f}")
-        print(f"FULL SHAP SUM       = {full_shap_sum:.6f}")
-        print(f"BASE + SENSOR SHAP = {base_raw + sensor_shap_sum:.6f}")
-        print(f"MODEL OUTPUT       = {pred_raw:.6f}")
-        print(f"DIFFERENCE         = {(base_raw + sensor_shap_sum) - pred_raw:.6f}")
-        print("=======================================")
-
-        # print("SHAP ARRAY SHAPE =", shap_arr.shape)
-
-        # print("========== SHAP FEATURE CHECK ==========")
-
-        # for i, value in enumerate(shap_arr[0].sum(axis=0)):
-        #     print(f"Feature {i:02d}: {value:.6f}")
-
-        # print("========================================")
+        # print("========== SENSOR SHAP DEBUG ==========")
+        # print(f"SENSOR SHAP SUM     = {sensor_shap_sum:.6f}")
+        # print(f"FULL SHAP SUM       = {full_shap_sum:.6f}")
+        # print(f"BASE + SENSOR SHAP = {base_raw + sensor_shap_sum:.6f}")
+        # print(f"MODEL OUTPUT       = {pred_raw:.6f}")
+        # print(f"DIFFERENCE         = {(base_raw + sensor_shap_sum) - pred_raw:.6f}")
+        # print("=======================================")
 
         # Apply bias correction to the base value
         base_corrected = base_raw - bias
@@ -977,49 +868,10 @@ _load_shap_signatures()
 
 
 
-def _detect_degradation_type(
-    model_type: str,
-    shap_data: list,
-    pred_rul: float,
-    warn_thresh: float,
-) -> tuple[str | None, float | None]:
-    """
-    Identify whether the current SHAP importance pattern is strong enough to
-    report a degradation profile, and return the label determined by model_type.
-
-    The fault mode is fixed by dataset — FD001/FD002 can only exhibit HPC
-    degradation; FD003/FD004 can exhibit HPC + Fan degradation.  Cosine
-    similarity is used only to decide whether the current pattern is strong
-    enough to report (above floor threshold), NOT to choose between fault modes.
-
-    Parameters
-    ----------
-    model_type  : one of "FD001", "FD002", "FD003", "FD004"
-    shap_data   : list of {"sensor": str, "score": float} dicts (current cycle)
-    pred_rul    : predicted RUL (kept for API compatibility)
-    warn_thresh : warning threshold (kept for API compatibility)
-
-    Returns
-    -------
-    (pattern_label, pattern_similarity)
-
-    pattern_label : str or None
-        "HPC Degradation"       – for FD001/FD002, pattern signal sufficient
-        "HPC + Fan Degradation" – for FD003/FD004, pattern signal sufficient
-        "Insufficient Signal"   – similarity below floor threshold
-        None                    – no SHAP data or signatures not loaded
-    pattern_similarity : float or None
-        Cosine similarity to the matching reference (0–1).
-
-    Notes
-    ─────
-    This method identifies similarity to a known degradation profile.
-    It does NOT directly detect or classify a confirmed fault.
-    """
+def _detect_degradation_type(model_type: str, shap_data: list, pred_rul: float, warn_thresh: float) -> tuple[str | None, float | None]:
     if not shap_data or not _REF_VECS:
         return None, None
 
-    # ── Fault mode is fixed by model_type ────────────────────────────────────
     _FAULT_LABELS = {
         "FD001": "HPC Degradation",
         "FD002": "HPC Degradation",
@@ -1115,18 +967,7 @@ def _rul_to_status(predicted_rul: float, warn_thresh: float = 62, crit_thresh: f
 #  SIMULATION THREAD
 # ─────────────────────────────────────────────
 
-def _simulation_loop(
-    engine_db_id: str,
-    json_path: str,
-    model_type: str,
-    supabase,
-    stop_event: threading.Event,
-    clock: SimulationClock,
-):
-    """
-    Main loop for a single engine simulation.
-    Runs in a background daemon thread.
-    """
+def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabase, stop_event: threading.Event, clock: SimulationClock):
     print(f"[SIM] Starting simulation for engine {engine_db_id} | type={model_type} | file={json_path}")
 
     cycles = _load_cycles(json_path)
@@ -1201,8 +1042,6 @@ def _simulation_loop(
         if not clock.wait_cycle(stop_event):
             print(f"[SIM] Simulation stopped for engine {engine_db_id}")
             break
-
-        true_rul = row.get("true_rul", None)
 
         # ── Periodically refresh thresholds so admin changes take effect live ──
         if idx % THRESHOLD_REFRESH_CYCLES == 0 and idx > 0:

@@ -1,4 +1,3 @@
-"""Generate and deliver first-login credentials without storing plaintext passwords."""
 import secrets
 import string
 import threading

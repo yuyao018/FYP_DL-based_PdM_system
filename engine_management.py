@@ -23,11 +23,6 @@ def status_badge(status):
     })
     return html.Div(style={"display": "flex", "justifyContent": "flex-start"}, children=[badge])
 
-
-# ─────────────────────────────────────────────
-#  ENGINES TABLE
-# ─────────────────────────────────────────────
-
 def engine_table_row(engine, idx):
     return html.Div(
         style={
@@ -148,10 +143,8 @@ def build_engines_table(engines, deleted_engines=None):
                     html.Span("ACTIONS",      style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
                 ]
             ),
-            html.Div(id="engines-table-body",
-                     children=[engine_table_row(e, i) for i, e in enumerate(engines)]),
-            html.Div(id="deleted-engines-body",
-                     children=[deleted_engine_table_row(e, i) for i, e in enumerate(deleted_engines)]),
+            html.Div(id="engines-table-body", children=[engine_table_row(e, i) for i, e in enumerate(engines)]),
+            html.Div(id="deleted-engines-body", children=[deleted_engine_table_row(e, i) for i, e in enumerate(deleted_engines)]),
         ]
     )
 

@@ -129,47 +129,26 @@ def build_threshold_bar(crit, warn):
         ]
     )
 
-
-# ─────────────────────────────────────────────
-#  STATUS PREVIEW CARDS
-# ─────────────────────────────────────────────
-
 def status_preview_card(label, range_text, sub_text, color, bg, border):
     return html.Div(
-        style={
-            "flex": "1", "background": bg, "border": f"1.5px solid {border}",
-            "borderRadius": "10px", "padding": "16px",
-        },
+        style={"flex": "1", "background": bg, "border": f"1.5px solid {border}", "borderRadius": "10px", "padding": "16px"},
         children=[
-            html.Div(label.upper(), style={"color": color, "fontSize": "11px",
-                                            "fontWeight": "700", "letterSpacing": "0.8px", "marginBottom": "8px"}),
-            html.Div(range_text, style={"color": color, "fontSize": "18px", "fontWeight": "800",
-                                         "marginBottom": "6px"}),
+            html.Div(label.upper(), style={"color": color, "fontSize": "11px", "fontWeight": "700", "letterSpacing": "0.8px", "marginBottom": "8px"}),
+            html.Div(range_text, style={"color": color, "fontSize": "18px", "fontWeight": "800", "marginBottom": "6px"}),
             html.Div(sub_text, style={"color": f"{color}cc", "fontSize": "11px"}),
         ]
     )
 
-
 def build_status_preview(crit, warn):
     return html.Div(
         children=[
-            html.Div("Status Preview", style={"color": "white", "fontSize": "13px",
-                                               "fontWeight": "700", "marginBottom": "10px"}),
+            html.Div("Status Preview", style={"color": "white", "fontSize": "13px", "fontWeight": "700", "marginBottom": "10px"}),
             html.Div(
                 style={"display": "flex", "gap": "14px"},
                 children=[
-                    status_preview_card(
-                        "Critical", f"RUL ≤ {crit} cycles", "Immediate maintenance required",
-                        "#ff6b6b", "rgba(255,77,77,0.1)", "rgba(255,77,77,0.4)"
-                    ),
-                    status_preview_card(
-                        "Warning", f"{crit + 1} – {warn} cycles", "Schedule maintenance soon",
-                        "#ffd93d", "rgba(255,217,61,0.1)", "rgba(255,217,61,0.4)"
-                    ),
-                    status_preview_card(
-                        "Healthy", f"RUL > {warn} cycles", "Normal operations",
-                        "#00c875", "rgba(0,200,117,0.1)", "rgba(0,200,117,0.4)"
-                    ),
+                    status_preview_card("Critical", f"RUL ≤ {crit} cycles", "Immediate maintenance required", "#ff6b6b", "rgba(255,77,77,0.1)", "rgba(255,77,77,0.4)"),
+                    status_preview_card("Warning", f"{crit + 1} – {warn} cycles", "Schedule maintenance soon", "#ffd93d", "rgba(255,217,61,0.1)", "rgba(255,217,61,0.4)"),
+                    status_preview_card("Healthy", f"RUL > {warn} cycles", "Normal operations", "#00c875", "rgba(0,200,117,0.1)", "rgba(0,200,117,0.4)"),
                 ]
             )
         ]
@@ -180,11 +159,10 @@ def build_status_preview(crit, warn):
 #  MAIN PAGE BODY
 # ─────────────────────────────────────────────
 
-def build_threshold_body(warn=80, crit=30):
+def build_threshold_body(warn, crit):
     return [
         html.Div(style={"marginBottom": "8px"}, children=[
-            html.H2("ALERT THRESHOLDS", style={"margin": "0", "color": "white",
-                                                "fontSize": "22px", "fontWeight": "800"}),
+            html.H2("ALERT THRESHOLDS", style={"margin": "0", "color": "white", "fontSize": "22px", "fontWeight": "800"}),
         ]),
         html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.15)", "margin": "16px 0 20px"}),
 
@@ -202,42 +180,33 @@ def build_threshold_body(warn=80, crit=30):
                         "color": "white", "fontSize": "14px", "fontWeight": "700", "letterSpacing": "0.5px",
                     })]
                 ),
-
                 # Inputs row
                 html.Div(
                     style={"display": "flex", "gap": "20px", "marginBottom": "26px"},
                     children=[
-                        threshold_input("Warning Threshold", "#ffd93d", "warn-threshold-input", warn,
-                                       "Alert fires when RUL ≤ this value"),
-                        threshold_input("Critical Threshold", "#ff4d4d", "crit-threshold-input", crit,
-                                       "Alert fires when RUL ≤ this value"),
+                        threshold_input("Warning Threshold", "#ffd93d", "warn-threshold-input", warn, "Alert fires when RUL ≤ this value"),
+                        threshold_input("Critical Threshold", "#ff4d4d", "crit-threshold-input", crit, "Alert fires when RUL ≤ this value"),
                     ]
                 ),
-
                 # Threshold visualization
                 html.Div(id="threshold-bar-container", style={"marginBottom": "26px"},
                          children=[build_threshold_bar(crit, warn)]),
-
                 # Status preview
                 html.Div(id="status-preview-container", style={"marginBottom": "26px"},
                          children=[build_status_preview(crit, warn)]),
-
                 # Save button
                 html.Div(
                     style={"display": "flex", "justifyContent": "flex-end"},
                     children=[
                         html.Button("Save Threshold", id="save-threshold-btn", n_clicks=0, style={
-                            "background": "linear-gradient(90deg, #1a6fd4 0%, #2a85f0 100%)",
-                            "border": "none", "borderRadius": "8px", "color": "white",
-                            "padding": "12px 28px", "fontSize": "14px", "fontWeight": "700",
-                            "cursor": "pointer", "boxShadow": "0 2px 10px rgba(42,133,240,0.3)",
+                            "background": "linear-gradient(90deg, #1a6fd4 0%, #2a85f0 100%)", "border": "none", "borderRadius": "8px", "color": "white",
+                            "padding": "12px 28px", "fontSize": "14px", "fontWeight": "700", "cursor": "pointer", "boxShadow": "0 2px 10px rgba(42,133,240,0.3)",
                         }),
                     ]
                 ),
                 html.Div(id="save-threshold-status", style={"marginTop": "10px", "textAlign": "right"}),
             ]
         ),
-
         dcc.Store(id="threshold-current-values", data={"warn": warn, "crit": crit}),
     ]
 

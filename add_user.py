@@ -6,10 +6,6 @@ import base64
 import bcrypt
 from account_credentials import create_user_with_credentials, username_prefix
 
-# ─────────────────────────────────────────────
-#  SVG ICON HELPERS
-# ─────────────────────────────────────────────
-
 def _svg_img(svg_str, size="22px"):
     b64 = base64.b64encode(svg_str.strip().encode("utf-8")).decode("utf-8")
     return html.Img(src=f"data:image/svg+xml;base64,{b64}",
@@ -122,81 +118,6 @@ def icon_check_circle():
       <polyline points="20 6 9 17 4 12"/>
     </svg>''', size="16px")
 
-
-# ─────────────────────────────────────────────
-#  SIDEBAR  (Admin Panel variant — shared with user_management.py)
-# ─────────────────────────────────────────────
-
-def build_admin_sidebar(active_page="users"):
-    nav_item_base = {
-        "display": "flex", "alignItems": "center", "gap": "10px",
-        "padding": "10px 14px", "borderRadius": "10px", "cursor": "pointer",
-        "fontSize": "14px", "fontWeight": "500", "color": "#a8d4ff",
-        "marginBottom": "4px", "whiteSpace": "nowrap",
-    }
-
-    def nav_link(icon_fn, label, page_key, href="/"):
-        style = {**nav_item_base}
-        if active_page == page_key:
-            style.update({
-                "background": "rgba(74,158,255,0.18)", "color": "white",
-                "fontWeight": "700", "borderLeft": "3px solid #4a9eff", "paddingLeft": "11px",
-            })
-        return html.A(href=href, style={"textDecoration": "none"},
-                      children=[html.Div(style=style, children=[icon_fn(), html.Span(label)])])
-
-    return html.Div(
-        id="sidebar",
-        style={
-            "width": "210px", "flexShrink": "0", "height": "100%",
-            "background": "#0d1e3a", "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex", "flexDirection": "column",
-            "overflow": "hidden", "transition": "width 0.3s ease",
-        },
-        children=[
-            html.A(href="/dashboard", style={"textDecoration": "none"}, children=[
-                html.Div(style={
-                    "padding": "20px 20px 18px",
-                    "borderBottom": "1px solid rgba(74,158,255,0.12)",
-                    "display": "flex", "alignItems": "center", "gap": "10px", "cursor": "pointer",
-                }, children=[
-                    icon_dashboard(),
-                    html.Span("Dashboard", style={"color": "#a8d4ff", "fontWeight": "700",
-                                                   "fontSize": "15px", "whiteSpace": "nowrap"}),
-                ])
-            ]),
-            html.Div(style={"padding": "18px 12px 0"}, children=[
-                html.Div("ADMIN PANEL", style={
-                    "color": "rgba(168,212,255,0.5)", "fontSize": "10px", "fontWeight": "700",
-                    "letterSpacing": "1.5px", "padding": "0 6px", "marginBottom": "10px",
-                }),
-                nav_link(icon_engine,    "Engine Management", "engines",   "/engine-management"),
-                nav_link(icon_users,     "User Management",  "users",     "/user-management"),
-                nav_link(icon_threshold, "Alert Thresholds", "threshold", "/alert-thresholds"),
-            ]),
-            html.Div(style={"flex": "1"}),
-            html.Div(style={
-                "padding": "16px 20px", "borderTop": "1px solid rgba(74,158,255,0.12)",
-                "display": "flex", "alignItems": "center", "justifyContent": "space-between",
-            }, children=[
-                html.Div(children=[
-                    html.Div("LOGGED IN AS", style={"color": "rgba(168,212,255,0.5)", "fontSize": "9px",
-                                                     "fontWeight": "700", "letterSpacing": "1.2px",
-                                                     "marginBottom": "2px"}),
-                    html.Div("admin_ds", style={"color": "white", "fontWeight": "700", "fontSize": "13px"}),
-                    html.Div("Admin", style={"color": "rgba(168,212,255,0.6)", "fontSize": "11px"}),
-                ]),
-                html.Div(id="logout-btn", n_clicks=0, style={"cursor": "pointer"},
-                         children=[icon_logout()])
-            ])
-        ]
-    )
-
-
-# ─────────────────────────────────────────────
-#  TOPBAR
-# ─────────────────────────────────────────────
-
 def build_topbar():
     return html.Div(
         style={
@@ -211,15 +132,8 @@ def build_topbar():
                 "margin": "0", "fontSize": "18px", "fontWeight": "700",
                 "color": "white", "letterSpacing": "1.2px",
             }),
-            html.Div(id="sidebar-toggle", n_clicks=0, style={"cursor": "pointer"},
-                     children=[icon_sidebar()]),
         ]
     )
-
-
-# ─────────────────────────────────────────────
-#  PERMISSION PREVIEW DATA  (mirrors PERMISSION_MATRIX)
-# ─────────────────────────────────────────────
 
 ACCESS_PREVIEW = [
     ("Overview",             "overview"),
@@ -422,8 +336,6 @@ def build_add_user_body(edit_user=None):
         html.Div(
             style={"display": "flex", "gap": "20px", "alignItems": "flex-start"},
             children=[
-
-                # Left column: Personal Info + Account Credentials
                 html.Div(
                     style={"flex": "1.3"},
                     children=[
@@ -432,15 +344,9 @@ def build_add_user_body(edit_user=None):
                                 form_field("First Name", "new-user-first-name", value=first_name),
                                 form_field("Last Name",  "new-user-last-name", value=last_name),
                             ]),
-                            html.Div(style={"marginBottom": "16px"}, children=[
-                                form_field("Email Address", "new-user-email",
-                                           input_type="email", value=email),
-                            ]),
-                            html.Div(children=[
-                                form_field("Department", "new-user-department", value=department),
-                            ]),
+                            html.Div(style={"marginBottom": "16px"}, children=[form_field("Email Address", "new-user-email", input_type="email", value=email)]),
+                            html.Div(children=[form_field("Department", "new-user-department", value=department)]),
                         ]),
-
                         panel("Account Credentials", icon_lock_outline, [
                             html.Div(style={"marginBottom": "16px"}, children=[
                                 form_field("Username", "new-user-username", value=username, disabled=not is_edit),
@@ -465,7 +371,7 @@ def build_add_user_body(edit_user=None):
                         ], subtitle=None),
                     ]
                 ),
-
+                
                 # Right column: Assign Role + Access Preview
                 html.Div(
                     style={"flex": "1"},
@@ -544,7 +450,6 @@ def create_add_user_layout(supabase=None, edit_user_id=None):
                 style={"flex": "1", "display": "flex", "flexDirection": "row",
                        "overflow": "hidden", "minHeight": "0"},
                 children=[
-                    build_admin_sidebar(active_page="users"),
                     html.Div(
                         style={"flex": "1", "overflowY": "auto", "padding": "24px 28px",
                                "minWidth": "0"},

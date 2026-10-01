@@ -8,7 +8,7 @@ from datetime import datetime
 from assets.components import (build_dev_sidebar, icon_sidebar)
 
 # Shared model storage directory
-SHARED_MODELS_DIR = os.path.join(os.path.dirname(__file__), "data", "shared_models")
+
 
 MODEL_TYPES = ["FD001", "FD002", "FD003", "FD004"]
 
@@ -785,49 +785,32 @@ def register_model_upload_callbacks(app, supabase=None):
         selected_type = model_type or "FD001"
 
         try:
-            # ── Save .h5 file to data/shared_models/<model_type>/ ──
-            type_dir = os.path.join(SHARED_MODELS_DIR, selected_type)
-            os.makedirs(type_dir, exist_ok=True)
+            # Upload the exact version object before changing the active model.
+            from uuid import uuid4
+            version_id = str(uuid4())
+            save_filename = f"{version_id}.h5"
             _, b64data = staged_file["contents"].split(",", 1)
             file_bytes = base64.b64decode(b64data)
-
-            # ── Mark previous active model for this type as archived ──
-            db.update_records(
-                supabase,
-                "model_versions",
-                {"status": "archived"},
-                filters=[('eq', "status", "active"), ('eq', "model_type", selected_type)],
+            db.upload_file(
+                supabase, "models", f"{selected_type}/{save_filename}", file_bytes,
+                file_options={"content-type": "application/octet-stream"},
             )
-
-            # ── Insert new model version as active ──
-            insert_resp = db.insert_records(supabase, "model_versions", {
+            db.insert_records(supabase, "model_versions", {
+                "id": version_id,
                 "uploaded_by": user_id,
-                "filename": staged_file["filename"],
+                "filename": save_filename,
                 "version_notes": notes or None,
-                "status": "active",
+                "status": "archived",
                 "model_type": selected_type,
             })
-
-            # Get the new version's UUID
-            version_id = insert_resp.data[0]["id"] if insert_resp.data else None
-
-            # Save file as <version_id>.h5 to avoid overwrites
-            if version_id:
-                save_filename = f"{version_id}.h5"
-            else:
-                save_filename = staged_file["filename"]
-            save_path = os.path.join(type_dir, save_filename)
-            with open(save_path, "wb") as f:
-                f.write(file_bytes)
-
-            # Update the DB row with the actual stored filename
-            if version_id:
-                db.update_records(
-                    supabase,
-                    "model_versions",
-                    {"filename": save_filename},
-                    filters=[('eq', "id", version_id)],
-                )
+            db.update_records(
+                supabase, "model_versions", {"status": "archived"},
+                filters=[('eq', "status", "active"), ('eq', "model_type", selected_type)],
+            )
+            db.update_records(
+                supabase, "model_versions", {"status": "active"},
+                filters=[('eq', "id", version_id)],
+            )
 
             # ── Re-fetch active model + history for this type ──
             active_model, history = _fetch_history_for_type(supabase, selected_type)

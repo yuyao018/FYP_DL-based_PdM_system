@@ -3,7 +3,7 @@ import dash
 from dash import dcc, html
 import dash_bootstrap_components as dbc
 import base64
-from assets.components import (build_dev_sidebar, icon_sidebar, gear_icon, org_icon, activity_icon)
+from assets.components import (build_dev_sidebar, icon_sidebar, gear_icon, org_icon)
 
 def create_dev_dashboard_layout(supabase):
     """Developer dashboard showing all organizations and their engines."""
@@ -11,7 +11,6 @@ def create_dev_dashboard_layout(supabase):
     total_orgs = 0
     total_engines = 0
     total_active_alerts = 0
-    recent_activities = []
 
     try:
         if supabase:
@@ -70,42 +69,6 @@ def create_dev_dashboard_layout(supabase):
                     count="exact",
                 )
                 total_active_alerts = alert_resp.count or 0
-            except Exception:
-                pass
-
-            # ── Fetch recent activities (latest alert logs) ──
-            try:
-                activity_resp = db.fetch_records(
-                    supabase,
-                    "alert_logs",
-                    "*",
-                    limit=15,
-                    order_by=[("triggered_at", True)],
-                )
-                for act in (activity_resp.data or []):
-                    eng_id = act.get("engine_id")
-                    eng_display = "?"
-                    org_name = "Unknown"
-                    if eng_id:
-                        try:
-                            eng_resp = db.get_engine(supabase, eng_id, "engine_id, organization_id")
-                            eng_row = eng_resp.data or {}
-                            eng_display = str(eng_row.get("engine_id", "?")).zfill(2)
-                            org_row_id = eng_row.get("organization_id")
-                            if org_row_id:
-                                for o in orgs:
-                                    if o.get("id") == org_row_id:
-                                        org_name = o.get("name", "Unknown")
-                                        break
-                        except Exception:
-                            pass
-                    recent_activities.append({
-                        "severity": (act.get("severity") or "info").lower(),
-                        "engine_id": eng_display,
-                        "org_name": org_name,
-                        "message": act.get("message", "Alert triggered"),
-                        "triggered_at": act.get("triggered_at", ""),
-                    })
             except Exception:
                 pass
 
@@ -278,30 +241,6 @@ def create_dev_dashboard_layout(supabase):
             ]
         )
 
-    def activity_card(act):
-        """Build a card for a recent activity entry."""
-        severity_colors = {"critical": "#ff4d4d", "warning": "#ffd93d", "info": "#4a9eff"}
-        color = severity_colors.get(act["severity"], "#4a9eff")
-        time_str = act.get("triggered_at", "")[:16].replace("T", " ") if act.get("triggered_at") else ""
-        return html.Div(
-            style={
-                "background": "rgba(10,25,55,0.6)",
-                "border": f"1px solid {color}33",
-                "borderLeft": f"3px solid {color}",
-                "borderRadius": "8px", "padding": "10px 14px",
-            },
-            children=[
-                html.Div(style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "4px"},
-                         children=[
-                             html.Span(f"ENGINE-{act['engine_id']}", style={"color": color, "fontWeight": "700", "fontSize": "12px"}),
-                             html.Span(act["severity"].upper(), style={"color": color, "fontSize": "9px", "fontWeight": "700", "background": f"{color}22", "padding": "2px 6px", "borderRadius": "4px"}),
-                         ]),
-                html.Div(act["org_name"], style={"color": "rgba(168,212,255,0.6)", "fontSize": "11px", "marginBottom": "2px"}),
-                html.Div(act["message"][:60], style={"color": "rgba(255,255,255,0.7)", "fontSize": "11px", "marginBottom": "4px"}),
-                html.Div(time_str, style={"color": "rgba(168,212,255,0.4)", "fontSize": "10px"}),
-            ]
-        )
-
     # ── Build organization dropdown options for filter ──
     org_options = [{"label": "All Organizations", "value": "all"}] + [
         {"label": o["name"], "value": o["id"]} for o in org_data
@@ -407,13 +346,13 @@ def create_dev_dashboard_layout(supabase):
                                 ]
                             ),
 
-                            # ── Main content: Organizations + Recent Activities ──
+                            # ── Main content: Organizations ──
                             html.Div(
                                 style={"display": "flex", "gap": "24px", "minWidth": "0"},
                                 children=[
-                                    # Left: Organizations list
+                                    # Organizations list
                                     html.Div(
-                                        style={"flex": "3", "minWidth": "0", "overflow": "hidden"},
+                                        style={"flex": "1", "width": "100%", "minWidth": "0", "overflow": "hidden"},
                                         children=[
                                             html.Div(
                                                 style={"display": "flex", "alignItems": "center", "gap": "12px", "marginBottom": "20px"},
@@ -463,34 +402,6 @@ def create_dev_dashboard_layout(supabase):
                                         ]
                                     ),
 
-                                    # Right: Recent Activities
-                                    html.Div(
-                                        style={
-                                            "flex": "1",
-                                            "background": "#101a2f",
-                                            "border": "1px solid rgba(74,158,255,0.3)",
-                                            "borderRadius": "16px",
-                                            "padding": "20px",
-                                            "maxHeight": "calc(100vh - 220px)",
-                                            "overflowY": "auto",
-                                        },
-                                        children=[
-                                            html.Div(
-                                                style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "16px"},
-                                                children=[
-                                                    activity_icon(),
-                                                    html.H2("Recent Activities", style={"margin": "0", "color": "white", "fontSize": "18px", "fontWeight": "700"}),
-                                                ]
-                                            ),
-                                            html.Div(
-                                                style={"display": "flex", "flexDirection": "column", "gap": "10px"},
-                                                children=[activity_card(a) for a in recent_activities] if recent_activities else [
-                                                    html.Div("No recent activities.",
-                                                             style={"color": "rgba(255,255,255,0.5)", "fontSize": "13px", "textAlign": "center", "padding": "20px 0"})
-                                                ]
-                                            )
-                                        ]
-                                    )
                                 ]
                             )
                         ]
