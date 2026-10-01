@@ -16,7 +16,7 @@ def create_dev_dashboard_layout(supabase):
     try:
         if supabase:
             # ── Fetch alert thresholds ──
-            warn_thresh = 62
+            warn_thresh = 50
             crit_thresh = 30
             max_life = 125
             try:

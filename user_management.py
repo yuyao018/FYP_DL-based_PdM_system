@@ -44,8 +44,7 @@ def build_permission_matrix():
                 children=[
                     html.Div(children=[
                         html.Div(p["page"], style={"color": "white", "fontSize": "14px", "fontWeight": "700"}),
-                        html.Div(p["desc"], style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
-                                                    "marginTop": "2px"}),
+                        html.Div(p["desc"], style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "marginTop": "2px"}),
                     ]),
                     permission_cell(p["sme"]),
                     permission_cell(p["admin"]),
@@ -54,15 +53,9 @@ def build_permission_matrix():
         )
 
     return html.Div(
-        style={
-            "background": "#101e36", "border": "1px solid rgba(74,158,255,0.15)",
-            "borderRadius": "14px", "overflow": "hidden", "marginBottom": "24px",
-        },
+        style={"background": "#101e36", "border": "1px solid rgba(74,158,255,0.15)", "borderRadius": "14px", "overflow": "hidden", "marginBottom": "24px"},
         children=[
-            html.Div("Role Permission Matrix", style={
-                "color": "#4a9eff", "fontSize": "15px", "fontWeight": "700",
-                "padding": "16px 24px 12px",
-            }),
+            html.Div("Role Permission Matrix", style={"color": "#4a9eff", "fontSize": "15px", "fontWeight": "700", "padding": "16px 24px 12px"}),
             html.Div(
                 style={
                     "display": "grid", "gridTemplateColumns": "2fr 0.6fr 0.6fr",
@@ -72,14 +65,9 @@ def build_permission_matrix():
                     "borderBottom": "1px solid rgba(74,158,255,0.12)",
                 },
                 children=[
-                    html.Span("PAGE / ACTION", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
-                                                        "fontWeight": "700", "letterSpacing": "0.5px"}),
-                    html.Span("USER", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
-                                                       "fontWeight": "700", "letterSpacing": "0.5px",
-                                                       "textAlign": "center"}),
-                    html.Span("ADMIN", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px",
-                                                                 "fontWeight": "700", "letterSpacing": "0.5px",
-                                                                 "textAlign": "center"}),
+                    html.Span("PAGE / ACTION", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700", "letterSpacing": "0.5px"}),
+                    html.Span("USER", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700", "letterSpacing": "0.5px", "textAlign": "center"}),
+                    html.Span("ADMIN", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700", "letterSpacing": "0.5px", "textAlign": "center"}),
                 ]
             ),
             html.Div(rows),
