@@ -10,7 +10,7 @@ def create_dev_dashboard_layout(supabase):
     org_data = []
     total_orgs = 0
     total_engines = 0
-    total_active_alerts = 0
+    total_users = 0
 
     try:
         if supabase:
@@ -59,25 +59,13 @@ def create_dev_dashboard_layout(supabase):
                 except Exception:
                     pass
 
-            # ── Fetch total active alerts ──
-            try:
-                alert_resp = db.fetch_records(
-                    supabase,
-                    "alert_logs",
-                    "*",
-                    filters=[('eq', "status", "active")],
-                    count="exact",
-                )
-                total_active_alerts = alert_resp.count or 0
-            except Exception:
-                pass
-
             # ── Group engines by organization ──
             # Fetch all users to count per org
             all_users = []
             try:
-                users_resp = db.fetch_records(supabase, "users", "id, organization_id")
+                users_resp = db.fetch_records(supabase, "users", "id, organization_id", count="exact")
                 all_users = users_resp.data or []
+                total_users = users_resp.count if users_resp.count is not None else len(all_users)
             except Exception:
                 pass
 
@@ -334,14 +322,14 @@ def create_dev_dashboard_layout(supabase):
                                         html.Span(str(total_engines), style={"color": "white", "fontSize": "36px", "fontWeight": "700"}),
                                     ]),
                                     html.Div(style={
-                                        "background": "linear-gradient(135deg, rgba(255,77,77,0.15) 0%, rgba(255,0,0,0.08) 100%)",
-                                        "border": "1px solid rgb(255, 77, 77, 0.5)",
+                                        "background": "linear-gradient(135deg, rgba(74,158,255,0.15) 0%, rgba(42,111,212,0.08) 100%)",
+                                        "border": "1px solid rgba(74,158,255,0.5)",
                                         "borderRadius": "12px", "padding": "16px 24px",
                                         "display": "flex", "alignItems": "center", "gap": "20px",
                                         "minWidth": "220px", "justifyContent": "space-between",
                                     }, children=[
-                                        html.Span("ACTIVE ALERTS", style={"color": "#ff4d4d", "fontSize": "14px", "fontWeight": "600"}),
-                                        html.Span(str(total_active_alerts), style={"color": "#ff4d4d", "fontSize": "36px", "fontWeight": "700"}),
+                                        html.Span("TOTAL USERS", style={"color": "#4a9eff", "fontSize": "14px", "fontWeight": "600"}),
+                                        html.Span(str(total_users), style={"color": "#4a9eff", "fontSize": "36px", "fontWeight": "700"}),
                                     ]),
                                 ]
                             ),

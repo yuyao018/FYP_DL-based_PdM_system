@@ -1,13 +1,10 @@
-"""
-Developer - New Organization Page
-Form to create a new organization. An admin account is automatically
-created for the organization upon successful creation.
-"""
 from assets import database_integration as db
 import dash
 from dash import dcc, html, Input, Output, State
 import base64
-import bcrypt
+import re
+from account_credentials import create_user_with_credentials, username_prefix
+from email_notifications import _cfg
 from assets.components import (build_dev_sidebar, icon_sidebar, gear_icon, org_icon, activity_icon)
 
 def create_new_organization_layout():
@@ -66,7 +63,7 @@ def create_new_organization_layout():
 
                     # Content area
                     html.Div(
-                        style={"flex": "1", "overflowY": "auto", "padding": "40px 48px", "minWidth": "0"},
+                        style={"flex": "1", "overflowY": "auto", "padding": "32px 48px", "minWidth": "0"},
                         children=[
                             # Form container
                             html.Div(
@@ -88,8 +85,7 @@ def create_new_organization_layout():
                                     # ── Organization Name ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("ORGANIZATION NAME", style=field_label_style),
-                                        dcc.Input(id="new-org-name", type="text", placeholder="e.g. Acme Corp",
-                                                  style=field_input_style),
+                                        dcc.Input(id="new-org-name", type="text", style=field_input_style),
                                     ]),
 
                                     # ── Section header: Default Admin Account ──
@@ -100,45 +96,36 @@ def create_new_organization_layout():
                                         html.H3("Default Admin Account", style={
                                             "color": "#4a9eff", "fontWeight": "700", "fontSize": "16px", "margin": "0 0 4px 0",
                                         }),
-                                        html.P("These credentials will be used to log in as admin for this organization.", style={
-                                            "color": "rgba(168,212,255,0.5)", "fontSize": "12px", "margin": "0",
-                                        }),
                                     ]),
 
                                     # ── Admin First Name ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("FIRST NAME", style=field_label_style),
-                                        dcc.Input(id="new-org-admin-firstname", type="text", placeholder="e.g. John",
-                                                  style=field_input_style),
+                                        dcc.Input(id="new-org-admin-firstname", type="text", style=field_input_style),
                                     ]),
 
                                     # ── Admin Last Name ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("LAST NAME", style=field_label_style),
-                                        dcc.Input(id="new-org-admin-lastname", type="text", placeholder="e.g. Doe",
-                                                  style=field_input_style),
-                                    ]),
-
-                                    # ── Admin Username ──
-                                    html.Div(style={"marginBottom": "20px"}, children=[
-                                        html.Label("ADMIN USERNAME", style=field_label_style),
-                                        dcc.Input(id="new-org-admin-username", type="text", placeholder="e.g. admin_acme",
-                                                  style=field_input_style),
+                                        dcc.Input(id="new-org-admin-lastname", type="text", style=field_input_style),
                                     ]),
 
                                     # ── Admin Email ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("ADMIN EMAIL", style=field_label_style),
-                                        dcc.Input(id="new-org-admin-email", type="email", placeholder="e.g. admin@acme.com",
-                                                  style=field_input_style),
+                                        dcc.Input(id="new-org-admin-email", type="email", style=field_input_style),
                                     ]),
 
-                                    # ── Admin Password ──
-                                    html.Div(style={"marginBottom": "28px"}, children=[
-                                        html.Label("ADMIN PASSWORD", style=field_label_style),
-                                        dcc.Input(id="new-org-admin-password", type="password", placeholder="Minimum 8 characters",
-                                                  style=field_input_style),
-                                    ]),
+                                    html.P(
+                                        "Note: The username and password are automatically generated and sent to the administrator's email address. The temporary password must be changed on first login.",
+                                        style={
+                                            "color": "#4a9eff", "fontSize": "12px", "textAlign": "center",
+                                            "background": "rgba(74,158,255,0.06)",
+                                            "border": "1px solid rgba(74,158,255,0.15)",
+                                            "borderRadius": "8px", "padding": "10px",
+                                            "lineHeight": "1.6", "marginBottom": "20px",
+                                        },
+                                    ),
 
                                     # ── Submit button ──
                                     html.Button(
@@ -168,10 +155,7 @@ def create_new_organization_layout():
     )
 
 
-# ═════════════════════════════════════════════
 #  CALLBACKS
-# ═════════════════════════════════════════════
-
 def register_new_organization_callbacks(app, supabase=None, supabase_admin=None):
     """Register the form submission callback for creating a new organization."""
 
@@ -181,12 +165,11 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
         State("new-org-name", "value"),
         State("new-org-admin-firstname", "value"),
         State("new-org-admin-lastname", "value"),
-        State("new-org-admin-username", "value"),
         State("new-org-admin-email", "value"),
-        State("new-org-admin-password", "value"),
         prevent_initial_call=True,
+        running=[(Output("new-org-submit-btn", "disabled"), True, False)],
     )
-    def create_organization(n_clicks, org_name, first_name, last_name, username, email, password):
+    def create_organization(n_clicks, org_name, first_name, last_name, email):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
 
@@ -194,14 +177,8 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
         if not org_name or not org_name.strip():
             return html.Span("Organization name is required.",
                              style={"color": "#ff6b6b", "fontSize": "13px"})
-        if not username or not username.strip():
-            return html.Span("Admin username is required.",
-                             style={"color": "#ff6b6b", "fontSize": "13px"})
         if not email or not email.strip():
             return html.Span("Admin email is required.",
-                             style={"color": "#ff6b6b", "fontSize": "13px"})
-        if not password or len(password) < 8:
-            return html.Span("Password must be at least 8 characters.",
                              style={"color": "#ff6b6b", "fontSize": "13px"})
         if not first_name or not first_name.strip():
             return html.Span("First name is required.",
@@ -213,6 +190,16 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
         if not supabase:
             return html.Span("Database not connected.",
                              style={"color": "#ff6b6b", "fontSize": "13px"})
+
+        # Check generation and email configuration before creating the organization.
+        try:
+            username_prefix(first_name.strip(), last_name.strip())
+            if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()):
+                raise ValueError("Please enter a valid administrator email address.")
+            if not _cfg("EMAIL_SENDER") or not _cfg("EMAIL_PASSWORD"):
+                raise ValueError("Configure outgoing email before creating accounts.")
+        except ValueError as exc:
+            return html.Span(str(exc), style={"color": "#ff6b6b", "fontSize": "13px"})
 
         try:
             # ── Step 1: Create the organization ──
@@ -228,37 +215,40 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
 
             # ── Step 2: Create admin user via Supabase Auth + profile insert ──
             try:
-                # Use the admin client for auth user creation
-                sb = supabase_admin if supabase_admin else supabase
-
-                # Create auth user
-                auth_resp = sb.auth.admin.create_user({
-                    "email": email.strip(),
-                    "password": password,
-                    "email_confirm": True,
-                })
-                user_id = auth_resp.user.id
-
-                # Insert profile into users table
-                hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                db.insert_records(supabase, "users", {
-                    "id": user_id,
-                    "username": username.strip(),
-                    "first_name": first_name.strip(),
-                    "last_name": last_name.strip(),
-                    "email_address": email.strip(),
-                    "role": "admin",
-                    "status": "active",
-                    "organization_id": new_org_id,
-                    "password_hash": hashed_pw,
-                    "created_at": "now()",
-                })
+                username, delivered = create_user_with_credentials(
+                    supabase, supabase_admin if supabase_admin else supabase,
+                    first_name=first_name.strip(), last_name=last_name.strip(),
+                    email=email.strip(), department=None,
+                    role="admin", organization_id=new_org_id,
+                )
 
             except Exception as user_err:
                 print(f"[ERROR] Admin user creation: {user_err}")
+                # Roll back only the organization created by this submission.
+                try:
+                    db.delete_records(
+                        supabase_admin if supabase_admin else supabase,
+                        "organizations", filters=[("eq", "id", new_org_id)],
+                    )
+                except Exception as cleanup_err:
+                    print(f"[ERROR] Organization rollback failed: {cleanup_err}")
+                    return html.Span(
+                        "Admin account creation failed and organization cleanup failed. "
+                        "Please contact the developer before retrying.",
+                        style={"color": "#ff6b6b", "fontSize": "13px"},
+                    )
                 return html.Span(
-                    f"Organization '{org_name}' created, but admin user failed: {str(user_err)[:80]}",
-                    style={"color": "#ffd93d", "fontSize": "13px"}
+                    "Organization creation cancelled. Check the administrator details "
+                    "and ensure the email address is not already registered.",
+                    style={"color": "#ff6b6b", "fontSize": "13px"}
+                )
+
+            if not delivered:
+                return html.Span(
+                    f"Organization '{org_name.strip()}' and admin '{username}' created, "
+                    "but the credentials email failed. Do not create them again. "
+                    "Correct email delivery and reset the password from Edit User.",
+                    style={"color": "#ffd93d", "fontSize": "13px"},
                 )
 
             # ── Success ──
@@ -266,7 +256,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
                 html.Span("✓ ", style={"color": "#4aff9e", "fontWeight": "700"}),
                 html.Span(f"Organization '{org_name}' created successfully!", style={"color": "#4aff9e", "fontSize": "13px"}),
                 html.Br(),
-                html.Span(f"Admin account: {username.strip()} (role: admin)", style={"color": "rgba(168,212,255,0.7)", "fontSize": "12px"}),
+                html.Span(f"Admin account: {username} (role: admin). Credentials emailed; password change required on first login.", style={"color": "rgba(168,212,255,0.7)", "fontSize": "12px"}),
             ])
 
         except Exception as e:
