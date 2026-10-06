@@ -11,11 +11,97 @@ import os
 import time
 from typing import Any
 import bcrypt
+import hashlib
+import hmac
+import threading
 
-from flask import g, session as flask_session
+from flask import current_app, g, session as flask_session
 from supabase import create_client
 
 from assets import database_integration as db
+
+
+MAX_LOGIN_FAILURES = 5
+LOGIN_LOCK_SECONDS = 30 * 60
+_LOCAL_LOGIN_FAILURES: dict[str, tuple[int, float]] = {}
+_LOCAL_LOGIN_LOCK = threading.Lock()
+
+
+class LoginRejected(ValueError):
+    """A login credential or second-factor check was rejected."""
+
+
+class AccountLocked(LoginRejected):
+    """The account has reached its temporary failed-login limit."""
+
+
+def _rate_key(username: str) -> str:
+    secret = current_app.secret_key or os.getenv("FLASK_SECRET_KEY", "")
+    digest = hmac.new(secret.encode(), username.strip().casefold().encode(), hashlib.sha256).hexdigest()
+    return f"pdm:login:{digest}"
+
+
+def _login_lock_remaining(username: str) -> int:
+    key = _rate_key(username)
+    redis_client = current_app.extensions.get("login_rate_limit_redis")
+    if redis_client is not None:
+        lock_key = f"{key}:locked"
+        remaining = int(redis_client.ttl(lock_key) or 0)
+        if remaining <= 0:
+            redis_client.delete(f"{key}:failures", lock_key)
+        return max(remaining, 0)
+    now = time.monotonic()
+    with _LOCAL_LOGIN_LOCK:
+        entry = _LOCAL_LOGIN_FAILURES.get(key)
+        if not entry:
+            return 0
+        count, expires = entry
+        if expires <= now:
+            _LOCAL_LOGIN_FAILURES.pop(key, None)
+            return 0
+        return max(0, int(expires - now)) if count >= MAX_LOGIN_FAILURES else 0
+
+
+def _check_login_lock(username: str) -> None:
+    remaining = _login_lock_remaining(username)
+    if remaining > 0:
+        raise AccountLocked("Account temporarily locked; try again in about 30 minutes.")
+
+
+def _record_login_failure(username: str) -> int:
+    key = _rate_key(username)
+    redis_client = current_app.extensions.get("login_rate_limit_redis")
+    if redis_client is not None:
+        count_key, lock_key = f"{key}:failures", f"{key}:locked"
+        count = int(redis_client.incr(count_key))
+        if count == 1:
+            redis_client.expire(count_key, LOGIN_LOCK_SECONDS)
+        if count >= MAX_LOGIN_FAILURES:
+            redis_client.set(lock_key, "1", ex=LOGIN_LOCK_SECONDS)
+            redis_client.delete(count_key)
+            return 0
+        return MAX_LOGIN_FAILURES - count
+    now = time.monotonic()
+    with _LOCAL_LOGIN_LOCK:
+        count, expires = _LOCAL_LOGIN_FAILURES.get(key, (0, now + LOGIN_LOCK_SECONDS))
+        if expires <= now:
+            count, expires = 0, now + LOGIN_LOCK_SECONDS
+        count += 1
+        if count >= MAX_LOGIN_FAILURES:
+            _LOCAL_LOGIN_FAILURES[key] = (count, now + LOGIN_LOCK_SECONDS)
+            return 0
+        _LOCAL_LOGIN_FAILURES[key] = (count, expires)
+        return MAX_LOGIN_FAILURES - count
+
+
+def _clear_login_failures(username: str) -> None:
+    key = _rate_key(username)
+    redis_client = current_app.extensions.get("login_rate_limit_redis")
+    if redis_client is not None:
+        redis_client.delete(f"{key}:failures", f"{key}:locked")
+    else:
+        with _LOCAL_LOGIN_LOCK:
+            _LOCAL_LOGIN_FAILURES.pop(key, None)
 
 
 def _decode_exp(token: str) -> int:
@@ -50,6 +136,7 @@ def configure_flask_session(server) -> None:
             raise RuntimeError("Set REDIS_URL when FLASK_SESSION_TYPE=redis")
         from redis import Redis
         session_config["SESSION_REDIS"] = Redis.from_url(redis_url)
+        server.extensions["login_rate_limit_redis"] = session_config["SESSION_REDIS"]
     elif session_type == "filesystem":
         if os.getenv("APP_ENV", "development").lower() == "production":
             raise RuntimeError("Use Redis sessions in production; local filesystem sessions are single-instance only")
@@ -75,25 +162,41 @@ def _configured_supabase_client():
 
 def authenticate_username(username: str, password: str, selected_role: str,
                           admin_client, supabase_url: str, anon_key: str) -> dict[str, Any]:
-    """Resolve username privately, authenticate with Auth, then bind profile ID."""
+    """Resolve username privately and authenticate with Supabase Auth."""
     found = db.fetch_records(
         admin_client, "users",
         "id,username,email_address,first_name,last_name,role,organization_id,status,is_deleted,last_login_at",
         filters=[("eq", "username", username)], limit=2,
     ).data or []
     if len(found) != 1:
-        raise ValueError("Invalid username or password")
+        _check_login_lock(username)
+        remaining = _record_login_failure(username)
+        if remaining == 0:
+            raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.")
+        raise LoginRejected(f"Invalid username or password. {remaining} attempt(s) remain before a 30-minute lockout.")
     profile = found[0]
+    # Use a stable account identifier for subsequent lockout checks.
+    account_key = str(profile.get("id") or username).strip()
+    _check_login_lock(username)
+    if account_key.casefold() != username.casefold():
+        _check_login_lock(account_key)
+    username = account_key
     # `status` is also used for online/offline presence and is inactive after
     # normal logout, so it must not prevent a legitimate Auth sign-in.
     # Legacy schema convention: true means active; false means soft-deleted.
     if profile.get("is_deleted") is not True:
-        raise ValueError("Invalid username or password")
+        remaining = _record_login_failure(username)
+        if remaining == 0:
+            raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.")
+        raise LoginRejected(f"Invalid username or password. {remaining} attempt(s) remain before a 30-minute lockout.")
     if (profile.get("role") or "user").lower() != (selected_role or "user").lower():
-        raise ValueError("Invalid username or password")
+        remaining = _record_login_failure(username)
+        if remaining == 0:
+            raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.")
+        raise LoginRejected(f"Invalid username or password. {remaining} attempt(s) remain before a 30-minute lockout.")
     email = profile.get("email_address")
     if not email:
-        raise ValueError("This account needs an email address before Auth login")
+        raise LoginRejected("This account needs an email address before Auth login.")
 
     # A new client per attempt prevents one user's Auth state leaking to another.
     if not supabase_url or not anon_key:
@@ -102,29 +205,57 @@ def authenticate_username(username: str, password: str, selected_role: str,
     try:
         auth_response = auth_client.auth.sign_in_with_password({"email": email, "password": password})
     except Exception as auth_error:
+        # Keep credentials out of logs while recording enough detail to
+        # distinguish a Supabase rejection from a failed legacy migration.
+        auth_message = str(getattr(auth_error, "message", "") or auth_error)
+        auth_code = getattr(auth_error, "code", None)
+        print(f"[AUTH] Supabase password sign-in failed ({type(auth_error).__name__}, "
+              f"code={auth_code!r}, message={auth_message[:240]!r})")
         # One-time bridge for accounts created before Supabase Auth became the
         # source of password verification. Hash reads stay service-role-only;
         # successful verification updates Auth so later logins use Auth alone.
+        migration_step = "read legacy password hash"
         try:
             legacy = db.fetch_records(admin_client, "users", "password_hash",
                                       filters=[("eq", "id", str(profile["id"]))], limit=1).data or []
             encoded_hash = (legacy[0].get("password_hash") if legacy else None) or ""
             if not encoded_hash or not bcrypt.checkpw(password.encode("utf-8"), encoded_hash.encode("utf-8")):
-                raise ValueError("Invalid username or password") from auth_error
+                remaining = _record_login_failure(username)
+                if remaining == 0:
+                    raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.") from auth_error
+                raise LoginRejected(f"Invalid username or password. {remaining} attempt(s) remain before a 30-minute lockout.") from auth_error
+            migration_step = "update Supabase Auth password"
             admin_client.auth.admin.update_user_by_id(str(profile["id"]), {"password": password})
+            migration_step = "retry Supabase Auth sign-in"
             auth_response = auth_client.auth.sign_in_with_password({"email": email, "password": password})
-        except ValueError:
+        except LoginRejected:
             raise
         except Exception as migration_error:
-            raise ValueError("Invalid username or password") from migration_error
+            migration_message = str(getattr(migration_error, "message", "") or migration_error)
+            migration_code = getattr(migration_error, "code", None)
+            print(f"[AUTH] Legacy password migration failed at {migration_step} "
+                  f"({type(migration_error).__name__}, code={migration_code!r}, "
+                  f"message={migration_message[:240]!r})")
+            if migration_code == "user_not_found":
+                raise LoginRejected(
+                    "Your password is correct, but this account is not linked to a Supabase Auth user. "
+                    "Ask an administrator to repair the account link."
+                ) from migration_error
+            raise LoginRejected("Invalid username or password.") from migration_error
     auth_user = getattr(auth_response, "user", None)
     auth_session = getattr(auth_response, "session", None)
     if not auth_user or not auth_session or str(auth_user.id) != str(profile["id"]):
-        raise ValueError("Invalid username or password")
+        remaining = _record_login_failure(username)
+        if remaining == 0:
+            raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.")
+        raise LoginRejected(f"Invalid username or password. {remaining} attempt(s) remain before a 30-minute lockout.")
     confirmed = admin_client.auth.admin.get_user_by_id(str(auth_user.id))
     confirmed_user = getattr(confirmed, "user", None)
     if not confirmed_user or str(confirmed_user.id) != str(profile["id"]):
-        raise ValueError("Invalid username or password")
+        remaining = _record_login_failure(username)
+        if remaining == 0:
+            raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.")
+        raise LoginRejected(f"Invalid username or password. {remaining} attempt(s) remain before a 30-minute lockout.")
 
     auth_metadata = getattr(auth_user, "user_metadata", {}) or {}
     first_login = bool(auth_metadata.get("must_change_password"))
@@ -133,7 +264,6 @@ def authenticate_username(username: str, password: str, selected_role: str,
               "last_login_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     db.update_records(admin_client, "users", fields,
                       filters=[("eq", "id", str(auth_user.id))])
-
     flask_session.clear()
     flask_session.permanent = True
     flask_session["auth_access_token"] = auth_session.access_token
@@ -147,8 +277,7 @@ def authenticate_username(username: str, password: str, selected_role: str,
     flask_session["auth_username"] = profile.get("username", username)
     flask_session["auth_first_name"] = profile.get("first_name", "")
     flask_session["auth_last_name"] = profile.get("last_name", "")
-    # Harmless profile values for rendering only; authorization always uses the
-    # signed server session and/or database RLS, never these browser values.
+    _clear_login_failures(username)
     return {
         "user_id": str(auth_user.id),
         "username": profile.get("username", username),

@@ -27,7 +27,7 @@ from supabase import create_client, Client
 from flask import session as flask_session
 from auth_security import (RequestSupabaseProxy, authenticate_username,
                            configure_flask_session, refresh_auth_session_if_needed,
-                           revoke_auth_session, trusted_profile)
+                           revoke_auth_session, trusted_profile, LoginRejected)
 
 # Load environment variables
 load_dotenv()
@@ -365,11 +365,6 @@ def toggle_sidebar(n, is_open):
     prevent_initial_call=True,
 )
 def handle_login(n_clicks, username, password, selected_role, next_url):
-    return authenticate_login(username, password, selected_role, next_url)
-
-
-def authenticate_login(username, password, selected_role, next_url=None):
-    """Authenticate against Supabase Auth; the browser store is display-only."""
     validation_error = validate_login_inputs(username, password)
     if validation_error:
         return dash.no_update, html.Span(validation_error, style={"color": "#ff6b6b"}), dash.no_update
@@ -382,10 +377,11 @@ def authenticate_login(username, password, selected_role, next_url=None):
             "/dev-dashboard" if profile["role"] == "developer" else (next_url or "/dashboard"))
         message = "Please update your password." if profile["must_change_password"] else "Login successful!"
         return route, html.Span(message), {k: v for k, v in profile.items() if k != "must_change_password"}
+    except LoginRejected as exc:
+        return dash.no_update, html.Span(str(exc), style={"color": "#ff6b6b"}), dash.no_update
     except Exception as exc:
-        # Keep the response generic: do not reveal whether a username exists.
         print(f"[AUTH] Login rejected or unavailable ({type(exc).__name__})")
-        return dash.no_update, html.Span("Invalid username or password.", style={"color": "#ff6b6b"}), dash.no_update
+        return dash.no_update, html.Span("Sign-in is temporarily unavailable. Please try again.", style={"color": "#ff6b6b"}), dash.no_update
 
 def mark_logged_out(session):
     """Mark the authenticated profile inactive, then clear its Auth session."""
@@ -458,20 +454,19 @@ def toggle_role(user_clicks, admin_clicks):
 )
 def handle_dev_login(n_clicks, username, password):
     if not username or not password:
-        return dash.no_update, html.Span("Please enter your credentials.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
+        return dash.no_update, html.Span("Please enter your credentials.", style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
     try:
         profile = authenticate_username(username.strip(), password, "developer",
                                         supabase_admin, SUPABASE_URL, SUPABASE_KEY)
         path = "/change-password" if profile["must_change_password"] else "/dev-dashboard"
         msg = "Please update your password." if profile["must_change_password"] else "Login successful!"
         return path, html.Span(msg), {k: v for k, v in profile.items() if k != "must_change_password"}
-
-    except Exception as e:
-        print(f"[ERROR] Dev Login: {type(e).__name__}")
-        return dash.no_update, html.Span("Login failed. Please try again.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+    except LoginRejected as exc:
+        return dash.no_update, html.Span(str(exc), style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+    except Exception as exc:
+        print(f"[ERROR] Dev Login: {type(exc).__name__}")
+        return dash.no_update, html.Span("Sign-in is temporarily unavailable. Please try again.",
+                                          style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
 
 # Developer logout callback
