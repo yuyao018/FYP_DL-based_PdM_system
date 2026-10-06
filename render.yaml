@@ -23,3 +23,13 @@ services:
         sync: false
       - key: DASHBOARD_URL
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: EMAIL_SENDER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false

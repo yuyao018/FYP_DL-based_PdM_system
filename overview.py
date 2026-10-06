@@ -48,13 +48,29 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
     y_max = warn_thresh + 10
 
     if not cycles or (not has_actual and not has_predicted):
-        # ── Placeholder when simulation hasn't produced data yet ──
-        fig.add_annotation(
-            text=f"Warming up \u2014 predictions start after cycle {window_size}",
-            x=0.5, y=0.5, xref="paper", yref="paper",
-            showarrow=False,
-            font=dict(color="rgba(168,212,255,0.5)", size=13),
+        # ── Render empty chart with axes (will be blurred via container) ──
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=10, r=50, t=10, b=10),
+            autosize=True,
+            xaxis=dict(
+                showgrid=False, color="#a8d4ff", zeroline=False,
+                showticklabels=False,
+                range=[0, window_size * 3],
+                title=dict(text="", font=dict(color="#a8d4ff", size=11)),
+            ),
+            yaxis=dict(
+                showgrid=True, gridcolor="rgba(74,158,255,0.1)",
+                color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
+                range=[0, warn_thresh + 10],
+                title=dict(text="RUL", font=dict(color="#a8d4ff", size=11)),
+            ),
         )
+        # Return a special marker so the caller can wrap with blur overlay
+        fig._pdm_warming_up = True
+        fig._pdm_window_size = window_size
+        return fig
     else:
         x = cycles
 
@@ -124,22 +140,26 @@ def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
             showticklabels=False,
             range=[x_min, x_max] if x_max is not None else None,
             title=dict(text="", font=dict(color="#a8d4ff", size=11)),
+            showspikes=False,
         ),
         yaxis=dict(
             showgrid=True,
             gridcolor="rgba(74,158,255,0.1)",
             color="#a8d4ff", tickfont=dict(size=10),
             zeroline=False,
+            showspikes=False,
             range=[0, y_max],
             title=dict(text="RUL", font=dict(color="#a8d4ff", size=11)),
         ),
-        hovermode="x unified",
+        hovermode="x",
+        hoverdistance=40,
         hoverlabel=dict(
-            bgcolor="#0d1e3a",
-            bordercolor="rgba(74,158,255,0.4)",
-            font=dict(color="white", size=12),
+            bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)",
+            font=dict(color="rgba(0,0,0,0)", size=1), namelength=0,
         ),
     )
+    # Keep hover events for the custom card without native labels/arrow shapes.
+    fig.update_traces(hoverinfo="none", hovertemplate=None)
     return fig
 
 
@@ -157,15 +177,22 @@ def build_shap_chart(shap_data=None):
     # Fall back to placeholder if no data yet
     if not shap_data:
         fig = go.Figure()
-        fig.add_annotation(
-            text="Feature importance will appear once predictions start",
-            x=0.5, y=0.5, xref="paper", yref="paper",
-            showarrow=False, font=dict(color="rgba(168,212,255,0.5)", size=12),
-        )
+        # Empty chart with axes visible (blurred by overlay)
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=40, t=10, b=10), height=280,
-            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            margin=dict(l=40, r=10, t=10, b=10), height=280,
+            xaxis=dict(
+                showgrid=True, gridcolor="rgba(74,158,255,0.1)",
+                zeroline=True, zerolinecolor="rgba(74,158,255,0.3)",
+                color="#a8d4ff", tickfont=dict(size=10), range=[-1, 0.5],
+            ),
+            yaxis=dict(
+                showgrid=False, color="#a8d4ff",
+                tickfont=dict(size=11, color="rgba(168,212,255,0.4)"),
+                tickmode="array",
+                tickvals=[0, 1, 2, 3, 4, 5],
+                ticktext=["Nc", "NRc", "Ps30", "phi", "T30", "htBleed"],
+            ),
         )
         return fig
 
@@ -272,7 +299,7 @@ def card_title(text):
 
 
 # ─────────────────────────────────────────────
-#  MAIN CONTENT: OVERVIEW PAGE
+#  MAIN CONTENT: OVERVIEW PAGE (legacy/unused builder)
 # ─────────────────────────────────────────────
 
 def build_overview_content(engine_id="01", status="healthy", rul=120, degradation=80):
@@ -370,8 +397,8 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                 children=[
                                     card_title("Predicted RUL"),
                                     dcc.Graph(
-                                        figure=build_rul_chart(rul_value=rul),
-                                        config={"displayModeBar": False},
+                                        figure=build_rul_chart(),
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "200px"},
                                     )
                                 ]
@@ -454,7 +481,7 @@ def build_overview_content(engine_id="01", status="healthy", rul=120, degradatio
                                     card_title("Top Drivers"),
                                     dcc.Graph(
                                         figure=build_shap_chart(),
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "220px"},
                                     )
                                 ]
@@ -549,12 +576,43 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                     style_extra={"flex": "2", "display": "flex", "flexDirection": "column"},
                     children=[
                         card_title("Predicted RUL"),
-                        dcc.Graph(
-                            id="rul-line-chart",
-                            figure=build_rul_chart(),
-                            config={"displayModeBar": False},
-                            style={"flex": "1", "minHeight": "0"},
-                        )
+                        html.Div(
+                            style={"flex": "1", "minHeight": "0", "position": "relative",
+                                   "overflow": "hidden"},
+                            children=[
+                                dcc.Graph(
+                                    id="rul-line-chart",
+                                    figure=build_rul_chart(),
+                                    config={"displayModeBar": False, "responsive": True},
+                                    style={"height": "100%", "width": "100%"},
+                                    clear_on_unhover=True,
+                                ),
+                                # Blur overlay (shown/hidden by callback)
+                                html.Div(
+                                    id="rul-chart-overlay",
+                                    style={
+                                        "position": "absolute", "top": "0", "left": "0",
+                                        "width": "100%", "height": "100%",
+                                        "backdropFilter": "blur(4px)",
+                                        "WebkitBackdropFilter": "blur(4px)",
+                                        "background": "rgba(10,22,40,0.5)",
+                                        "borderRadius": "8px",
+                                        "display": "flex", "alignItems": "center",
+                                        "justifyContent": "center",
+                                        "zIndex": "10",
+                                    },
+                                    children=[
+                                        html.Div("Warming up — predictions will appear shortly",
+                                                 style={"color": "rgba(168,212,255,0.8)",
+                                                        "fontSize": "13px", "fontWeight": "600",
+                                                        "textAlign": "center", "padding": "0 20px"}),
+                                    ]
+                                ),
+                                # Hover overlays
+                                html.Div(id="rul-chart-vline",   style={"display": "none", "position": "absolute", "top": "0", "width": "1px", "borderLeft": "1px dashed rgba(168,212,255,0.45)", "pointerEvents": "none", "zIndex": "20"}),
+                                html.Div(id="rul-chart-tooltip", style={"display": "none", "position": "absolute", "background": "rgba(10,20,45,0.95)", "border": "1px solid rgba(74,158,255,0.35)", "borderRadius": "8px", "padding": "10px 14px", "pointerEvents": "none", "zIndex": "21", "minWidth": "160px", "boxShadow": "0 4px 20px rgba(0,0,0,0.5)"}),
+                            ]
+                        ),
                     ]
                 ),
                 card(
@@ -595,7 +653,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                             style={"display": "flex", "alignItems": "center", "justifyContent": "center",
                                    "gap": "6px", "marginTop": "6px"},
                             children=[
-                                html.Span("Confidence:", style={
+                                html.Span("Similarity:", style={
                                     "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
                                 }),
                                 html.Span(id="overview-confidence-score", children="—", style={
@@ -645,7 +703,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-up",
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
                                 ]),
@@ -656,7 +714,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-down",
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
                                 ]),
@@ -667,7 +725,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-all",
-                                        config={"displayModeBar": False},
+                                        config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
                                 ]),
@@ -703,12 +761,38 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                 ),
                             ]
                         ),
-                        dcc.Graph(
-                            id="shap-chart",
-                            figure=build_shap_chart(),
-                            config={"displayModeBar": False, "responsive": True},
-                            style={"flex": "1", "minHeight": "0", "width": "100%"},
-                        )
+                        html.Div(
+                            style={"flex": "1", "minHeight": "0", "position": "relative"},
+                            children=[
+                                dcc.Graph(
+                                    id="shap-chart",
+                                    figure=build_shap_chart(),
+                                    config={"displayModeBar": False, "responsive": True},
+                                    style={"height": "100%", "width": "100%"},
+                                ),
+                                # Blur overlay for warming up
+                                html.Div(
+                                    id="shap-chart-overlay",
+                                    style={
+                                        "position": "absolute", "top": "0", "left": "0",
+                                        "width": "100%", "height": "100%",
+                                        "backdropFilter": "blur(4px)",
+                                        "WebkitBackdropFilter": "blur(4px)",
+                                        "background": "rgba(10,22,40,0.5)",
+                                        "borderRadius": "8px",
+                                        "display": "flex", "alignItems": "center",
+                                        "justifyContent": "center",
+                                        "zIndex": "10",
+                                    },
+                                    children=[
+                                        html.Div("Warming up — feature importance will appear shortly",
+                                                 style={"color": "rgba(168,212,255,0.8)",
+                                                        "fontSize": "12px", "fontWeight": "600",
+                                                        "textAlign": "center", "padding": "0 16px"}),
+                                    ]
+                                ),
+                            ]
+                        ),
                     ]
                 ),
             ]
@@ -779,6 +863,12 @@ def create_overview_layout(supabase, engine_db_id=None):
             dcc.Location(id="url-overview", refresh=False),
             dcc.Store(id="overview-engine-id-store", data=engine_db_id),
             dcc.Interval(id="rul-poll-interval", interval=5_000, n_intervals=0),
+            # ── Resize-trigger components: force Plotly to re-measure its
+            #    container shortly after first paint, fixing the empty-space
+            #    bug that otherwise only "resolves itself" when DevTools is
+            #    opened (which fires a native window resize event). ──
+            dcc.Interval(id="resize-trigger-interval", interval=600, n_intervals=0, max_intervals=1),
+            html.Div(id="dummy-resize-output", style={"display": "none"}),
             build_topbar(),
             html.Div(
                 style={
@@ -837,6 +927,8 @@ def register_overview_callbacks(app, supabase=None):
         Output("shap-chart",           "figure"),
         Output("overview-confidence-score", "children"),
         Output("rul-poll-interval",    "disabled"),
+        Output("rul-chart-overlay",    "style"),
+        Output("shap-chart-overlay",   "style"),
         Input("rul-poll-interval",     "n_intervals"),
         State("overview-engine-id-store", "data"),
         prevent_initial_call=False,
@@ -844,7 +936,7 @@ def register_overview_callbacks(app, supabase=None):
     def refresh_rul_chart(n_intervals, engine_db_id):
         import json as _json
         from engine_simulation_manager import WINDOW_SIZES, is_running as _sim_is_running
-        from degradation_analysis import compute_confidence_score
+        from degradation_analysis import compute_pattern_similarity
         MAX_LIFE = 130
         WARN_THRESH = 62
         CRIT_THRESH = 30
@@ -955,22 +1047,38 @@ def register_overview_callbacks(app, supabase=None):
                 build_shap_chart(),
                 "—",
                 _disable_poll,
+                # Show blur overlay on RUL chart
+                {"position": "absolute", "top": "0", "left": "0",
+                 "width": "100%", "height": "100%",
+                 "backdropFilter": "blur(4px)", "WebkitBackdropFilter": "blur(4px)",
+                 "background": "rgba(10,22,40,0.5)", "borderRadius": "8px",
+                 "display": "flex", "alignItems": "center", "justifyContent": "center",
+                 "zIndex": "10"},
+                # Show blur overlay on Top Drivers
+                {"position": "absolute", "top": "0", "left": "0",
+                 "width": "100%", "height": "100%",
+                 "backdropFilter": "blur(4px)", "WebkitBackdropFilter": "blur(4px)",
+                 "background": "rgba(10,22,40,0.5)", "borderRadius": "8px",
+                 "display": "flex", "alignItems": "center", "justifyContent": "center",
+                 "zIndex": "10"},
             )
 
         rul_display = str(int(round(latest_pred_rul)))
         degradation = max(0, min(100, round((1 - latest_pred_rul / MAX_LIFE) * 100)))
 
-        # Fetch degradation_type from engine for live display
+        # Fetch degradation_type and stored similarity from engine for live display
         _deg_type = None
+        _stored_similarity = None
         if supabase and engine_db_id:
             try:
                 _dt_resp = supabase.table("engines") \
-                    .select("degradation_type") \
+                    .select("degradation_type, degradation_confidence") \
                     .eq("id", engine_db_id) \
                     .single() \
                     .execute()
                 if _dt_resp.data:
                     _deg_type = _dt_resp.data.get("degradation_type")
+                    _stored_similarity = _dt_resp.data.get("degradation_confidence")
             except Exception:
                 pass
 
@@ -978,6 +1086,11 @@ def register_overview_callbacks(app, supabase=None):
         label_color = "#4a9eff"
         label_bg    = "rgba(74,158,255,0.12)"
         label_bdr   = "#4a9eff"
+        if _deg_type == "Insufficient Signal":
+            label_text  = "Monitoring…"
+            label_color = "rgba(168,212,255,0.5)"
+            label_bg    = "rgba(74,158,255,0.06)"
+            label_bdr   = "rgba(74,158,255,0.2)"
 
         # Color for RUL number and degradation % based on thresholds
         if latest_pred_rul > WARN_THRESH:
@@ -1014,8 +1127,10 @@ def register_overview_callbacks(app, supabase=None):
         else:
             live_status = "healthy"
 
-        # Compute confidence score for display
-        _confidence = compute_confidence_score(_deg_type, latest_shap) if latest_shap and _deg_type else None
+        # Pattern similarity score for display
+        _confidence = compute_pattern_similarity(
+            _deg_type, latest_shap, stored_similarity=_stored_similarity
+        ) if _deg_type else None
         _confidence_display = f"{_confidence:.0%}" if _confidence is not None else "—"
 
         return (
@@ -1030,6 +1145,9 @@ def register_overview_callbacks(app, supabase=None):
             build_shap_chart(latest_shap),
             _confidence_display,
             _disable_poll,
+            # Hide blur overlay
+            {"display": "none"},
+            {"display": "none"},
         )
 
     # ── Sensor mini-charts callback ──
@@ -1069,12 +1187,7 @@ def register_overview_callbacks(app, supabase=None):
                 zeroline=False, color="#a8d4ff", tickfont=dict(size=9),
                 title=dict(text="Std. Value", font=dict(size=8, color="#5a8ab5")),
             ),
-            hovermode="closest",
-            hoverlabel=dict(
-                bgcolor="#0d1e3a", bordercolor="rgba(74,158,255,0.4)",
-                font=dict(color="white", size=10),
-                namelength=10,
-            ),
+            hovermode=False,
         )
 
     def _extract_sensor_data(history, cluster_info=None):
@@ -1183,6 +1296,7 @@ def register_overview_callbacks(app, supabase=None):
                 mode="lines", name=sid,
                 line=dict(color=_SENSOR_COLORS.get(sid, "#4a9eff"), width=1.2),
                 connectgaps=True,
+                hovertemplate=f"<b>{sid}</b><br>Cycle: %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
             ))
         fig.update_layout(**_mini_chart_layout())
         return fig
@@ -1255,6 +1369,195 @@ def register_overview_callbacks(app, supabase=None):
             )
         return fig_up, fig_down, fig_all, legend_items
 
+    # ── Shared clientside hover logic ────────────────────────────────────
+    _HOVER_JS = """
+    function(hoverData, figure, graphId, vlineId, tooltipId, chartH, marginL, marginR, marginT, marginB) {
+        var hidden = {display: 'none'};
+        var tooltipEl = document.getElementById(tooltipId);
+        var vlineEl   = document.getElementById(vlineId);
+
+        if (!hoverData || !hoverData.points || hoverData.points.length === 0) {
+            if (tooltipEl) tooltipEl.style.display = 'none';
+            if (vlineEl)   vlineEl.style.display   = 'none';
+            return [hidden, hidden];
+        }
+        if (!figure || !figure.data || figure.data.length === 0) {
+            if (tooltipEl) tooltipEl.style.display = 'none';
+            if (vlineEl)   vlineEl.style.display   = 'none';
+            return [hidden, hidden];
+        }
+
+        // Use rendered axes: Plotly expands margins for labels and titles.
+        // Figure margins and data extents do not describe the visible plot.
+        var graphEl = document.getElementById(graphId);
+        var plotEl = graphEl && graphEl.querySelector('.js-plotly-plot');
+        var layout = plotEl && plotEl._fullLayout;
+        if (!layout || !layout.xaxis || !layout.yaxis) return [hidden, hidden];
+        var xaxis = layout.xaxis;
+        var yaxis = layout.yaxis;
+        var plotW = layout.width, plotH = layout.height;
+        var l = xaxis._offset, t = yaxis._offset;
+        var innerW = xaxis._length, innerH = yaxis._length;
+        var r = plotW - l - innerW, b = plotH - t - innerH;
+
+        // Clear overlays as soon as the pointer enters an axis/margin area.
+        if (!plotEl._rulHoverBoundsBound) {
+            plotEl._rulHoverBoundsBound = true;
+            plotEl.addEventListener('pointermove', function(event) {
+                var current = plotEl._fullLayout;
+                if (!current) return;
+                var rect = plotEl.getBoundingClientRect();
+                var px = (event.clientX - rect.left) * current.width / rect.width;
+                var py = (event.clientY - rect.top) * current.height / rect.height;
+                var xa = current.xaxis, ya = current.yaxis;
+                plotEl._rulPointerOutside = px < xa._offset || px > xa._offset + xa._length
+                    || py < ya._offset || py > ya._offset + ya._length;
+                if (plotEl._rulPointerOutside) hideOverlays();
+            }, true);
+            plotEl.addEventListener('pointerleave', function() {
+                plotEl._rulPointerOutside = true;
+                hideOverlays();
+            });
+        }
+        function hideOverlays() {
+            var tip = document.getElementById(tooltipId);
+            var line = document.getElementById(vlineId);
+            if (tip) tip.style.display = 'none';
+            if (line) line.style.display = 'none';
+        }
+        if (plotEl._rulPointerOutside) return [hidden, hidden];
+        var hoveredX = hoverData.points[0].x;
+        var xPx = l + xaxis.l2p(hoveredX);
+        if (!Number.isFinite(xPx) || xPx < l - 0.5 || xPx > l + innerW + 0.5)
+            return [hidden, hidden];
+        xPx = Math.max(l, Math.min(xPx, l + innerW));
+
+        var vlineStyle = {
+            display: 'block', position: 'absolute',
+            left: xPx + 'px', top: t + 'px', height: innerH + 'px',
+            width: '1px', borderLeft: '1px dashed rgba(168,212,255,0.45)',
+            pointerEvents: 'none', zIndex: '10',
+        };
+
+        var rows = [];
+        figure.data.forEach(function(trace) {
+            if (!trace.x || !trace.y) return;
+            var xi = -1, bestDist = Infinity;
+            for (var i = 0; i < trace.x.length; i++) {
+                var d = Math.abs(trace.x[i] - hoveredX);
+                if (d < bestDist) { bestDist = d; xi = i; }
+            }
+            if (xi === -1 || bestDist > 2) return;
+            var val = trace.y[xi];
+            if (val === null || val === undefined) return;
+            // skip marker-only traces (endpoint dots)
+            if (trace.mode === 'markers' && !trace.name) return;
+            var color = (trace.line && trace.line.color) ? trace.line.color
+                      : (trace.marker && trace.marker.color) ? trace.marker.color : '#4a9eff';
+            rows.push({name: trace.name || '?', color: color, val: val});
+        });
+        rows.sort(function(a,b){ return Math.abs(b.val) - Math.abs(a.val); });
+
+        if (rows.length === 0) {
+            if (tooltipEl) tooltipEl.style.display = 'none';
+            return [vlineStyle, hidden];
+        }
+
+        var twoCol = rows.length > 8;
+
+        function makeCell(row) {
+            var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
+            return '<span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;">'
+                 + '<span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;background:'
+                 + row.color + ';display:inline-block;"></span>'
+                 + '<span style="color:rgba(168,212,255,0.9);min-width:32px;font-size:11px;">'
+                 + row.name + '</span>'
+                 + '<span style="color:white;font-weight:600;font-size:11px;'
+                 + 'font-variant-numeric:tabular-nums;margin-left:4px;">'
+                 + valStr + '</span></span>';
+        }
+
+        var headerHtml = '<div style="font-weight:700;font-size:12px;color:white;'
+                       + 'margin-bottom:6px;padding-bottom:5px;'
+                       + 'border-bottom:1px solid rgba(74,158,255,0.25);">Cycle: ' + hoveredX + '</div>';
+        var bodyHtml = '';
+        if (!twoCol) {
+            rows.forEach(function(row) {
+                bodyHtml += '<div style="display:flex;align-items:center;gap:7px;margin-bottom:3px;">'
+                          + makeCell(row) + '</div>';
+            });
+        } else {
+            var half = Math.ceil(rows.length / 2);
+            var leftRows = rows.slice(0, half), rightRows = rows.slice(half);
+            bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;column-gap:14px;row-gap:3px;">';
+            var maxLen = Math.max(leftRows.length, rightRows.length);
+            for (var i = 0; i < maxLen; i++) {
+                bodyHtml += '<div style="display:flex;align-items:center;">'
+                          + (i < leftRows.length  ? makeCell(leftRows[i])  : '') + '</div>';
+                bodyHtml += '<div style="display:flex;align-items:center;padding-left:8px;'
+                          + 'border-left:1px solid rgba(74,158,255,0.15);">'
+                          + (i < rightRows.length ? makeCell(rightRows[i]) : '') + '</div>';
+            }
+            bodyHtml += '</div>';
+        }
+
+        if (tooltipEl) {
+            tooltipEl.style.maxHeight = '';
+            tooltipEl.style.overflowY = '';
+            tooltipEl.innerHTML = headerHtml + bodyHtml;
+        }
+
+        var tooltipW = Math.min(twoCol ? 320 : 170, Math.max(0, innerW - 12));
+        var offsetX  = 10, padding = 6;
+        var leftPos  = xPx + offsetX;
+        if (leftPos + tooltipW > plotW - r - padding) leftPos = xPx - tooltipW - offsetX;
+        if (leftPos < l) leftPos = l;
+
+        var tooltipH  = tooltipEl ? tooltipEl.scrollHeight : 150;
+        var topPos    = t + padding;
+        if (topPos + tooltipH > plotH - b - padding) topPos = (plotH - b - padding) - tooltipH;
+        if (topPos < t + padding) topPos = t + padding;
+
+        var tooltipStyle = {
+            display: 'block', position: 'absolute',
+            left: leftPos + 'px', top: topPos + 'px',
+            background: 'rgba(10,20,45,0.95)', border: '1px solid rgba(74,158,255,0.35)',
+            borderRadius: '8px', padding: '10px 14px', pointerEvents: 'none',
+            zIndex: '20', width: tooltipW + 'px', boxSizing: 'border-box',
+            maxHeight: Math.max(0, innerH - 12) + 'px', overflow: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+        };
+        return [vlineStyle, tooltipStyle];
+    }
+    """
+
+    # ── RUL line chart ────────────────────────────────────────────────────
+    app.clientside_callback(
+        f"(function() {{ var fn = {_HOVER_JS}; return function(h,f){{return fn(h,f,'rul-line-chart','rul-chart-vline','rul-chart-tooltip',220,10,50,10,10);}}; }})()",
+        Output("rul-chart-vline",   "style"),
+        Output("rul-chart-tooltip", "style"),
+        Input("rul-line-chart", "hoverData"),
+        State("rul-line-chart", "figure"),
+        prevent_initial_call=True,
+    )
+
+    # ── Force Plotly to resize all charts after initial page render ───────
+    # requestAnimationFrame defers the resize until after the browser has
+    # finished its layout/paint cycle — more reliable than a fixed timeout.
+    app.clientside_callback(
+        """
+        function(n) {
+            requestAnimationFrame(function() {
+                requestAnimationFrame(function() {
+                    window.dispatchEvent(new Event('resize'));
+                });
+            });
+            return "";
+        }
+        """,
+        Output("dummy-resize-output", "children"),
+        Input("resize-trigger-interval", "n_intervals"),
+        prevent_initial_call=False,
+    )
 
 # ─────────────────────────────────────────────
 #  STANDALONE RUN
@@ -1266,5 +1569,5 @@ if __name__ == "__main__":
         external_stylesheets=[dbc.themes.BOOTSTRAP],
         suppress_callback_exceptions=True,
     )
-    app.layout = create_overview_layout()
+    app.layout = create_overview_layout(supabase=None)
     app.run(debug=True)

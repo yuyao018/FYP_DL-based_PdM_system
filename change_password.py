@@ -6,6 +6,22 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import bcrypt
+import string
+
+
+def validate_password_strength(password):
+    missing = []
+    if len(password) < 12:
+        missing.append("at least 12 characters")
+    if not any(c in string.ascii_uppercase for c in password):
+        missing.append("an uppercase letter (A-Z)")
+    if not any(c in string.ascii_lowercase for c in password):
+        missing.append("a lowercase letter (a-z)")
+    if not any(c in string.digits for c in password):
+        missing.append("a number (0-9)")
+    if not any(c in string.punctuation for c in password):
+        missing.append("a special character (e.g. !, @, #, $)")
+    return "Password must include: " + ", ".join(missing) + "." if missing else None
 
 
 # ═════════════════════════════════════════════
@@ -158,11 +174,19 @@ def create_change_password_layout():
                                 "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
                                 "fontWeight": "600", "marginBottom": "6px",
                             }),
-                            html.Div("• At least 8 characters", style={
+                            html.Div("• At least 12 characters", style={
                                 "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
                                 "marginBottom": "2px",
                             }),
-                            html.Div("• Must not be the same as your current password", style={
+                            html.Div("• At least one uppercase letter (A-Z) and one lowercase letter (a-z)", style={
+                                "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
+                                "marginBottom": "2px",
+                            }),
+                            html.Div("• At least one number (0-9)", style={
+                                "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
+                                "marginBottom": "2px",
+                            }),
+                            html.Div("• At least one special character (e.g. !, @, #, $)", style={
                                 "color": "rgba(168,212,255,0.5)", "fontSize": "11px",
                             }),
                         ]
@@ -228,9 +252,10 @@ def register_change_password_callbacks(app, supabase=None, supabase_admin=None):
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 
-        if len(new_password) < 8:
+        strength_error = validate_password_strength(new_password)
+        if strength_error:
             return dash.no_update, html.Span(
-                "Password must be at least 8 characters.",
+                strength_error,
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 

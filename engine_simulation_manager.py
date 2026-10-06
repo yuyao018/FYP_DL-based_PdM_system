@@ -25,6 +25,7 @@ tracked in _RUNNING_SIMULATIONS so we don't double-start the same engine.
 """
 
 import json
+import gc
 import os
 from pathlib import Path
 import threading
@@ -42,6 +43,12 @@ import pandas as pd
 
 TICK_INTERVAL    = 3          # seconds between cycles
 RUL_CAP          = 100        # clamp predicted RUL — matches training rul_cap in model metadata
+
+# How often (in prediction cycles) to run the SHAP GradientExplainer.
+# SHAP is expensive (~150–200 MB peak RAM) — running every cycle OOMs on
+# Render's free tier (512 MB).  Every 5 cycles keeps memory pressure low
+# while still giving the dashboard fresh attributions every ~15 seconds.
+SHAP_INTERVAL = 5
 
 # Per-dataset window sizes (must match training)
 WINDOW_SIZES = {
@@ -166,7 +173,7 @@ def _push_sensor_row(engine_db_id: str, row: dict):
 # ─────────────────────────────────────────────
 
 # ─────────────────────────────────────────────
-#  MODEL ARCHITECTURE  (exact copy of train.py SBiTransformer)
+#  MODEL ARCHITECTURE  (exact copy of train.py TransformerBiGRU)
 # ─────────────────────────────────────────────
 
 def _load_state_dict_from_h5(path: str) -> dict:
@@ -187,7 +194,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
                  ff_dim: int, hidden_dim_gru: int, dropout: float,
                  window_attn: int, seq_len: int):
     """
-    Build the SBiTransformer architecture exactly as defined in train.py.
+    Build the TransformerBiGRU architecture exactly as defined in train.py.
     Returns an nn.Module with a .predict(X) convenience method.
     """
     import torch
@@ -239,7 +246,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
             f2 = self.ffn2(x + self.dropout(f1))
             return self.norm3(x + self.dropout(f2))
 
-    class SBiTransformer(nn.Module):
+    class TransformerBiGRU(nn.Module):
         def __init__(self):
             super().__init__()
             self.input_projection = nn.Linear(num_features, d_model)
@@ -268,7 +275,7 @@ def _build_model(num_features: int, d_model: int, num_heads: int, num_layers: in
                 out = self(torch.tensor(X, dtype=torch.float32))
             return out.numpy()
 
-    return SBiTransformer()
+    return TransformerBiGRU()
 
 
 # ─────────────────────────────────────────────
@@ -391,7 +398,7 @@ def _load_model(model_type: str, supabase=None):
                     print(f"[SIM] Loaded cluster normalization: "
                           f"{kmeans_centroids.shape[0]} clusters from {model_path}")
 
-            # ── Build model architecture (exact train.py SBiTransformer) ──
+            # ── Build model architecture (exact train.py TransformerBiGRU) ──
             model = _build_model(
                 num_features   = num_features,
                 d_model        = d_model,
@@ -405,8 +412,17 @@ def _load_model(model_type: str, supabase=None):
             )
 
             # ── Load weights with strict=True to catch any mismatch ──
-            state_dict = _load_state_dict_from_h5(model_path)
-            model.load_state_dict(state_dict, strict=True)
+            try:
+                state_dict = _load_state_dict_from_h5(model_path)
+                model.load_state_dict(state_dict, strict=True)
+            except Exception as _load_err:
+                print(f"[SIM][ERROR] MODEL LOAD FAILED: {type(_load_err).__name__}: {str(_load_err)[:200]}")
+                try:
+                    model.load_state_dict(state_dict, strict=False)
+                    print(f"[SIM][WARN] Loaded with strict=False")
+                except Exception as _load_err2:
+                    print(f"[SIM][ERROR] strict=False also failed: {type(_load_err2).__name__}: {str(_load_err2)[:200]}")
+                    return None
             model.eval()
 
             _MODEL_CACHE[model_type] = model
@@ -682,51 +698,159 @@ SENSOR_SHORT = [
 ]
 
 
-def _compute_feature_importance(model, X: np.ndarray) -> list[dict]:
+def _compute_feature_importance(model, X: np.ndarray, num_features: int, background: np.ndarray = None,
+                                pred_raw: float = None, bias: float = 0.0,
+                                rul_cap: float = None, sensor_labels=None) -> tuple[list[dict], float]:
     """
-    Compute per-sensor importance scores using input × gradient attribution.
-
-    X: numpy array shape (1, W, 42) — the same tensor fed to model.predict()
-       Features are ordered [raw(14) | roll_mean(14) | roll_std(14)]
-
-    Returns a list of dicts sorted by |score| descending:
-        [{"sensor": "T30", "score": -0.38}, ...]
-
-    Only the raw sensor block (first 14 columns) is attributed — rolling
-    features carry the same signal so aggregating the raw block is sufficient
-    and avoids triple-counting.
+    Compute per-sensor SHAP values using shap.GradientExplainer.
+    Returns:
+        (shap_list, base_value) both in the post-processed RUL space.
     """
     try:
+        import shap
         import torch
 
-        t = torch.tensor(X, dtype=torch.float32, requires_grad=True)
-        output = model(t)           # calls SBiTransformer.forward() directly
-        output.backward()           # backprop to get dOutput/dInput
+        # Background: zero baseline (neutral reference)
+        if background is not None:
+            bg = background
+        else:
+            bg = np.zeros_like(X)
 
-        # grad shape: (1, W, 42) — take mean over time axis, raw block only
-        grad = t.grad.detach().numpy()[0]   # (W, 42)
-        raw_grad = grad[:, :14]             # (W, 14)
+        bg_t  = torch.tensor(bg,  dtype=torch.float32)
+        inp_t = torch.tensor(X,   dtype=torch.float32)
 
-        # Input × gradient attribution (mean over time window)
-        inp_raw = X[0, :, :14]             # (W, 14)
-        attr = (inp_raw * raw_grad).mean(axis=0)   # (14,)
+        # model.train()
+        model.eval()
+        explainer   = shap.GradientExplainer(model, bg_t)
+        shap_values = explainer.shap_values(inp_t)
+        # model.eval()
+        print(f"[SIM] GradientExplainer succeeded, shap_values type={type(shap_values)}, "
+              f"shape={np.array(shap_values).shape if not isinstance(shap_values, list) else len(shap_values)}")
 
-        # Normalise so the largest absolute value = 1
-        max_abs = np.abs(attr).max()
-        if max_abs > 0:
-            attr = attr / max_abs
+        if isinstance(shap_values, list):
+            shap_arr = np.array(shap_values[0])
+        else:
+            shap_arr = np.array(shap_values)
 
+        # Squeeze trailing dim if shape is (1, W, 42, 1)
+        if shap_arr.ndim == 4:
+            shap_arr = shap_arr.squeeze(-1)
+
+        # Aggregate over time window, raw sensor block only → (14,)
+        # raw_shap = shap_arr[0, :, :14].mean(axis=0)
+        n = num_features
+        raw_shap = shap_arr[0, :, :n]
+        mean_shap = shap_arr[0, :, n:2*n]
+        std_shap = shap_arr[0, :, 2*n:3*n]
+
+        sensor_shap = (raw_shap + mean_shap + std_shap).sum(axis=0) # total contribution
+
+        # Base value E[f(background)] in raw model output space
+        with torch.no_grad():
+            model.eval()
+            base_raw = float(model(bg_t).mean().item())
+
+        full_shap_sum = float(shap_arr.sum())
+
+        print("========== SHAP DEBUG ==========")
+        print(f"FULL SHAP SUM     = {full_shap_sum:.6f}")
+        print(f"BASE              = {base_raw:.6f}")
+        print(f"BASE + FULL SHAP  = {base_raw + full_shap_sum:.6f}")
+        print(f"MODEL OUTPUT      = {pred_raw:.6f}")
+        print(f"DIFFERENCE        = {(base_raw + full_shap_sum) - pred_raw:.6f}")
+        print("================================")
+
+        sensor_shap_sum = float(sensor_shap.sum())
+
+        print("========== SENSOR SHAP DEBUG ==========")
+        print(f"SENSOR SHAP SUM     = {sensor_shap_sum:.6f}")
+        print(f"FULL SHAP SUM       = {full_shap_sum:.6f}")
+        print(f"BASE + SENSOR SHAP = {base_raw + sensor_shap_sum:.6f}")
+        print(f"MODEL OUTPUT       = {pred_raw:.6f}")
+        print(f"DIFFERENCE         = {(base_raw + sensor_shap_sum) - pred_raw:.6f}")
+        print("=======================================")
+
+        # print("SHAP ARRAY SHAPE =", shap_arr.shape)
+
+        # print("========== SHAP FEATURE CHECK ==========")
+
+        # for i, value in enumerate(shap_arr[0].sum(axis=0)):
+        #     print(f"Feature {i:02d}: {value:.6f}")
+
+        # print("========================================")
+
+        # Apply bias correction to the base value
+        base_corrected = base_raw - bias
+        if rul_cap is not None:
+            base_corrected = max(0.0, min(rul_cap, base_corrected))
+
+        # Diagnostic only — DO NOT rescale SHAP values
+        # predicted_rul_exact = pred_raw - bias if pred_raw is not None else base_raw - bias
+        # if rul_cap is not None:
+        #     predicted_rul_exact = max(0.0, min(rul_cap, predicted_rul_exact))
+
+        if pred_raw is not None:
+            shap_sum = sensor_shap.sum()
+
+            print("base =", base_raw)
+            print("sum SHAP =", shap_sum)
+            print("base + SHAP =", base_raw + shap_sum)
+            print("model output =", pred_raw)
+            # raw_sum = float(raw_shap.sum())
+            # target_sum = predicted_rul_exact - base_corrected
+            # if abs(raw_sum) > 1e-8:
+            #     scale = target_sum / raw_sum
+            #     raw_shap = raw_shap * scale
+
+        # Store full float precision — rounding to 4dp across 14 sensors
+        # accumulates ~0.5–1 cycle error in sum(scores). Use 6dp instead.
+        labels = sensor_labels if sensor_labels is not None else SENSOR_SHORT
         result = [
-            {"sensor": SENSOR_SHORT[i], "score": round(float(attr[i]), 4)}
-            for i in range(14)
+            {"sensor": labels[i], "score": round(float(sensor_shap[i]), 6)}
+            for i in range(n)
         ]
-        # Sort by absolute contribution descending
         result.sort(key=lambda x: abs(x["score"]), reverse=True)
-        return result
+
+        actual_sum = sum(r["score"] for r in result)
+        all_scores = [(r['sensor'], round(r['score'], 6)) for r in result]
+        print(f"[SIM] SHAP base_value={base_corrected:.6f}")
+        print(f"[SIM] SHAP scores (all): {all_scores}")
+        # print(f"[SIM] base_corrected={base_corrected:.6f} sum(scores)={actual_sum:.6f} "
+        #       f"f(x)={base_corrected + actual_sum:.6f} predicted_rul={predicted_rul_exact:.6f} "
+        #       f"gap={abs(base_corrected + actual_sum - predicted_rul_exact):.6f}")
+
+        # ── Free tensors explicitly to release RAM on memory-constrained hosts ──
+        del explainer, shap_values, shap_arr, bg_t, inp_t
+        gc.collect()
+
+        return result, base_corrected
 
     except Exception:
-        print(f"[SIM][WARN] SHAP attribution failed: {traceback.format_exc(limit=2)}")
-        return []
+        print(f"[SIM][WARN] SHAP GradientExplainer failed, falling back to input×gradient:\n"
+              f"{traceback.format_exc(limit=3)}")
+        try:
+            import torch
+            model.train()
+            t = torch.tensor(X, dtype=torch.float32, requires_grad=True)
+            output = model(t)
+            output.backward()
+            model.eval()
+            grad     = t.grad.detach().numpy()[0]
+            raw_grad = grad[:, :n]
+            inp_raw  = X[0, :, :n]
+            attr = (inp_raw * raw_grad).mean(axis=0)
+            max_abs = np.abs(attr).max()
+            if max_abs > 0:
+                attr = attr / max_abs
+            result = [
+                {"sensor": SENSOR_SHORT[i], "score": round(float(attr[i]), 4)}
+                for i in range(n)
+            ]
+            result.sort(key=lambda x: abs(x["score"]), reverse=True)
+            return result, 0.0
+        except Exception:
+            model.eval()
+            return [], 0.0
 
 # How often (in simulation cycles) each thread re-fetches thresholds from
 # Supabase so that changes saved on the Alert Thresholds page take effect
@@ -734,85 +858,204 @@ def _compute_feature_importance(model, X: np.ndarray) -> list[dict]:
 THRESHOLD_REFRESH_CYCLES = 10
 
 # ─────────────────────────────────────────────
-#  DEGRADATION TYPE DETECTION (Rule-based + SHAP)
+#  DEGRADATION PATTERN MATCHING (SHAP cosine similarity)
 # ─────────────────────────────────────────────
+#
+# Replaces the old rule-based sign-matching approach.
+#
+# Method
+# ──────
+# At startup (and after each model retrain), generate_shap_signatures.py
+# writes data/shap_signatures.json, which contains one mean |SHAP| vector
+# per C-MAPSS dataset, computed only from degraded-phase predictions
+# (predicted_rul ≤ warn_threshold).
+#
+# At inference, the current window's |SHAP| importance vector is compared
+# against the candidate reference vectors using cosine similarity.  The
+# closest match determines the degradation profile label; the similarity
+# score becomes the confidence value.
+#
+# Three-zone decision
+# ───────────────────
+#  best_similarity < FLOOR_THRESHOLD   → "Insufficient Signal"
+#  margin < AMBIGUITY_THRESHOLD        → "Pattern Ambiguous"
+#  otherwise                           → label of best-matching reference
+#
+# The result is stored as (pattern_label, pattern_similarity) where
+# pattern_similarity is the cosine similarity to the best-matching reference.
+# Neither value claims that a fault has been detected; the terminology
+# deliberately reflects that we are identifying similarity to a known
+# degradation profile, not classifying a confirmed fault.
 
-# Sensor groups for fault isolation
-_HPC_SENSORS = {"T30", "P30", "phi", "Ps30", "htBleed", "T24"}
-_FAN_SENSORS = {"Nf", "NRf", "BPR", "Nc", "NRc"}
+# Sensor ordering — must match SENSOR_SHORT in _compute_feature_importance
+_PATTERN_SENSORS = [
+    "T24", "T30", "T50", "P30", "Nf",  "Nc",
+    "Ps30", "phi", "NRf", "NRc", "BPR", "htBleed", "W31", "W32",
+]
+
+# Similarity thresholds (tunable)
+# Note: these are calibrated for full-lifecycle averaged reference signatures
+# (the seeded shap_signatures.json).  Once generate_shap_signatures.py is run
+# with degraded-phase-only data, raise _FLOOR_THRESHOLD back toward 0.65.
+_FLOOR_THRESHOLD = 0.40   # below this → "Insufficient Signal"
+
+# Runtime caches populated by _load_shap_signatures()
+_SIGNATURES:  dict = {}   # raw JSON content
+_REF_VECS:    dict = {}   # pre-L2-normalised numpy vectors keyed by dataset name
+
+_SIGNATURES_PATH = Path(os.path.join(_BASE_DIR, "data", "shap_signatures.json"))
 
 
-def _detect_degradation_type(model_type: str, shap_data: list, pred_rul: float,
-                              warn_thresh: float) -> str | None:
+SHAP_SIGNATURES_BUCKET = "SHAP"
+SHAP_SIGNATURES_FILENAME = "shap_signatures.json"
+
+def _load_shap_signatures(path: Path = _SIGNATURES_PATH) -> None:
     """
-    Determine degradation fault mode using SHAP-based confidence scoring.
+    Load reference SHAP signatures into module-level caches.
 
-    Logic:
-    - For each candidate fault mode, compute a confidence score based on how
-      well the SHAP sign pattern matches the expected sensor signature.
-    - Report the fault mode with the highest confidence, as long as it exceeds
-      a minimum confidence threshold (30%).
-    - This allows early degradation detection BEFORE RUL drops to warning level.
+    Resolution order:
+      1. Local file at data/shap_signatures.json  (development / already cached)
+      2. Supabase Storage bucket "SHAP"            (production / after upload)
+      3. Warn and leave caches empty               (pattern matching unavailable)
 
-    FD001/FD003 → only HPC degradation possible (check HPC confidence)
-    FD002/FD004 → HPC, Fan, or both; pick whichever has highest confidence
-
-    Returns: "HPC Degradation", "Fan Degradation", "HPC + Fan Degradation", or None
+    Safe to call again after retraining to refresh the cache.
     """
-    if not shap_data:
-        # No SHAP data yet — can't determine fault mode
-        return None
+    global _SIGNATURES, _REF_VECS
 
-    MIN_CONFIDENCE = 0.30  # minimum confidence to report a fault mode
+    # ── Step 1: try local file ────────────────────────────────────────────────
+    resolved_path = path
+    if not resolved_path.exists():
+        # ── Step 2: try downloading from Supabase Storage ────────────────────
+        try:
+            from storage_utils import _get_supabase_admin
+            sb = _get_supabase_admin()
+            if sb:
+                data = sb.storage.from_(SHAP_SIGNATURES_BUCKET).download(
+                    SHAP_SIGNATURES_FILENAME
+                )
+                resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                resolved_path.write_bytes(data)
+                print(f"[SIM] Downloaded shap_signatures.json from "
+                      f"Storage bucket '{SHAP_SIGNATURES_BUCKET}' → {resolved_path}")
+            else:
+                print("[SIM][WARN] No Supabase admin client — cannot download shap_signatures.json.")
+        except Exception:
+            print(f"[SIM][WARN] Could not download shap_signatures.json from Storage:\n"
+                  f"{traceback.format_exc(limit=2)}")
 
-    # Expected SHAP sign patterns per fault mode (negative = drives RUL down)
-    hpc_expected = {"T30": -1, "P30": -1, "phi": -1, "Ps30": -1, "htBleed": -1, "T24": -1}
-    fan_expected = {"Nf": -1, "NRf": -1, "BPR": -1, "Nc": -1, "NRc": -1}
+    if not resolved_path.exists():
+        print(
+            "[SIM][WARN] shap_signatures.json not found locally or in Storage. "
+            "Degradation pattern matching is unavailable until the file exists."
+        )
+        _SIGNATURES = {}
+        _REF_VECS   = {}
+        return
 
-    def _compute_confidence(expected_signs: dict) -> float:
-        """Compute confidence for a given fault signature against current SHAP data."""
-        shap_map = {s["sensor"]: s["score"] for s in shap_data}
-        weighted_matches = 0.0
-        total_weight = 0.0
-        for sensor, expected_sign in expected_signs.items():
-            score = shap_map.get(sensor, 0.0)
-            magnitude = abs(score)
-            total_weight += magnitude
-            if magnitude > 0.01:
-                actual_sign = -1 if score < 0 else 1
-                if actual_sign == expected_sign:
-                    weighted_matches += magnitude
-        if total_weight == 0:
-            return 0.0
-        return weighted_matches / total_weight
+    try:
+        with open(resolved_path, encoding="utf-8") as f:
+            _SIGNATURES = json.load(f)
+    except Exception:
+        print(f"[SIM][ERROR] Failed to parse {resolved_path}:\n{traceback.format_exc(limit=2)}")
+        _SIGNATURES = {}
+        _REF_VECS   = {}
+        return
 
-    if model_type in ("FD001", "FD003"):
-        # Only HPC fault possible — check confidence
-        hpc_conf = _compute_confidence(hpc_expected)
-        if hpc_conf >= MIN_CONFIDENCE:
-            return "HPC Degradation"
-        return None
+    _REF_VECS = {}
+    for name, sig in _SIGNATURES.items():
+        mean_map = sig.get("mean_abs_shap", {})
+        vec = np.array([mean_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64)
+        norm = np.linalg.norm(vec)
+        _REF_VECS[name] = vec / (norm + 1e-9)
 
-    if model_type in ("FD002", "FD004"):
-        # Both fault modes possible — compute confidence for each
-        hpc_conf = _compute_confidence(hpc_expected)
-        fan_conf = _compute_confidence(fan_expected)
-        combined_expected = {**hpc_expected, **fan_expected}
-        combined_conf = _compute_confidence(combined_expected)
+    print(f"[SIM] Loaded SHAP reference signatures for: {list(_SIGNATURES.keys())}")
 
-        # Pick the highest confidence mode
-        best_conf = max(hpc_conf, fan_conf, combined_conf)
-        if best_conf < MIN_CONFIDENCE:
-            return None
 
-        if combined_conf >= hpc_conf and combined_conf >= fan_conf and hpc_conf >= 0.25 and fan_conf >= 0.25:
-            return "HPC + Fan Degradation"
-        elif hpc_conf >= fan_conf:
-            return "HPC Degradation"
-        else:
-            return "Fan Degradation"
+# Load at module import
+_load_shap_signatures()
 
-    return None
+
+
+def _detect_degradation_type(
+    model_type: str,
+    shap_data: list,
+    pred_rul: float,
+    warn_thresh: float,
+) -> tuple[str | None, float | None]:
+    """
+    Identify whether the current SHAP importance pattern is strong enough to
+    report a degradation profile, and return the label determined by model_type.
+
+    The fault mode is fixed by dataset — FD001/FD002 can only exhibit HPC
+    degradation; FD003/FD004 can exhibit HPC + Fan degradation.  Cosine
+    similarity is used only to decide whether the current pattern is strong
+    enough to report (above floor threshold), NOT to choose between fault modes.
+
+    Parameters
+    ----------
+    model_type  : one of "FD001", "FD002", "FD003", "FD004"
+    shap_data   : list of {"sensor": str, "score": float} dicts (current cycle)
+    pred_rul    : predicted RUL (kept for API compatibility)
+    warn_thresh : warning threshold (kept for API compatibility)
+
+    Returns
+    -------
+    (pattern_label, pattern_similarity)
+
+    pattern_label : str or None
+        "HPC Degradation"       – for FD001/FD002, pattern signal sufficient
+        "HPC + Fan Degradation" – for FD003/FD004, pattern signal sufficient
+        "Insufficient Signal"   – similarity below floor threshold
+        None                    – no SHAP data or signatures not loaded
+    pattern_similarity : float or None
+        Cosine similarity to the matching reference (0–1).
+
+    Notes
+    ─────
+    This method identifies similarity to a known degradation profile.
+    It does NOT directly detect or classify a confirmed fault.
+    """
+    if not shap_data or not _REF_VECS:
+        return None, None
+
+    # ── Fault mode is fixed by model_type ────────────────────────────────────
+    _FAULT_LABELS = {
+        "FD001": "HPC Degradation",
+        "FD002": "HPC Degradation",
+        "FD003": "HPC + Fan Degradation",
+        "FD004": "HPC + Fan Degradation",
+    }
+    fault_label = _FAULT_LABELS.get(model_type)
+    if not fault_label:
+        return None, None
+
+    # ── Select the matching reference for this model_type ────────────────────
+    ref_key = model_type  # compare against own dataset's reference directly
+    if ref_key not in _REF_VECS:
+        # Fallback: use the other dataset in the same condition group
+        fallback = {"FD001": "FD003", "FD003": "FD001", "FD002": "FD004", "FD004": "FD002"}
+        ref_key = fallback.get(model_type)
+        if not ref_key or ref_key not in _REF_VECS:
+            return None, None
+
+    # ── Build current importance vector (magnitude only) ─────────────────────
+    shap_map = {d["sensor"]: abs(d["score"]) for d in shap_data}
+    current_vec = np.array(
+        [shap_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64
+    )
+    norm = np.linalg.norm(current_vec)
+    if norm < 1e-9:
+        return "Insufficient Signal", 0.0
+    current_vec_norm = current_vec / norm
+
+    # ── Cosine similarity against this model's own reference ─────────────────
+    similarity = float(np.dot(current_vec_norm, _REF_VECS[ref_key]))
+
+    # ── Single-threshold decision: is the signal strong enough to report? ────
+    if similarity < _FLOOR_THRESHOLD:
+        return "Insufficient Signal", round(similarity, 4)
+
+    return fault_label, round(similarity, 4)
 
 def _fetch_thresholds(supabase) -> tuple[float, float]:
     """
@@ -906,6 +1149,12 @@ def _simulation_loop(
                            cluster_means=cl_means,
                            cluster_stds=cl_stds)
     _no_model_warned = False  # log "waiting for model" only once
+
+    # SHAP throttle: only run GradientExplainer every SHAP_INTERVAL predictions
+    # to avoid OOM on memory-constrained hosts. Carry the last result forward.
+    _shap_pred_counter = 0
+    _last_shap_data: list = []
+    _last_shap_base: float = 0.0
 
     # Fetch active model_version_id once (re-check if model gets reloaded later)
     model_version_id = _get_active_model_version_id(supabase, model_type)
@@ -1016,20 +1265,38 @@ def _simulation_loop(
             if model is not None:
                 try:
                     pred_raw = model.predict(X, verbose=0)
-                    pred_rul = float(np.squeeze(pred_raw))
+                    pred_rul_raw = float(np.squeeze(pred_raw))
                     # Apply bias correction if stored in model metadata
                     _bias = _BIAS_CACHE.get(model_type, 0.0)
-                    pred_rul = pred_rul - _bias
+                    pred_rul = pred_rul_raw - _bias
                     pred_rul = max(0.0, min(float(RUL_CAP), pred_rul))
-                    # Compute feature importance on the same window
-                    shap_data = _compute_feature_importance(model, X)
+                    # Log the transform for tracing
+                    print(f"[SIM] pred_raw={pred_rul_raw:.4f} bias={_bias:.4f} "
+                          f"bias_corrected={pred_rul_raw - _bias:.4f} "
+                          f"clamped={pred_rul:.4f} RUL_CAP={RUL_CAP}")
+                    # Compute SHAP values every SHAP_INTERVAL cycles to limit RAM usage.
+                    # Carry the previous result forward on skipped cycles.
+                    _shap_pred_counter += 1
+                    if _shap_pred_counter >= SHAP_INTERVAL:
+                        _shap_pred_counter = 0
+                        _last_shap_data, _last_shap_base = _compute_feature_importance(
+                            model, X, _num_features,
+                            pred_raw=pred_rul_raw,
+                            bias=_bias,
+                            rul_cap=float(RUL_CAP),
+                            sensor_labels=(SENSOR_SHORT + ["OS1","OS2","OS3"]) if _include_os else SENSOR_SHORT,
+                        )
+                    shap_data       = _last_shap_data
+                    shap_base_value = _last_shap_base
                 except Exception:
                     print(f"[SIM][ERROR] model.predict failed at cycle {cycle_num}:\n{traceback.format_exc()}")
-                    pred_rul = None
-                    shap_data = []
+                    pred_rul        = None
+                    shap_data       = []
+                    shap_base_value = 0.0
             else:
-                pred_rul  = None
-                shap_data = []
+                pred_rul       = None
+                shap_data      = []
+                shap_base_value = 0.0
                 if not _no_model_warned:
                     print(f"[SIM][INFO] engine={engine_db_id} — window ready, waiting for model upload")
                     _no_model_warned = True
@@ -1042,8 +1309,8 @@ def _simulation_loop(
                     None
                 )
 
-                # Detect specific degradation type via model_type + SHAP
-                degradation_type = _detect_degradation_type(
+                # ── Degradation pattern matching (cosine similarity vs. reference signatures) ──
+                pattern_label, pattern_similarity = _detect_degradation_type(
                     model_type, shap_data, pred_rul, warn_thresh
                 )
 
@@ -1061,14 +1328,23 @@ def _simulation_loop(
                         row_data["model_version_id"] = model_version_id
                     if shap_data:
                         row_data["shap_values"] = _json.dumps(shap_data)
+                    if shap_base_value != 0.0:
+                        row_data["shap_base_value"] = round(shap_base_value, 4)
 
                     # Use default-arg capture to avoid late-binding closure issues
                     _supabase_execute(
                         lambda _d=row_data: supabase.table("rul_predictions").insert(_d).execute()
                     )
-                    _eng_update = {"condition_status": new_status}
-                    if degradation_type:
-                        _eng_update["degradation_type"] = degradation_type
+
+                    # Write pattern label and similarity score to engines table.
+                    # "Pattern Ambiguous" and "Insufficient Signal" are stored as-is
+                    # so the dashboard can display them with appropriate visual cues.
+                    _eng_update: dict = {"condition_status": new_status}
+                    if pattern_label is not None:
+                        _eng_update["degradation_type"]    = pattern_label
+                    if pattern_similarity is not None:
+                        _eng_update["degradation_confidence"] = round(float(pattern_similarity), 4)
+
                     _supabase_execute(
                         lambda _u=_eng_update: supabase.table("engines")
                             .update(_u)
@@ -1094,13 +1370,15 @@ def _simulation_loop(
                             pred_rul=pred_rul,
                             warn_thresh=int(warn_thresh),
                             crit_thresh=int(crit_thresh),
+                            trigger_cycle=int(cycle_num),
                         )
                     except Exception:
                         print(f"[SIM][WARN] Email alert check failed:\n{traceback.format_exc(limit=2)}")
 
                     print(
                         f"[SIM] engine={engine_db_id} cycle={cycle_num} "
-                        f"pred_rul={pred_rul:.1f} status={new_status}"
+                        f"pred_rul={pred_rul:.1f} status={new_status} "
+                        f"pattern={pattern_label!r} similarity={pattern_similarity}"
                     )
                 except Exception:
                     print(f"[SIM][ERROR] Insert/update failed at cycle {cycle_num}:\n{traceback.format_exc(limit=2)}")
@@ -1188,11 +1466,14 @@ def resume_all_simulations(supabase):
     import json as _json
     from data_utils import BASE_DATA_DIR, get_org_folder
 
+    print("[SIM] resume_all_simulations starting...")
+
     try:
         resp = supabase.table("engines") \
             .select("id, engine_id, model_type, organization_id") \
             .execute()
         engines = resp.data or []
+        print(f"[SIM] Found {len(engines)} engines in database")
     except Exception:
         print(f"[SIM][ERROR] resume_all_simulations — failed to fetch engines:\n{traceback.format_exc()}")
         return
@@ -1203,6 +1484,7 @@ def resume_all_simulations(supabase):
         org_resp = supabase.table("organizations").select("id, name").execute()
         for o in (org_resp.data or []):
             org_names[str(o["id"])] = o.get("name", "unknown")
+        print(f"[SIM] Loaded {len(org_names)} organization names")
     except Exception:
         pass
 
@@ -1284,7 +1566,21 @@ def resume_all_simulations(supabase):
 
         if current_cycle >= total_cycles:
             print(f"[SIM] Engine {engine_db_id} already completed all {total_cycles} cycles — skipping resume")
-            # Still pre-load sensor rows into the ring buffer for display
+            # Register in _RUNNING_SIMULATIONS so get_engine_model_type() works for
+            # completed engines (needed by sensor_trends to resolve cluster_info).
+            # Use a no-op dead thread as placeholder.
+            with _LOCK:
+                if engine_db_id not in _RUNNING_SIMULATIONS:
+                    _dead = threading.Thread(target=lambda: None, daemon=True)
+                    _dead.start(); _dead.join()  # start + immediately finish
+                    _RUNNING_SIMULATIONS[engine_db_id] = {
+                        "thread": _dead,
+                        "stop": threading.Event(),
+                        "model_type": model_type,
+                    }
+            # Ensure model is loaded so _CLUSTER_CACHE is populated for FD002/FD004.
+            _load_model(model_type, supabase=supabase)
+            # Pre-load sensor rows into the ring buffer for display
             try:
                 cycles_data = _json.loads(open(json_path).read()) if isinstance(d, str) else d
                 if isinstance(cycles_data, dict):

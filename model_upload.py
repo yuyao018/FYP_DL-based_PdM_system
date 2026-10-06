@@ -376,6 +376,7 @@ def status_label(status):
 
 def history_row(entry, is_last=False):
     show_restore = entry["status"].lower() != "active"
+    version_id = entry.get("id", "")
     return html.Div(
         style={
             "display": "grid",
@@ -389,7 +390,8 @@ def history_row(entry, is_last=False):
             html.Span(entry["uploaded"], style={"color": "#a8d4ff", "fontSize": "12px"}),
             html.Span(entry["uploaded_by"], style={"color": "#a8d4ff", "fontSize": "12px"}),
             status_label(entry["status"]),
-            html.Button("Restore", n_clicks=0, style={
+            html.Button("Restore", id={"type": "restore-model-btn", "index": version_id},
+                        n_clicks=0, style={
                 "background": "rgba(74,158,255,0.18)", "border": "1px solid rgba(74,158,255,0.4)",
                 "color": "#a8d4ff", "borderRadius": "6px", "padding": "5px 14px",
                 "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
@@ -634,6 +636,7 @@ def _fetch_history_for_type(supabase, model_type):
             uploaded_by_username = username_map.get(m.get("uploaded_by"), "—")
 
             history.append({
+                "id":          m.get("id"),
                 "filename":    m.get("filename", "—"),
                 "uploaded":    uploaded_at or "—",
                 "uploaded_by": uploaded_by_username,
@@ -747,6 +750,7 @@ def register_model_upload_callbacks(app, supabase=None):
         Output("model-upload-status", "children"),
         Output("version-history-body", "children"),
         Output("active-model-panel-container", "children", allow_duplicate=True),
+        Output("toast-store", "data", allow_duplicate=True),
         Input("deploy-model-btn", "n_clicks"),
         State("staged-file-data", "data"),
         State("version-notes-input", "value"),
@@ -763,6 +767,7 @@ def register_model_upload_callbacks(app, supabase=None):
                 html.Span("Supabase not connected.", style={"color": "#ff6b6b", "fontSize": "13px"}),
                 dash.no_update,
                 dash.no_update,
+                dash.no_update,
             )
 
         user_id = None
@@ -772,6 +777,7 @@ def register_model_upload_callbacks(app, supabase=None):
         if not user_id:
             return (
                 html.Span("User not authenticated.", style={"color": "#ff6b6b", "fontSize": "13px"}),
+                dash.no_update,
                 dash.no_update,
                 dash.no_update,
             )
@@ -847,6 +853,7 @@ def register_model_upload_callbacks(app, supabase=None):
                 ),
                 rows,
                 [build_active_model_panel(active_model)],
+                f"✓ {staged_file['filename']} is successfully deployed for {selected_type}!|{__import__('time').time()}",
             )
 
         except Exception as e:
@@ -855,6 +862,89 @@ def register_model_upload_callbacks(app, supabase=None):
             return (
                 html.Span(f"Failed to deploy: {str(e)}", style={"color": "#ff6b6b", "fontSize": "13px"}),
                 dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
+
+    # ── Restore model version (set as active) ──
+    @app.callback(
+        Output("version-history-body", "children", allow_duplicate=True),
+        Output("active-model-panel-container", "children", allow_duplicate=True),
+        Output("model-upload-status", "children", allow_duplicate=True),
+        Output("toast-store", "data", allow_duplicate=True),
+        Input({"type": "restore-model-btn", "index": dash.ALL}, "n_clicks"),
+        State("selected-model-type", "data"),
+        prevent_initial_call=True,
+    )
+    def restore_model_version(n_clicks_list, model_type):
+        ctx = dash.callback_context
+        if not ctx.triggered or not any(n_clicks_list):
+            raise dash.exceptions.PreventUpdate
+
+        import json as _json
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        version_id = _json.loads(trigger_id)["index"]
+
+        if not version_id or not supabase:
+            raise dash.exceptions.PreventUpdate
+
+        selected_type = model_type or "FD001"
+
+        try:
+            # Archive current active model for this type
+            supabase.table("model_versions") \
+                .update({"status": "archived"}) \
+                .eq("status", "active") \
+                .eq("model_type", selected_type) \
+                .execute()
+
+            # Set the selected version as active
+            supabase.table("model_versions") \
+                .update({"status": "active"}) \
+                .eq("id", version_id) \
+                .execute()
+
+            # Reload model in running simulations
+            try:
+                from engine_simulation_manager import reload_model
+                reload_model(selected_type, supabase=supabase)
+                print(f"[MODEL] Restored and reloaded {selected_type} model version {version_id}")
+            except Exception:
+                pass
+
+            # Re-fetch history
+            active_model, history = _fetch_history_for_type(supabase, selected_type)
+            rows = [
+                history_row(h, is_last=(i == len(history) - 1))
+                for i, h in enumerate(history)
+            ] if history else [
+                html.Div("No version history available", style={
+                    "color": "rgba(168,212,255,0.5)", "fontSize": "13px",
+                    "padding": "20px", "textAlign": "center"
+                })
+            ]
+
+            # Get the restored filename for the toast
+            _restored_resp = supabase.table("model_versions") \
+                .select("filename") \
+                .eq("id", version_id) \
+                .single() \
+                .execute()
+            _restored_filename = _restored_resp.data.get("filename", "Model") if _restored_resp.data else "Model"
+
+            return (
+                rows,
+                [build_active_model_panel(active_model)],
+                html.Span("✓ Model restored successfully!", style={"color": "#4aff9e", "fontSize": "13px"}),
+                f"✓ {_restored_filename} is successfully restored for {selected_type}!|{__import__('time').time()}",
+            )
+
+        except Exception as e:
+            print(f"[ERROR] restore model: {e}")
+            return (
+                dash.no_update,
+                dash.no_update,
+                html.Span(f"Failed to restore: {str(e)}", style={"color": "#ff6b6b", "fontSize": "13px"}),
                 dash.no_update,
             )
 

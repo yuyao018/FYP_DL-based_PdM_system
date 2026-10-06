@@ -1,0 +1,30 @@
+/* Shared date/time fields on the calendar and alert-log forms.
+   Native picker panels follow the browser's dark color scheme. */
+.schedule-datetime-input {
+    color-scheme: dark;
+    accent-color: #4a9eff;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.schedule-datetime-input:hover {
+    border-color: rgba(74, 158, 255, 0.55) !important;
+}
+.schedule-datetime-input:focus-visible {
+    border-color: #4a9eff !important;
+    box-shadow: 0 0 0 3px rgba(74, 158, 255, 0.15);
+}
+.schedule-datetime-input::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.8;
+    padding: 3px;
+    border-radius: 4px;
+}
+.schedule-datetime-input::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+    background-color: rgba(74, 158, 255, 0.15);
+}
+.schedule-datetime-input::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+}
+.schedule-datetime-input::-webkit-datetime-edit-text {
+    color: #8aafd4;
+}

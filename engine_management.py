@@ -58,11 +58,17 @@ def engine_table_row(engine, idx):
                         })
                     ]
                 ),
-                html.Button("Edit", id={"type": "edit-engine-btn", "index": engine["id"]}, n_clicks=0, style={
-                    "background": "rgba(74,158,255,0.18)", "border": "1px solid rgba(74,158,255,0.4)",
-                    "color": "#a8d4ff", "borderRadius": "6px", "padding": "5px 12px",
-                    "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
-                }),
+                dcc.Link(
+                    href=f"/edit-engine/{engine['id']}",
+                    style={"textDecoration": "none"},
+                    children=[
+                        html.Button("Edit", id={"type": "edit-engine-btn", "index": engine["id"]}, n_clicks=0, style={
+                            "background": "rgba(74,158,255,0.18)", "border": "1px solid rgba(74,158,255,0.4)",
+                            "color": "#a8d4ff", "borderRadius": "6px", "padding": "5px 12px",
+                            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                        }),
+                    ]
+                ),
                 html.Button("Remove", id={"type": "remove-engine-btn", "index": engine["id"]}, n_clicks=0, style={
                     "background": "rgba(255,77,77,0.15)", "border": "1px solid rgba(255,77,77,0.4)",
                     "color": "#ff6b6b", "borderRadius": "6px", "padding": "5px 12px",
@@ -73,7 +79,37 @@ def engine_table_row(engine, idx):
     )
 
 
-def build_engines_table(engines):
+def deleted_engine_table_row(engine, idx):
+    return html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "0.8fr 1.2fr 0.8fr 1fr 0.8fr 1fr",
+            "alignItems": "center",
+            "padding": "12px 24px",
+            "borderBottom": "1px solid rgba(74,158,255,0.05)",
+            "opacity": "0.5",
+        },
+        children=[
+            html.Span(f"ENGINE-{str(engine['engine_id']).zfill(2)}", style={"color": "rgba(168,212,255,0.5)", "fontSize": "13px", "fontWeight": "600"}),
+            html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(168,212,255,0.4)", "fontSize": "13px"}),
+            html.Span("Deleted", style={"color": "rgba(255,77,77,0.6)", "fontSize": "12px"}),
+            html.Span(f"{engine.get('current_cycle', 0)} cycles", style={"color": "rgba(168,212,255,0.4)", "fontSize": "13px"}),
+            html.Span((engine.get("created_at") or "")[:10], style={"color": "rgba(168,212,255,0.4)", "fontSize": "12px"}),
+            html.Div(style={"display": "flex", "gap": "8px"}, children=[
+                html.Button("Restore", id={"type": "restore-engine-btn", "index": engine["id"]}, n_clicks=0, style={
+                    "background": "rgba(0,200,117,0.15)", "border": "1px solid rgba(0,200,117,0.4)",
+                    "color": "#00c875", "borderRadius": "6px", "padding": "5px 12px",
+                    "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                }),
+            ])
+        ]
+    )
+
+
+def build_engines_table(engines, deleted_engines=None):
+    if deleted_engines is None:
+        deleted_engines = []
+
     total = len(engines)
     healthy = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "healthy")
     warning = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "warning")
@@ -113,6 +149,8 @@ def build_engines_table(engines):
             ),
             html.Div(id="engines-table-body",
                      children=[engine_table_row(e, i) for i, e in enumerate(engines)]),
+            html.Div(id="deleted-engines-body",
+                     children=[deleted_engine_table_row(e, i) for i, e in enumerate(deleted_engines)]),
         ]
     )
 
@@ -120,9 +158,11 @@ def build_engines_table(engines):
 #  MAIN PAGE BODY
 # ─────────────────────────────────────────────
 
-def build_engine_management_body(engines=None):
+def build_engine_management_body(engines=None, deleted_engines=None):
     if engines is None:
         engines = []
+    if deleted_engines is None:
+        deleted_engines = []
 
     return [
         # Header row: title + Add Engine button
@@ -147,9 +187,10 @@ def build_engine_management_body(engines=None):
         ),
         html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.15)", "marginBottom": "20px"}),
 
-        build_engines_table(engines),
+        build_engines_table(engines, deleted_engines=deleted_engines),
 
         dcc.Store(id="engines-data", data=engines),
+        dcc.Store(id="deleted-engines-data", data=deleted_engines),
     ]
 
 
@@ -159,6 +200,7 @@ def build_engine_management_body(engines=None):
 
 def create_engine_management_layout(supabase=None, org_id=None):
     engines = []
+    deleted_engines = []
 
     if not supabase:
         print("[WARN] Supabase not connected - no engine data available")
@@ -181,7 +223,7 @@ def create_engine_management_layout(supabase=None, org_id=None):
                 pass
 
             query = supabase.table("engines") \
-                .select("id, engine_id, model_type, condition_status, current_cycle, created_at")
+                .select("id, engine_id, model_type, condition_status, current_cycle, created_at, is_deleted")
 
             if org_id:
                 query = query.eq("organization_id", org_id)
@@ -241,9 +283,15 @@ def create_engine_management_layout(supabase=None, org_id=None):
                         "condition_status": condition_status,
                         "current_cycle":    e.get("current_cycle", 0),
                         "created_at":       created_at,
+                        "is_deleted":       e.get("is_deleted", True),
                     })
 
-                print(f"[OK] Loaded {len(engines)} engines from database")
+                # Separate active engines from deleted ones
+                all_engines = engines[:]
+                engines = [eng for eng in all_engines if eng.get("is_deleted", True) is True]
+                deleted_engines = [eng for eng in all_engines if eng.get("is_deleted", True) is False]
+
+                print(f"[OK] Loaded {len(engines)} active engines and {len(deleted_engines)} deleted engines from database")
             else:
                 print("[INFO] No engines found in database")
 
@@ -283,7 +331,7 @@ def create_engine_management_layout(supabase=None, org_id=None):
                             "padding": "24px 28px",
                             "minWidth": "0",
                         },
-                        children=build_engine_management_body(engines=engines),
+                        children=build_engine_management_body(engines=engines, deleted_engines=deleted_engines),
                     )
                 ]
             )
@@ -300,41 +348,32 @@ def register_engine_management_callbacks(app, supabase=None):
     @app.callback(
         Output("engines-table-body", "children"),
         Output("engines-data", "data"),
+        Output("deleted-engines-body", "children", allow_duplicate=True),
+        Output("deleted-engines-data", "data", allow_duplicate=True),
         Input({"type": "remove-engine-btn", "index": dash.ALL}, "n_clicks"),
         State("engines-data", "data"),
+        State("deleted-engines-data", "data"),
         prevent_initial_call=True,
     )
-    def remove_engine(n_clicks_list, engines_data):
+    def remove_engine(n_clicks_list, engines_data, deleted_engines_data):
         ctx = dash.callback_context
         if not ctx.triggered or not any(n_clicks_list):
             raise dash.exceptions.PreventUpdate
+
+        if deleted_engines_data is None:
+            deleted_engines_data = []
 
         import json
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
         engine_id = json.loads(trigger_id)["index"]
 
-        # Remove from Supabase if connected
+        # Soft-delete: set is_deleted = False in Supabase
         if supabase:
-            # Delete in order: dependents first, then the engine itself
             try:
-                resp = supabase.table("rul_predictions").delete().eq("engine_id", engine_id).execute()
-                print(f"[OK] Deleted rul_predictions for engine {engine_id}: {len(resp.data or [])} rows")
+                supabase.table("engines").update({"is_deleted": False}).eq("id", engine_id).execute()
+                print(f"[OK] Soft-deleted engine {engine_id}")
             except Exception as e:
-                print(f"[ERROR] remove rul_predictions for engine {engine_id}: {e}")
-            try:
-                # Check what alert_logs exist for this engine
-                check = supabase.table("alert_logs").select("id").eq("engine_id", engine_id).execute()
-                print(f"[DEBUG] alert_logs to delete: {len(check.data or [])} rows for engine_id={engine_id}")
-                if check.data:
-                    resp = supabase.table("alert_logs").delete().eq("engine_id", engine_id).execute()
-                    print(f"[OK] Deleted alert_logs for engine {engine_id}: {len(resp.data or [])} rows")
-            except Exception as e:
-                print(f"[ERROR] remove alert_logs for engine {engine_id}: {e}")
-            try:
-                resp = supabase.table("engines").delete().eq("id", engine_id).execute()
-                print(f"[OK] Deleted engine {engine_id}")
-            except Exception as e:
-                print(f"[ERROR] remove engine: {e}")
+                print(f"[ERROR] soft-delete engine: {e}")
 
         # Stop the simulation thread if running
         try:
@@ -346,52 +385,57 @@ def register_engine_management_callbacks(app, supabase=None):
         except Exception:
             pass
 
-        # Remove JSON data file from disk
-        try:
-            from data_utils import BASE_DATA_DIR
-            import os as _os
-            if _os.path.isdir(BASE_DATA_DIR):
-                for folder in _os.listdir(BASE_DATA_DIR):
-                    folder_path = _os.path.join(BASE_DATA_DIR, folder)
-                    if not _os.path.isdir(folder_path):
-                        continue
-                    # Look for engine_<db_id>.json (new format)
-                    target = _os.path.join(folder_path, f"engine_{engine_id}.json")
-                    if _os.path.exists(target):
-                        _os.remove(target)
-                        print(f"[OK] Removed data file: {target}")
-                        break
-                    # Fallback: old format engine_<num>.json
-                    eng_entry = next((e for e in engines_data if e["id"] == engine_id), None)
-                    if eng_entry:
-                        old_target = _os.path.join(folder_path, f"engine_{str(eng_entry.get('engine_id', 0)).zfill(3)}.json")
-                        if _os.path.exists(old_target):
-                            _os.remove(old_target)
-                            print(f"[OK] Removed data file (old format): {old_target}")
-                            break
-        except Exception as e:
-            print(f"[WARN] Could not remove data file for engine {engine_id}: {e}")
+        # Move engine from active to deleted list
+        removed_engine = next((e for e in engines_data if e["id"] == engine_id), None)
+        updated_engines = [e for e in engines_data if e["id"] != engine_id]
+        if removed_engine:
+            deleted_engines_data.append(removed_engine)
 
-        updated = [e for e in engines_data if e["id"] != engine_id]
-        rows = [engine_table_row(e, i) for i, e in enumerate(updated)]
-        return rows, updated
+        active_rows = [engine_table_row(e, i) for i, e in enumerate(updated_engines)]
+        deleted_rows = [deleted_engine_table_row(e, i) for i, e in enumerate(deleted_engines_data)]
+        return active_rows, updated_engines, deleted_rows, deleted_engines_data
 
     @app.callback(
-        Output("sidebar", "style"),
-        Output("sidebar-state", "data"),
-        Input("sidebar-toggle", "n_clicks"),
-        State("sidebar-state", "data"),
+        Output("engines-table-body", "children", allow_duplicate=True),
+        Output("engines-data", "data", allow_duplicate=True),
+        Output("deleted-engines-body", "children"),
+        Output("deleted-engines-data", "data"),
+        Input({"type": "restore-engine-btn", "index": dash.ALL}, "n_clicks"),
+        State("engines-data", "data"),
+        State("deleted-engines-data", "data"),
         prevent_initial_call=True,
     )
-    def toggle_sidebar(n, is_open):
-        is_open = not is_open
-        base = {
-            "flexShrink": "0", "height": "100%", "background": "#0d1e3a",
-            "borderRight": "1px solid rgba(74,158,255,0.15)",
-            "display": "flex", "flexDirection": "column",
-            "overflow": "hidden", "transition": "width 0.3s ease",
-        }
-        return ({**base, "width": "210px"}, True) if is_open else ({**base, "width": "0px"}, False)
+    def restore_engine(n_clicks_list, engines_data, deleted_engines_data):
+        ctx = dash.callback_context
+        if not ctx.triggered or not any(n_clicks_list):
+            raise dash.exceptions.PreventUpdate
+
+        if engines_data is None:
+            engines_data = []
+        if deleted_engines_data is None:
+            deleted_engines_data = []
+
+        import json
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        engine_id = json.loads(trigger_id)["index"]
+
+        # Restore: set is_deleted = True in Supabase
+        if supabase:
+            try:
+                supabase.table("engines").update({"is_deleted": True}).eq("id", engine_id).execute()
+                print(f"[OK] Restored engine {engine_id}")
+            except Exception as e:
+                print(f"[ERROR] restore engine: {e}")
+
+        # Move engine from deleted to active list
+        restored_engine = next((e for e in deleted_engines_data if e["id"] == engine_id), None)
+        updated_deleted = [e for e in deleted_engines_data if e["id"] != engine_id]
+        if restored_engine:
+            engines_data.append(restored_engine)
+
+        active_rows = [engine_table_row(e, i) for i, e in enumerate(engines_data)]
+        deleted_rows = [deleted_engine_table_row(e, i) for i, e in enumerate(updated_deleted)]
+        return active_rows, engines_data, deleted_rows, updated_deleted
 
 
 # ─────────────────────────────────────────────

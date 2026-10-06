@@ -183,13 +183,9 @@ def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(10,20,45,0.6)",
-        margin=dict(l=10, r=20, t=30, b=40),
+        margin=dict(l=10, r=20, t=30, b=10),
         height=420,
-        legend=dict(
-            orientation="h", x=0, y=-0.18,
-            font=dict(color="#a8d4ff", size=11),
-            bgcolor="rgba(0,0,0,0)",
-        ),
+        showlegend=False,
         xaxis=dict(
             title=dict(text="Operational Cycles", font=dict(color="#a8d4ff", size=11)),
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
@@ -205,10 +201,13 @@ def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
             showgrid=True, gridcolor="rgba(74,158,255,0.08)",
             color="#a8d4ff", tickfont=dict(size=10), zeroline=False,
         ),
-        hovermode="x unified",
+        hovermode="x",
+        hoverdistance=40,
         hoverlabel=dict(
-            bgcolor="#0d1e3a", font_color="white",
-            bordercolor="rgba(74,158,255,0.4)",
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(0,0,0,0)",
+            font=dict(color="rgba(0,0,0,0)", size=1),
+            namelength=0,
         ),
     )
 
@@ -228,27 +227,28 @@ def build_sensor_checklist():
         )
         for s in sensors:
             children.append(
-                html.Div(
-                    style={"display": "flex", "alignItems": "center", "gap": "8px",
-                           "padding": "5px 4px", "borderRadius": "6px", "marginBottom": "2px"},
+                # Entire row is the label — clicking anywhere toggles the checkbox
+                html.Label(
+                    htmlFor=f"sensor-check-input-{s['id']}",
+                    className="sensor-row",
                     children=[
+                        # Hidden native checkbox kept for Dash callback compatibility
                         dcc.Checklist(
                             id={"type": "sensor-check", "index": s["id"]},
                             options=[{"label": "", "value": s["id"]}],
                             value=[s["id"]] if s["id"] in DEFAULT_SELECTED else [],
-                            style={"display": "inline"},
-                            inputStyle={
-                                "width": "14px", "height": "14px",
-                                "accentColor": "#4a9eff", "cursor": "pointer",
-                            },
+                            className="sensor-checklist",
+                            inputClassName="sensor-checkbox-input",
+                            labelClassName="sensor-checkbox-label",
                         ),
-                        html.Div(style={
-                            "width": "10px", "height": "10px", "borderRadius": "50%",
-                            "background": s["color"], "flexShrink": "0",
+                        # Color dot
+                        html.Div(className="sensor-color-dot", style={
+                            "background": s["color"],
                         }),
-                        html.Span(s["label"], style={"color": "white", "fontSize": "13px",
-                                                      "fontWeight": "500", "minWidth": "36px"}),
-                        html.Span(s["unit"], style={"color": "rgba(168,212,255,0.45)", "fontSize": "11px"}),
+                        # Name
+                        html.Span(s["label"], className="sensor-name"),
+                        # Unit
+                        html.Span(s["unit"], className="sensor-unit"),
                     ]
                 )
             )
@@ -393,11 +393,43 @@ def build_sensor_trends_body(engine_id="01", status="healthy"):
                         "display": "flex", "flexDirection": "column",
                     },
                     children=[
-                        dcc.Graph(
-                            id="sensor-chart",
-                            figure=build_sensor_chart(DEFAULT_SELECTED, sensor_history=None, normalize=True),
-                            config={"displayModeBar": False},
-                            style={"flex": "1"},
+                        # ── Chart + custom hover overlay ──
+                        html.Div(
+                            style={"flex": "1", "minHeight": "0",
+                                   "position": "relative", "overflow": "hidden"},
+                            children=[
+                                dcc.Graph(
+                                    id="sensor-chart",
+                                    figure=build_sensor_chart(DEFAULT_SELECTED,
+                                                              sensor_history=None, normalize=True),
+                                    config={"displayModeBar": False},
+                                    style={"width": "100%", "height": "100%"},
+                                    clear_on_unhover=True,
+                                ),
+                                # Vertical dashed line
+                                html.Div(
+                                    id="sensor-trend-vline",
+                                    style={
+                                        "display": "none", "position": "absolute",
+                                        "top": "0", "width": "1px",
+                                        "borderLeft": "1px dashed rgba(168,212,255,0.45)",
+                                        "pointerEvents": "none", "zIndex": "10",
+                                    }
+                                ),
+                                # Floating tooltip panel
+                                html.Div(
+                                    id="sensor-trend-tooltip",
+                                    style={
+                                        "display": "none", "position": "absolute",
+                                        "background": "rgba(10,20,45,0.95)",
+                                        "border": "1px solid rgba(74,158,255,0.35)",
+                                        "borderRadius": "8px", "padding": "10px 14px",
+                                        "pointerEvents": "none", "zIndex": "20",
+                                        "minWidth": "170px",
+                                        "boxShadow": "0 4px 20px rgba(0,0,0,0.5)",
+                                    }
+                                ),
+                            ]
                         ),
                         html.Div(id="chart-legend",
                                  style={"display": "flex", "flexWrap": "wrap", "gap": "16px",
@@ -480,7 +512,7 @@ def create_sensor_trends_layout(supabase=None, engine_db_id=None):
 #  CALLBACKS  (register on the app object)
 # ─────────────────────────────────────────────
 
-def register_sensor_callbacks(app):
+def register_sensor_callbacks(app, supabase=None):
     all_ids = list(ALL_SENSORS.keys())
 
     # ── Toggle visual state (knob position + label colours) ──
@@ -560,8 +592,26 @@ def register_sensor_callbacks(app):
             for i, vals in enumerate(check_values)
             if vals
         ]
+
+        # No sensor selected — return empty placeholder chart and empty legend
         if not selected:
-            selected = [all_ids[0]]
+            fig = go.Figure()
+            fig.add_annotation(
+                text="Select a sensor from the checklist to view its trend",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False,
+                font=dict(color="rgba(168,212,255,0.4)", size=14),
+            )
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(10,20,45,0.6)",
+                margin=dict(l=10, r=20, t=30, b=10),
+                height=420,
+                showlegend=False,
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+            )
+            return fig, []
 
         # Pull live sensor rows from the simulation ring buffer
         sensor_history = None
@@ -569,13 +619,17 @@ def register_sensor_callbacks(app):
         if engine_db_id:
             try:
                 from engine_simulation_manager import (
-                    get_sensor_history, get_engine_model_type, _CLUSTER_CACHE
+                    get_sensor_history, get_engine_model_type, _CLUSTER_CACHE, _load_model
                 )
                 sensor_history = get_sensor_history(engine_db_id) or None
                 # Get cluster info for FD002/FD004 per-cluster normalization
                 _mt = get_engine_model_type(engine_db_id)
                 if _mt:
                     _ci = _CLUSTER_CACHE.get(_mt, (None, None, None))
+                    # If cache is empty (race condition on startup), try loading the model now
+                    if _ci[0] is None:
+                        _load_model(_mt, supabase=supabase)
+                        _ci = _CLUSTER_CACHE.get(_mt, (None, None, None))
                     if _ci and _ci[0] is not None:
                         cluster_info = _ci
             except Exception:
@@ -600,6 +654,206 @@ def register_sensor_callbacks(app):
         ]
         return fig, legend
 
+    # ── Custom hover overlay: floating tooltip + vertical dashed line ──
+    app.clientside_callback(
+        """
+        function(hoverData, figure) {
+            var hidden = {display: 'none'};
+
+            var tooltipEl = document.getElementById('sensor-trend-tooltip');
+            var vlineEl   = document.getElementById('sensor-trend-vline');
+
+            if (!hoverData || !hoverData.points || hoverData.points.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+            if (!figure || !figure.data || figure.data.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+
+            // Use rendered axes: Plotly expands margins for labels and titles.
+            // Figure margins and data extents do not describe the visible plot.
+            var graphEl = document.getElementById('sensor-chart');
+            var plotEl = graphEl && graphEl.querySelector('.js-plotly-plot');
+            var layout = plotEl && plotEl._fullLayout;
+            if (!layout || !layout.xaxis || !layout.yaxis) return [hidden, hidden];
+            var xaxis = layout.xaxis;
+            var yaxis = layout.yaxis;
+            var plotW = layout.width, plotH = layout.height;
+            var l = xaxis._offset, t = yaxis._offset;
+            var innerW = xaxis._length, innerH = yaxis._length;
+            var r = plotW - l - innerW, b = plotH - t - innerH;
+
+            // Clear overlays as soon as the pointer enters an axis/margin area.
+            if (!plotEl._sensorHoverBoundsBound) {
+                plotEl._sensorHoverBoundsBound = true;
+                plotEl.addEventListener('pointermove', function(event) {
+                    var current = plotEl._fullLayout;
+                    if (!current) return;
+                    var rect = plotEl.getBoundingClientRect();
+                    var px = (event.clientX - rect.left) * current.width / rect.width;
+                    var py = (event.clientY - rect.top) * current.height / rect.height;
+                    var xa = current.xaxis, ya = current.yaxis;
+                    plotEl._sensorPointerOutside = px < xa._offset || px > xa._offset + xa._length
+                        || py < ya._offset || py > ya._offset + ya._length;
+                    if (plotEl._sensorPointerOutside) hideOverlays();
+                }, true);
+                plotEl.addEventListener('pointerleave', function() {
+                    plotEl._sensorPointerOutside = true;
+                    hideOverlays();
+                });
+            }
+            function hideOverlays() {
+                var tip = document.getElementById('sensor-trend-tooltip');
+                var line = document.getElementById('sensor-trend-vline');
+                if (tip) tip.style.display = 'none';
+                if (line) line.style.display = 'none';
+            }
+            if (plotEl._sensorPointerOutside) return [hidden, hidden];
+            var hoveredX = hoverData.points[0].x;
+            var xPx = l + xaxis.l2p(hoveredX);
+            if (!Number.isFinite(xPx) || xPx < l - 0.5 || xPx > l + innerW + 0.5)
+                return [hidden, hidden];
+            xPx = Math.max(l, Math.min(xPx, l + innerW));
+
+            // ── Vertical line ─────────────────────────────────────────────
+            var vlineStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          xPx + 'px',
+                top:           t + 'px',
+                height:        innerH + 'px',
+                width:         '1px',
+                borderLeft:    '1px dashed rgba(168,212,255,0.45)',
+                pointerEvents: 'none',
+                zIndex:        '10',
+            };
+
+            // ── Collect visible trace values ──────────────────────────────
+            var rows = [];
+            figure.data.forEach(function(trace) {
+                if (!trace.x || !trace.y) return;
+                var xi = -1, bestDist = Infinity;
+                for (var i = 0; i < trace.x.length; i++) {
+                    var d = Math.abs(trace.x[i] - hoveredX);
+                    if (d < bestDist) { bestDist = d; xi = i; }
+                }
+                if (xi === -1 || bestDist > 2) return;
+                var val = trace.y[xi];
+                if (val === null || val === undefined) return;
+                var color = (trace.line && trace.line.color) ? trace.line.color : '#4a9eff';
+                rows.push({name: trace.name, color: color, val: val});
+            });
+            rows.sort(function(a, b) { return Math.abs(b.val) - Math.abs(a.val); });
+
+            if (rows.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                return [vlineStyle, hidden];
+            }
+
+            // ── Single vs two-column layout ───────────────────────────────
+            var twoCol = rows.length > 8;
+
+            function makeCell(row) {
+                var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
+                return '<span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;">'
+                     + '<span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;'
+                     + 'background:' + row.color + ';display:inline-block;"></span>'
+                     + '<span style="color:rgba(168,212,255,0.9);min-width:36px;font-size:11px;">'
+                     + row.name + '</span>'
+                     + '<span style="color:white;font-weight:600;font-size:11px;'
+                     + 'font-variant-numeric:tabular-nums;margin-left:4px;">'
+                     + valStr + '</span></span>';
+            }
+
+            var headerHtml = '<div style="font-weight:700;font-size:12px;color:white;'
+                           + 'margin-bottom:6px;padding-bottom:5px;'
+                           + 'border-bottom:1px solid rgba(74,158,255,0.25);">'
+                           + 'Cycle: ' + hoveredX + '</div>';
+
+            var bodyHtml = '';
+            if (!twoCol) {
+                rows.forEach(function(row) {
+                    bodyHtml += '<div style="display:flex;align-items:center;gap:7px;'
+                              + 'margin-bottom:3px;">' + makeCell(row) + '</div>';
+                });
+            } else {
+                var half = Math.ceil(rows.length / 2);
+                var leftRows  = rows.slice(0, half);
+                var rightRows = rows.slice(half);
+                bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;'
+                          + 'column-gap:14px;row-gap:3px;">';
+                var maxLen = Math.max(leftRows.length, rightRows.length);
+                for (var i = 0; i < maxLen; i++) {
+                    bodyHtml += '<div style="display:flex;align-items:center;">'
+                              + (i < leftRows.length  ? makeCell(leftRows[i])  : '') + '</div>';
+                    bodyHtml += '<div style="display:flex;align-items:center;'
+                              + 'padding-left:8px;border-left:1px solid rgba(74,158,255,0.15);">'
+                              + (i < rightRows.length ? makeCell(rightRows[i]) : '') + '</div>';
+                }
+                bodyHtml += '</div>';
+            }
+
+            var footerHtml = '<div style="color:rgba(168,212,255,0.35);font-size:10px;'
+                           + 'margin-top:5px;">Hover to view values</div>';
+
+            if (tooltipEl) {
+                tooltipEl.style.maxHeight = '';
+                tooltipEl.style.overflowY = '';
+                tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
+            }
+
+            // ── Sizing ────────────────────────────────────────────────────
+            var tooltipW = Math.min(twoCol ? 340 : 190, Math.max(0, innerW - 12));
+            var offsetX  = 12;
+            var padding  = 6;
+
+            // ── Horizontal: default right, flip left near right edge ──────
+            var leftPos = xPx + offsetX;
+            if (leftPos + tooltipW > plotW - r - padding) {
+                leftPos = xPx - tooltipW - offsetX;
+            }
+            if (leftPos < l) leftPos = l;
+
+            // ── Vertical: clamp within plot area ─────────────────────────
+            var tooltipH  = tooltipEl ? tooltipEl.scrollHeight : 200;
+            var topPos    = t + padding;
+            var bottomEdge = topPos + tooltipH;
+            var plotBottom = plotH - b - padding;
+            if (bottomEdge > plotBottom) topPos = plotBottom - tooltipH;
+            if (topPos < t + padding)    topPos = t + padding;
+
+            var tooltipStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          leftPos + 'px',
+                top:           topPos + 'px',
+                background:    'rgba(10,20,45,0.95)',
+                border:        '1px solid rgba(74,158,255,0.35)',
+                borderRadius:  '8px',
+                padding:       '10px 14px',
+                pointerEvents: 'none',
+                zIndex:        '20',
+                width:         tooltipW + 'px',
+                boxSizing:     'border-box',
+                maxHeight:     Math.max(0, innerH - 12) + 'px',
+                overflow:      'hidden',
+                boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
+            };
+
+            return [vlineStyle, tooltipStyle];
+        }
+        """,
+        Output("sensor-trend-vline",   "style"),
+        Output("sensor-trend-tooltip", "style"),
+        Input("sensor-chart", "hoverData"),
+        State("sensor-chart", "figure"),
+        prevent_initial_call=True,
+    )
+
     # ── Sidebar toggle ──
     @app.callback(
         Output("sidebar", "style"),
@@ -609,6 +863,8 @@ def register_sensor_callbacks(app):
         prevent_initial_call=True,
     )
     def toggle_sidebar(n, is_open):
+        if not n or n == 0:
+            raise dash.exceptions.PreventUpdate
         is_open = not is_open
         base = {
             "flexShrink": "0", "height": "100%", "background": "#0d1e3a",

@@ -520,7 +520,7 @@ def build_dev_sidebar(active_page="dashboard"):
         ]
     )
 
-def build_topbar():
+def build_topbar(show_sidebar_toggle=True):
     return html.Div(
         style={
             "background": "linear-gradient(90deg, #0d2045 0%, #071530 100%)",
@@ -546,7 +546,7 @@ def build_topbar():
             html.Div(
                 id="sidebar-toggle",
                 n_clicks=0,
-                style={"cursor": "pointer"},
+                style={"cursor": "pointer", "display": "block" if show_sidebar_toggle else "none"},
                 children=[icon_sidebar()]
             ),
         ]

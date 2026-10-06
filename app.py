@@ -3,6 +3,7 @@ from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dashboard import create_dashboard_layout
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
+from login_page import validate_login_inputs
 from dev_login_page import create_dev_login_layout
 from dev_dashboard import create_dev_dashboard_layout
 from dev_new_organization import create_new_organization_layout, register_new_organization_callbacks
@@ -16,6 +17,7 @@ from alert_thresholds import create_alert_thresholds_layout, register_alert_thre
 from engine_management import create_engine_management_layout, register_engine_management_callbacks
 from add_engine import create_add_engine_layout, register_add_engine_callbacks
 from degradation_analysis import create_degradation_analysis_layout, register_degradation_analysis_callbacks
+from schedule_maintenance import create_schedule_maintenance_layout, register_schedule_maintenance_callbacks
 from change_password import create_change_password_layout, register_change_password_callbacks
 import os
 from dotenv import load_dotenv
@@ -46,7 +48,7 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
-register_sensor_callbacks(app)
+register_sensor_callbacks(app, supabase=supabase_admin)
 register_alert_log_callbacks(app, supabase=supabase_admin)
 register_user_management_callbacks(app, supabase=supabase_admin)
 register_add_user_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
@@ -58,6 +60,7 @@ register_overview_callbacks(app, supabase=supabase_admin)
 register_degradation_analysis_callbacks(app, supabase=supabase_admin)
 register_new_organization_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
 register_change_password_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
+register_schedule_maintenance_callbacks(app, supabase=supabase_admin)
 
 # Resume simulations for any engines that already have data on disk
 from engine_simulation_manager import resume_all_simulations
@@ -72,18 +75,40 @@ app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
     dcc.Store(id='sidebar-state', data=True),  # True = open by default
     dcc.Store(id='session-store', data=None, storage_type='session'),
-    html.Div(id='page-content')
+    dcc.Store(id='toast-store', data=None, storage_type='session'),  # success message for toast
+    # Global toast notification
+    html.Div(
+        id='global-toast',
+        style={
+            "position": "fixed", "top": "-60px", "left": "50%",
+            "transform": "translateX(-50%)", "zIndex": "9999",
+            "background": "linear-gradient(135deg, #1a6fd4, #00c875)",
+            "color": "white", "padding": "14px 28px",
+            "borderRadius": "10px", "fontSize": "14px", "fontWeight": "700",
+            "boxShadow": "0 4px 20px rgba(0,200,100,0.3)",
+            "transition": "top 0.4s ease",
+            "whiteSpace": "nowrap",
+        },
+    ),
+    html.Div(id='page-content'),
 ])
 
 # Routing callback
 @app.callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
+    Input("url", "search"),
     State("session-store", "data"),
 )
-def display_page(pathname, session):
+def display_page(pathname, search, session):
     if not pathname or pathname == "/":
-        return create_login_layout()
+        # Parse ?next= query param for deep-link after login
+        next_url = ""
+        if search:
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(search.lstrip("?"))
+            next_url = qs.get("next", [""])[0]
+        return create_login_layout(next_url=next_url)
 
     if pathname == "/dev-login":
         return create_dev_login_layout()
@@ -123,22 +148,41 @@ def display_page(pathname, session):
 
     if pathname.startswith("/alert-log/"):
         engine_db_id = pathname.split("/")[-1]
-        return create_alert_log_layout(sb, engine_db_id=engine_db_id)
+        return create_alert_log_layout(sb, engine_db_id=engine_db_id,
+                                       org_id=org_id, role=user_role,
+                                       user_id=(session or {}).get("user_id"),
+                                       username=(session or {}).get("username"),
+                                       first_name=(session or {}).get("first_name"),
+                                       last_name=(session or {}).get("last_name"))
 
     if pathname.startswith("/degradation-analysis/"):
         engine_db_id = pathname.split("/")[-1]
         return create_degradation_analysis_layout(sb, engine_db_id=engine_db_id)
 
+    if pathname.startswith("/schedule-maintenance/"):
+        engine_db_id = pathname.split("/")[-1]
+        return create_schedule_maintenance_layout(sb, engine_db_id=engine_db_id,
+                                                  org_id=org_id, role=user_role,
+                                                  user_id=(session or {}).get("user_id"))
+
     if pathname.startswith("/edit-user/"):
         user_id = pathname.split("/")[-1]
         return create_add_user_layout(sb, edit_user_id=user_id)
 
+    if pathname.startswith("/edit-engine/"):
+        engine_id = pathname.split("/")[-1]
+        return create_add_engine_layout(sb, org_id=org_id, edit_engine_id=engine_id)
+
     # ── Exact routes ──
     routes = {
-        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role),
+        "/dashboard":         lambda: create_dashboard_layout(sb, org_id=org_id, role=user_role, username=(session or {}).get("username"), first_name=(session or {}).get("first_name")),
         "/overview":          lambda: create_overview_layout(sb),
         "/sensor-trends":     lambda: create_sensor_trends_layout(sb),
-        "/alert-log":         lambda: create_alert_log_layout(sb),
+        "/alert-log":         lambda: create_alert_log_layout(sb, org_id=org_id, role=user_role,
+                                                               user_id=(session or {}).get("user_id"),
+                                                               username=(session or {}).get("username"),
+                                                               first_name=(session or {}).get("first_name"),
+                                                               last_name=(session or {}).get("last_name")),
         "/degradation-analysis": lambda: create_degradation_analysis_layout(sb),
         "/engine-management": lambda: create_engine_management_layout(sb, org_id=org_id),
         "/add-engine":        lambda: create_add_engine_layout(sb, org_id=org_id),
@@ -177,6 +221,59 @@ def display_page(pathname, session):
                      style={"color": "#4a9eff", "textDecoration": "none", "marginTop": "12px"}),
         ]
     )
+
+# Toast notification — clientside callback for smooth slide-in/out animation
+app.clientside_callback(
+    """
+    function(data) {
+        if (!data) {
+            return window.dash_clientside.no_update;
+        }
+        var msg = data.split('|')[0];
+        var el = document.getElementById('global-toast');
+        if (el) {
+            el.innerText = msg;
+            el.style.top = '20px';
+            setTimeout(function() { el.style.top = '-60px'; }, 2500);
+        }
+        return null;
+    }
+    """,
+    Output("toast-store", "data"),
+    Input("toast-store", "data"),
+    prevent_initial_call=True,
+)
+
+# User menu toggle — click to open/close, click outside to close
+app.clientside_callback(
+    """
+    function(n) {
+        var menu = document.querySelector('.user-dropdown-menu');
+        var trigger = document.getElementById('user-menu-trigger');
+        if (!menu) return window.dash_clientside.no_update;
+
+        var isOpen = menu.style.display === 'block';
+        menu.style.display = isOpen ? 'none' : 'block';
+
+        if (!isOpen) {
+            function handleOutside(e) {
+                if (trigger && !trigger.contains(e.target)) {
+                    menu.style.display = 'none';
+                    document.removeEventListener('click', handleOutside);
+                }
+            }
+            setTimeout(function() {
+                document.addEventListener('click', handleOutside);
+            }, 0);
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("user-menu-trigger", "id"),
+    Input("user-menu-trigger", "n_clicks"),
+    prevent_initial_call=True,
+)
+
 
 # Sidebar toggle callback
 @app.callback(
@@ -219,13 +316,20 @@ def toggle_sidebar(n, is_open):
     State("username-input", "value"),
     State("password-input", "value"),
     State("login-role-store", "data"),
+    State("login-next-store", "data"),
     prevent_initial_call=True,
 )
-def handle_login(n_clicks, username, password, selected_role):
+def handle_login(n_clicks, username, password, selected_role, next_url):
+    return authenticate_login(username, password, selected_role, next_url)
+
+
+def authenticate_login(username, password, selected_role, next_url=None):
+    """Shared credential verification, role validation, and session creation."""
     print(f"[DEBUG] Login attempt: username={username}, selected_role={selected_role}")
 
-    if not username or not password:
-        return dash.no_update, html.Span("Please enter your credentials.",
+    validation_error = validate_login_inputs(username, password)
+    if validation_error:
+        return dash.no_update, html.Span(validation_error,
                               style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
     if not supabase:
@@ -288,7 +392,7 @@ def handle_login(n_clicks, username, password, selected_role):
                 )
             except Exception as hash_err:
                 print(f"[DEBUG-V2] bcrypt.checkpw failed: {hash_err}")
-                # Fallback to RPC for non-bcrypt hashes (e.g., pgcrypto $2a$06$)
+                # Fall back to database verification if bcrypt raises an exception.
                 resp = supabase.rpc("verify_login", {
                     "p_username": username,
                     "p_password": password,
@@ -314,8 +418,13 @@ def handle_login(n_clicks, username, password, selected_role):
         selected = (selected_role or "user").lower()
         if actual_role != selected:
             print(f"[DEBUG] Role mismatch: actual={actual_role}, selected={selected}")
+            message = (
+                "Access denied. Developer account required."
+                if selected == "developer"
+                else f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}."
+            )
             return dash.no_update, html.Span(
-                f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}.",
+                message,
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 
@@ -343,7 +452,11 @@ def handle_login(n_clicks, username, password, selected_role):
                                                  style={"color": "#4a9eff", "fontSize": "13px"}), session_data
 
         print(f"[OK] Login: {username} | role: {actual_role} | user_id: {user_id} | org_id: {organization_id}")
-        return "/dashboard", html.Span("Login successful!",
+        if actual_role == "developer":
+            redirect_to = "/dev-dashboard"
+        else:
+            redirect_to = next_url if next_url else "/dashboard"
+        return redirect_to, html.Span("Login successful!",
                                        style={"color": "#4aff9e", "fontSize": "13px"}), session_data
 
     except Exception as e:
@@ -407,73 +520,7 @@ def toggle_role(user_clicks, admin_clicks):
     prevent_initial_call=True,
 )
 def handle_dev_login(n_clicks, username, password):
-    if not username or not password:
-        return dash.no_update, html.Span("Please enter your credentials.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    if not supabase:
-        return dash.no_update, html.Span("Supabase not connected. Check your .env file.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    try:
-        # Verify credentials via RPC
-        resp = supabase.rpc("verify_login", {
-            "p_username": username,
-            "p_password": password,
-        }).execute()
-
-        if not resp.data:
-            return dash.no_update, html.Span("Invalid username or password.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        # Fetch user profile
-        user_resp = supabase.table("users") \
-            .select("id, username, first_name, last_name, role, organization_id, last_login_at") \
-            .eq("username", username) \
-            .single() \
-            .execute()
-
-        user_profile = user_resp.data or {}
-        role = user_profile.get("role", "")
-
-        # Verify this is a developer account
-        if role != "developer":
-            return dash.no_update, html.Span("Access denied. Developer account required.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        is_first_login = user_profile.get("last_login_at") is None
-
-        # Update last_login_at
-        supabase.table("users") \
-            .update({"last_login_at": "now()"}) \
-            .eq("username", username) \
-            .execute()
-
-        # Build session data
-        session_data = {
-            "user_id": str(user_profile.get("id", "")),
-            "username": user_profile.get("username", username),
-            "first_name": user_profile.get("first_name", ""),
-            "last_name": user_profile.get("last_name", ""),
-            "role": "developer",
-            "organization_id": str(user_profile.get("organization_id", "") or ""),
-        }
-
-        # Redirect to password change if first login
-        if is_first_login:
-            session_data["must_change_password"] = True
-            print(f"[OK] First dev login: {username} — redirecting to change password")
-            return "/change-password", html.Span("Please update your password.",
-                                                 style={"color": "#4a9eff", "fontSize": "13px"}), session_data
-
-        print(f"[OK] Dev Login: {username}")
-        return "/dev-dashboard", html.Span("Login successful!",
-                                       style={"color": "#4aff9e", "fontSize": "13px"}), session_data
-
-    except Exception as e:
-        print(f"[ERROR] Dev Login: {e}")
-        return dash.no_update, html.Span("Login failed. Please try again.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+    return authenticate_login(username, password, "developer")
 
 
 # Developer logout callback
@@ -702,12 +749,20 @@ def filter_dev_orgs(search_value, filter_value, org_data):
                 "background": "#0d1e3a",
                 "border": "1px solid rgba(74,158,255,0.2)",
                 "borderRadius": "14px",
-                "padding": "20px",
+                "padding": "20px 20px 12px 20px",
                 "marginBottom": "20px",
+                "minWidth": "0",
+                "width": "100%",
+                "boxSizing": "border-box",
+                "overflow": "hidden",
             },
             children=[
                 html.Div(
-                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginBottom": "14px"},
+                    style={
+                        "display": "flex", "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "marginBottom": "12px",
+                    },
                     children=[
                         html.Div(
                             style={"display": "flex", "alignItems": "center", "gap": "10px"},
@@ -720,7 +775,16 @@ def filter_dev_orgs(search_value, filter_value, org_data):
                     ]
                 ),
                 html.Div(
-                    style={"display": "flex", "gap": "14px", "overflowX": "auto", "paddingBottom": "8px"},
+                    className="engine-card-row",
+                    style={
+                        "display": "flex",
+                        "flexWrap": "nowrap",
+                        "gap": "14px",
+                        "overflowX": "auto",
+                        "overflowY": "hidden",
+                        "paddingBottom": "8px",
+                        "WebkitOverflowScrolling": "touch",
+                    },
                     children=[engine_card(e) for e in org["engines"]] if org.get("engines") else [
                         html.Div("No engines registered.", style={"color": "rgba(255,255,255,0.5)", "fontSize": "13px", "padding": "10px 0"})
                     ]

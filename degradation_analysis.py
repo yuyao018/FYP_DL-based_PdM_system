@@ -2,7 +2,7 @@
 Degradation Analysis page — SHAP beeswarm, LLM explanation, SHAP trend over cycles.
 
 Replaces the former "Explainability AI" page.  Provides:
-  • Header: engine selector, detected degradation type, confidence score
+  • Header: engine selector, detected degradation pattern, pattern similarity score
   • Row 1 col 1: SHAP beeswarm-style horizontal bar chart (feature impact on RUL)
   • Row 1 col 2: LLM-generated natural language explanation (Groq Llama)
   • Row 2: SHAP value trend line chart for top sensors over cycles
@@ -18,89 +18,147 @@ import os
 import base64
 import traceback
 from datetime import datetime
+from pathlib import Path
 from assets.components import (build_sidebar, build_topbar, icon_shap)
 
 # ─────────────────────────────────────────────
-#  CONFIDENCE SCORE COMPUTATION
+#  PATTERN SIMILARITY SCORE (cosine-based)
 # ─────────────────────────────────────────────
-# NOTE — Open Item:
-# The fault-mode detector is rule-based (rolling slope + reversal detection
-# across s7, s9, s12, s14, BPR), not a classifier with native probability
-# output.  The confidence_score below is a *derived heuristic*:
 #
-#   confidence = proportion of fault-defining sensors whose slope direction
-#                and SHAP sign match the expected signature for that fault mode,
-#                weighted by how far each SHAP score deviates from zero.
+# The simulation loop now stores both the pattern label ("HPC Degradation",
+# "HPC + Fan Degradation", "Pattern Ambiguous", "Insufficient Signal") and
+# the cosine similarity score (pattern_similarity) in the engines table.
 #
-# This is a V1 approximation.  Future work should consider:
-#   - Rolling-slope magnitude vs. threshold ratio (continuous signal)
-#   - Reversal timing consistency across correlated sensors
-#   - Ensemble voting across multiple cycle windows
+# compute_pattern_similarity() prefers the stored value that was computed at
+# inference time.  It recomputes from SHAP data only when the stored value is
+# absent (e.g. for predictions made before the pipeline upgrade).
 #
-# The function below operates on the SHAP data already computed per cycle
-# (available in rul_predictions.shap_values).  A more robust implementation
-# would also consume the raw sensor time-series slopes, which requires
-# fetching additional history and computing rolling regressions.  That is
-# flagged as a follow-on design task.
+# Terminology note:
+#   "pattern_similarity" / "similarity score" is used throughout instead of
+#   "confidence" or "fault detection confidence" because this method identifies
+#   similarity to a known degradation profile — it does not confirm a fault.
 
-# Expected SHAP sign patterns per fault mode (negative = drives RUL down)
-_HPC_EXPECTED_SIGNS = {
-    "T30": -1, "P30": -1, "phi": -1, "Ps30": -1, "htBleed": -1, "T24": -1,
-}
-_FAN_EXPECTED_SIGNS = {
-    "Nf": -1, "NRf": -1, "BPR": -1, "Nc": -1, "NRc": -1,
-}
+# Sensor ordering must match _PATTERN_SENSORS in engine_simulation_manager.py
+_PATTERN_SENSORS = [
+    "T24", "T30", "T50", "P30", "Nf",  "Nc",
+    "Ps30", "phi", "NRf", "NRc", "BPR", "htBleed", "W31", "W32",
+]
 
-_HPC_SENSORS = set(_HPC_EXPECTED_SIGNS.keys())
-_FAN_SENSORS = set(_FAN_EXPECTED_SIGNS.keys())
+# Reference signatures are shared via the same JSON file used by the sim loop.
+# Load them once here for the fallback recompute path.
+_DA_SIGNATURES:  dict = {}
+_DA_REF_VECS:    dict = {}
 
-
-def compute_confidence_score(degradation_type: str | None, shap_data: list[dict]) -> float | None:
+def _load_da_signatures() -> None:
     """
-    Derive a confidence score (0–1) for the detected fault mode from SHAP data.
+    Load reference signatures into module-level caches for this page.
 
-    Method: For each sensor in the expected fault signature, check whether its
-    SHAP sign matches expectation.  Weight each match by |shap_score| so that
-    stronger attributions contribute more.  Normalise by the maximum possible
-    weighted sum (if all sensors matched perfectly at their actual magnitudes).
-
-    Returns None if no degradation is detected or SHAP data is unavailable.
+    Resolution order:
+      1. Local  data/shap_signatures.json
+      2. Supabase Storage bucket "SHAP"
     """
-    if not degradation_type or not shap_data:
+    global _DA_SIGNATURES, _DA_REF_VECS
+    sig_path = Path(os.path.join(os.path.dirname(__file__), "data", "shap_signatures.json"))
+
+    if not sig_path.exists():
+        try:
+            from storage_utils import _get_supabase_admin
+            sb = _get_supabase_admin()
+            if sb:
+                data = sb.storage.from_("SHAP").download("shap_signatures.json")
+                sig_path.parent.mkdir(parents=True, exist_ok=True)
+                sig_path.write_bytes(data)
+                print(f"[DEGRAD] Downloaded shap_signatures.json from Storage → {sig_path}")
+        except Exception as e:
+            print(f"[DEGRAD] Could not download shap_signatures.json: {e}")
+
+    if not sig_path.exists():
+        return
+
+    try:
+        with open(sig_path, encoding="utf-8") as f:
+            _DA_SIGNATURES = _json.load(f)
+        for name, sig in _DA_SIGNATURES.items():
+            mean_map = sig.get("mean_abs_shap", {})
+            vec = np.array([mean_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64)
+            norm = np.linalg.norm(vec)
+            _DA_REF_VECS[name] = vec / (norm + 1e-9)
+    except Exception as e:
+        print(f"[DEGRAD] Could not load shap_signatures.json: {e}")
+
+_load_da_signatures()
+
+
+def compute_pattern_similarity(
+    pattern_label: str | None,
+    shap_data: list[dict],
+    stored_similarity: float | None = None,
+    model_type: str | None = None,
+) -> float | None:
+    """
+    Return the pattern similarity score (cosine similarity, 0–1) for the
+    current degradation pattern label.
+
+    Prefers *stored_similarity* written by the simulation loop at inference time.
+    Falls back to recomputing cosine similarity from shap_data when the stored
+    value is absent (e.g. legacy predictions before the pipeline upgrade).
+
+    Returns None if the pattern label indicates no actionable pattern
+    ("Insufficient Signal", None) or if SHAP data is unavailable.
+    """
+    # No pattern — nothing to score
+    if not pattern_label or pattern_label == "Insufficient Signal":
         return None
 
-    # Determine which expected-sign map(s) to use
-    if "HPC" in degradation_type and "Fan" in degradation_type:
-        expected = {**_HPC_EXPECTED_SIGNS, **_FAN_EXPECTED_SIGNS}
-    elif "HPC" in degradation_type:
-        expected = _HPC_EXPECTED_SIGNS
-    elif "Fan" in degradation_type:
-        expected = _FAN_EXPECTED_SIGNS
-    else:
+    # Prefer the value already computed at inference time
+    if stored_similarity is not None:
+        return round(float(stored_similarity), 4)
+
+    # Fallback: recompute from SHAP data
+    if not shap_data or not _DA_REF_VECS:
         return None
 
-    shap_map = {s["sensor"]: s["score"] for s in shap_data}
-
-    weighted_matches = 0.0
-    total_weight = 0.0
-
-    for sensor, expected_sign in expected.items():
-        score = shap_map.get(sensor, 0.0)
-        magnitude = abs(score)
-        total_weight += magnitude
-
-        # Sign match check
-        if magnitude > 0.01:  # ignore negligible scores
-            actual_sign = -1 if score < 0 else 1
-            if actual_sign == expected_sign:
-                weighted_matches += magnitude
-
-    if total_weight == 0:
+    shap_map = {d["sensor"]: abs(d["score"]) for d in shap_data}
+    current_vec = np.array(
+        [shap_map.get(s, 0.0) for s in _PATTERN_SENSORS], dtype=np.float64
+    )
+    norm = np.linalg.norm(current_vec)
+    if norm < 1e-9:
         return 0.0
+    current_vec_norm = current_vec / norm
 
-    confidence = weighted_matches / total_weight
-    # Clamp to [0, 1]
-    return round(min(1.0, max(0.0, confidence)), 3)
+    # Select candidate group based on model_type (or pattern label as fallback)
+    if model_type in ("FD001", "FD003"):
+        candidates = [k for k in _DA_REF_VECS if k in ("FD001", "FD003")]
+    elif model_type in ("FD002", "FD004"):
+        candidates = [k for k in _DA_REF_VECS if k in ("FD002", "FD004")]
+    else:
+        candidates = list(_DA_REF_VECS.keys())
+
+    if not candidates:
+        return None
+
+    best_score = max(
+        float(np.dot(current_vec_norm, _DA_REF_VECS[name]))
+        for name in candidates
+    )
+    return round(min(best_score, 1.0), 4)
+
+
+# Keep backward-compatible alias so any external caller using the old name
+# does not break immediately.
+def compute_confidence_score(
+    degradation_type: str | None,
+    shap_data: list[dict],
+    stored_similarity: float | None = None,
+    model_type: str | None = None,
+) -> float | None:
+    """Backward-compatible alias for compute_pattern_similarity."""
+    return compute_pattern_similarity(
+        degradation_type, shap_data,
+        stored_similarity=stored_similarity,
+        model_type=model_type,
+    )
 
 
 # ─────────────────────────────────────────────
@@ -166,12 +224,12 @@ def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "al
             zeroline=True,
             zerolinecolor="rgba(74,158,255,0.3)",
             color="#a8d4ff",
-            tickfont=dict(size=10),
+            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
         ),
         yaxis=dict(
             showgrid=False,
             color="#a8d4ff",
-            tickfont=dict(size=11, color="white"),
+            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
             autorange="reversed",
         ),
         hoverlabel=dict(
@@ -187,18 +245,13 @@ def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "al
 #  SHAP BEESWARM CHART
 # ─────────────────────────────────────────────
 
-def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = None) -> go.Figure:
+def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest",
+                         base_value: float = None) -> go.Figure:
     """
-    Build a SHAP beeswarm plot.
-
-    If shap_history is provided (list of SHAP snapshots across cycles), renders
-    a true beeswarm: one dot per cycle per sensor, jittered vertically, colored
-    by feature value (blue=low, purple=mid, red/magenta=high).
-
-    If only shap_data (single latest snapshot) is available, falls back to a
-    strip plot using just that one point per sensor.
+    SHAP waterfall — arrow-tipped bars, hover to see values, no overlapping labels.
+    Blue = negative SHAP, Red = positive. Cumulative from E[f(x)] to f(x).
     """
-    if not shap_data and not shap_history:
+    if not shap_data:
         fig = go.Figure()
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -209,120 +262,145 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
         )
         return fig
 
-    # Determine sensor order by mean |score| (top impact at top of chart)
-    sensor_scores_agg = {}
-    source = shap_history if shap_history else [shap_data]
-    for snapshot in source:
-        if not snapshot:
-            continue
-        for entry in snapshot:
-            sensor_scores_agg.setdefault(entry["sensor"], []).append(entry["score"])
+    sorted_data = sorted(shap_data, key=lambda d: abs(d["score"]), reverse=True)
+    sensors = [d["sensor"] for d in sorted_data]
+    scores  = [d["score"]  for d in sorted_data]
+    n = len(sensors)
 
-    # Sort sensors so highest mean |impact| is at the top (y-axis reversed)
-    sensor_order = sorted(
-        sensor_scores_agg.keys(),
-        key=lambda s: np.mean(np.abs(sensor_scores_agg[s])),
-        reverse=True,
-    )
-    sensor_to_y = {s: i for i, s in enumerate(sensor_order)}
+    base = base_value if base_value is not None else 0.0
+    final_value = base + sum(scores)
 
-    # Collect all points
-    x_vals = []
-    y_vals = []
-    feature_values = []  # normalized feature values for coloring
+    # Cumulative offsets
+    offsets = []
+    running = base
+    for s in scores:
+        offsets.append(running)
+        running += s
 
-    # Compute per-sensor min/max for feature value normalization
-    sensor_all_scores = {}
-    for snapshot in source:
-        if not snapshot:
-            continue
-        for entry in snapshot:
-            sensor_all_scores.setdefault(entry["sensor"], []).append(entry["score"])
+    tips = [offsets[i] + scores[i] for i in range(n)]
 
-    sensor_min = {s: min(vals) for s, vals in sensor_all_scores.items()}
-    sensor_max = {s: max(vals) for s, vals in sensor_all_scores.items()}
+    # X axis: cluster around where most bars are (tips + offsets for large bars only)
+    # Exclude the base offset since it can be far from the action (e.g. base=94, f(x)=27)
+    # The largest bar's full extent (offset→tip) must always be visible
+    max_abs_score = max(abs(s) for s in scores)
+    x_candidates = list(tips) + [final_value]
+    for o, s in zip(offsets, scores):
+        # Only include offset if it's not the isolated base outlier
+        # i.e. include offset only for bars where tip is near the cluster
+        x_candidates.append(o)
+    # Remove extreme outliers: any value more than 3x range away from the median tip
+    import statistics as _stats
+    med = _stats.median(tips)
+    spread = max(abs(t - med) for t in tips) or 1.0
+    x_candidates = [x for x in x_candidates if abs(x - med) <= spread * 4 + max_abs_score]
+    x_min_data = min(x_candidates) if x_candidates else min(tips)
+    x_max_data = max(x_candidates) if x_candidates else max(tips)
+    x_span = max(x_max_data - x_min_data, 1.0)
+    x_pad  = x_span * 0.08
+    x_min  = x_min_data - x_pad
+    x_max  = x_max_data + x_pad
 
-    for snapshot in source:
-        if not snapshot:
-            continue
-        for entry in snapshot:
-            sensor = entry["sensor"]
-            score = entry["score"]
-            if sensor not in sensor_to_y:
-                continue
-            x_vals.append(score)
-            # Add jitter to y position to spread dots (beeswarm effect)
-            jitter = np.random.uniform(-0.25, 0.25)
-            y_vals.append(sensor_to_y[sensor] + jitter)
-            # Normalize feature value to [0, 1] for color mapping
-            s_min = sensor_min.get(sensor, 0)
-            s_max = sensor_max.get(sensor, 1)
-            if s_max - s_min > 1e-8:
-                norm_val = (score - s_min) / (s_max - s_min)
-            else:
-                norm_val = 0.5
-            feature_values.append(norm_val)
+    bar_colors = ["#ff4d4d" if s > 0 else "#4a9eff" for s in scores]
+    bar_half_h = 0.28
+    arrow_base = x_span * 0.018
 
-    # Color scale: blue (low) → purple (mid) → red/magenta (high)
-    beeswarm_colorscale = [
-        [0.0, "#0066ff"],
-        [0.25, "#6633cc"],
-        [0.5, "#9933cc"],
-        [0.75, "#cc3399"],
-        [1.0, "#ff0066"],
-    ]
+    fig = go.Figure()
 
-    fig = go.Figure(go.Scatter(
-        x=x_vals,
-        y=y_vals,
-        mode="markers",
-        marker=dict(
-            size=6,
-            color=feature_values,
-            colorscale=beeswarm_colorscale,
-            cmin=0,
-            cmax=1,
-            opacity=0.8,
-            line=dict(width=0),
-            colorbar=dict(
-                title=dict(text="Feature value", font=dict(color="rgba(168,212,255,0.7)", size=10)),
-                tickvals=[0, 1],
-                ticktext=["Low", "High"],
-                tickfont=dict(color="rgba(168,212,255,0.6)", size=9),
-                thickness=12, len=0.6,
-                bgcolor="rgba(0,0,0,0)",
-                borderwidth=0,
+    for i, (sensor, score, offset, tip, color) in enumerate(
+            zip(sensors, scores, offsets, tips, bar_colors)):
+        y = i
+        bar_width = abs(score)
+        a = min(max(arrow_base, abs(score) * 0.10), bar_width * 0.6)
+
+        if score >= 0:
+            x0, x1 = offset, tip - a
+            px = [x0, x1, tip, x1,  x0, x0]
+            py = [y - bar_half_h, y - bar_half_h, y,
+                  y + bar_half_h, y + bar_half_h, y - bar_half_h]
+        else:
+            x0, x1 = tip + a, offset
+            px = [x1, x0, tip, x0,  x1, x1]
+            py = [y - bar_half_h, y - bar_half_h, y,
+                  y + bar_half_h, y + bar_half_h, y - bar_half_h]
+
+        cum_val = tip  # running model output after this feature
+        fig.add_trace(go.Scatter(
+            x=px, y=py,
+            fill="toself",
+            fillcolor=color,
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            mode="none",
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+        # Invisible hover marker at bar center — this is what triggers the tooltip
+        bar_center_x = (offset + tip) / 2
+        fig.add_trace(go.Scatter(
+            x=[bar_center_x],
+            y=[y],
+            mode="markers",
+            marker=dict(size=max(12, abs(score) * 0.5), color="rgba(0,0,0,0)",
+                        line=dict(width=0)),
+            hovertemplate=(
+                f"<b>{sensor}</b><br>"
+                f"SHAP: <b>{score:+.4f}</b><br>"
+                f"Running output: <b>{cum_val:.2f}</b>"
+                f"<extra></extra>"
             ),
-        ),
-        hovertemplate="<b>%{customdata}</b><br>SHAP value: %{x:.4f}<extra></extra>",
-        customdata=[sensor_order[int(round(y))] if 0 <= int(round(y)) < len(sensor_order) else ""
-                    for y in y_vals],
-    ))
+            showlegend=False,
+        ))
+
+    # f(x) annotation
+    fig.add_annotation(
+        x=final_value, xref="x", y=1.06, yref="paper",
+        text=f"f(x) = {round(final_value):.0f}",
+        showarrow=False,
+        font=dict(color="white", size=11, family="monospace"),
+        xanchor="center",
+    )
+
+    # E[f(x)] annotation — place near the final_value since base may be off-screen
+    fig.add_annotation(
+        x=final_value, xref="x", y=-0.07, yref="paper",
+        text=f"E[f(x)] = {base:.2f}",
+        showarrow=False,
+        font=dict(color="rgba(168,212,255,0.55)", size=9, family="monospace"),
+        xanchor="center",
+    )
+
+    # Dotted line at f(x)
+    fig.add_vline(x=final_value, line_width=1, line_dash="dot",
+                  line_color="rgba(255,255,255,0.2)")
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=80, r=60, t=35, b=40),
+        margin=dict(l=10, r=20, t=35, b=45),
         height=380,
         xaxis=dict(
-            title="SHAP value (impact on model output)",
-            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
-            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
+            title="Model output (cumulative SHAP)",
+            title_font=dict(color="#ffffff", size=11),
+            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
             gridcolor="rgba(74,158,255,0.08)",
-            zeroline=True, zerolinecolor="rgba(74,158,255,0.3)", zerolinewidth=1,
+            zeroline=False,
+            showline=False,
+            range=[x_min, x_max],
         ),
         yaxis=dict(
             tickmode="array",
-            tickvals=list(range(len(sensor_order))),
-            ticktext=sensor_order,
-            tickfont=dict(color="rgba(168,212,255,0.8)", size=11),
-            gridcolor="rgba(74,158,255,0.05)",
-            range=[len(sensor_order) - 0.5, -0.5],  # top sensor at top
+            tickvals=list(range(n)),
+            ticktext=sensors,
+            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
+            showgrid=False,
+            zeroline=False,
+            range=[n - 0.5, -0.5],
         ),
-        title=dict(
-            text="SHAP Beeswarm",
-            font=dict(color="white", size=13),
-            x=0.01, y=0.98,
+        hovermode="closest",
+        hoverlabel=dict(
+            bgcolor="#0d1e3a",
+            bordercolor="rgba(74,158,255,0.4)",
+            font=dict(color="white", size=12),
         ),
     )
     return fig
@@ -332,10 +410,11 @@ def build_shap_beeswarm(shap_data: list[dict], shap_history: list[list[dict]] = 
 #  SHAP TREND LINE CHART
 # ─────────────────────────────────────────────
 
-def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int = 5) -> go.Figure:
+def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: int | str = None) -> go.Figure:
     """
-    Line chart showing SHAP values over cycles for the top N contributing sensors.
+    Line chart showing SHAP values over cycles for all contributing sensors.
     shap_history: list of shap_data per cycle (same order as cycles list).
+    top_n: None / "all" → show all sensors; 5 or 10 → show only the top-N by average |score|.
     """
     if not shap_history or not cycles:
         fig = go.Figure()
@@ -348,7 +427,7 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
         )
         return fig
 
-    # Identify top N sensors by average |score| across history
+    # Collect all sensors, ordered by average |score| descending
     sensor_scores = {}
     for snapshot in shap_history:
         if not snapshot:
@@ -358,11 +437,22 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
             sensor_scores.setdefault(name, []).append(abs(entry["score"]))
 
     avg_scores = {s: np.mean(vals) for s, vals in sensor_scores.items()}
-    top_sensors = sorted(avg_scores.keys(), key=lambda s: avg_scores[s], reverse=True)[:top_n]
+    top_sensors = sorted(avg_scores.keys(), key=lambda s: avg_scores[s], reverse=True)
+
+    # Apply top_n filter
+    if top_n is not None and str(top_n) not in ("all", "None", ""):
+        try:
+            top_sensors = top_sensors[:int(top_n)]
+        except (ValueError, TypeError):
+            pass
 
     # Build time-series per sensor
-    color_palette = ["#4a9eff", "#ff4d4d", "#ffd93d", "#00c875", "#7b61ff",
-                     "#ff9f43", "#a8d4ff", "#ff6b6b", "#54e0c7", "#c084fc"]
+    color_palette = [
+        "#4a9eff", "#ff4d4d", "#ffd93d", "#00c875", "#7b61ff",
+        "#ff9f43", "#a8d4ff", "#ff6b6b", "#54e0c7", "#c084fc",
+        "#f9ca24", "#6ab04c", "#e056fd", "#22a6b3", "#eb4d4b",
+        "#be2edd", "#4834d4", "#f0932b", "#badc58", "#30336b",
+    ]
 
     fig = go.Figure()
     for idx, sensor in enumerate(top_sensors):
@@ -378,18 +468,29 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
 
         fig.add_trace(go.Scatter(
             x=cycles, y=y_values,
-            mode="lines+markers",
+            mode="lines",
             name=sensor,
-            line=dict(color=color_palette[idx % len(color_palette)], width=2),
-            marker=dict(size=4),
-            hovertemplate=f"<b>{sensor}</b><br>Cycle: %{{x}}<br>Score: %{{y:.4f}}<extra></extra>",
+            line=dict(color=color_palette[idx % len(color_palette)], width=1),
+            # In unified hover mode Plotly shows each trace's name + this value.
+            # %{y:.4f} gives the score; <extra></extra> suppresses the trace-name box.
+            hovertemplate="%{y:.4f}<extra></extra>",
         ))
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=50, r=20, t=40, b=40),
-        height=300,
+        margin=dict(l=50, r=20, t=60, b=40),
+        height=380,
+        # Keep hovermode="x" so hoverData fires for the clientside callback.
+        # The native hover boxes and spike line are hidden via CSS in style.css.
+        hovermode="x",
+        hoverdistance=40,
+        hoverlabel=dict(
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(0,0,0,0)",
+            font=dict(color="rgba(0,0,0,0)", size=1),
+            namelength=0,
+        ),
         legend=dict(
             font=dict(color="rgba(168,212,255,0.8)", size=11),
             bgcolor="rgba(0,0,0,0)",
@@ -397,38 +498,35 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
         ),
         xaxis=dict(
             title="Cycle",
-            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
-            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
+            title_font=dict(color="#ffffff", size=11),
+            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
             gridcolor="rgba(74,158,255,0.1)",
         ),
         yaxis=dict(
             title="SHAP Attribution Score",
-            title_font=dict(color="rgba(168,212,255,0.7)", size=11),
-            tickfont=dict(color="rgba(168,212,255,0.6)", size=10),
+            title_font=dict(color="#ffffff", size=11),
+            tickfont=dict(size=10, color="rgba(168,212,255,0.85)"),
             gridcolor="rgba(74,158,255,0.1)",
             zeroline=True, zerolinecolor="rgba(74,158,255,0.2)", zerolinewidth=1,
-        ),
-        title=dict(
-            text="SHAP Value Trend Over Cycles (Top Sensors)",
-            font=dict(color="white", size=16),
-            x=0.01, y=0.98,
         ),
     )
     return fig
 
 
 # ─────────────────────────────────────────────
-#  LLM EXPLANATION (Groq — Llama 3.3 70B)
+#  LLM EXPLANATION (Groq — GPT-OSS 120B)
 # ─────────────────────────────────────────────
 
 def _build_llm_prompt(degradation_type: str, confidence: float,
-                      top_features: list[dict], sensor_trends: dict | None = None) -> str:
+                      top_features: list[dict], sensor_trends: dict | None = None,
+                      predicted_rul: float | None = None,
+                      warn_threshold: int = 80,
+                      crit_threshold: int = 30) -> str:
     """
-    Construct a tightly-scoped prompt for Groq (Llama 3.3 70B).
-    Includes domain knowledge so the LLM can explain *why* sensor patterns
-    indicate specific degradation, rather than just restating the inputs.
+    Construct a structured Markdown prompt for Groq (GPT-OSS 120B).
+    The model is instructed to return four named Markdown sections so
+    the output renders cleanly in a dcc.Markdown component.
     """
-    # Sensor domain knowledge for contextual explanation
     sensor_context = {
         "T24": "LPC outlet temperature — rises indicate compressor inefficiency",
         "T30": "HPC outlet temperature — elevated values suggest compressor degradation or fouling",
@@ -452,49 +550,90 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
         score = f["score"]
         direction = "reducing RUL" if score < 0 else "slightly increasing RUL"
         context = sensor_context.get(name, "sensor function unknown")
-        features_detail.append(f"  • {name} (score: {score:+.3f}, {direction}): {context}")
-
+        features_detail.append(f"- **{name}** (score: {score:+.3f}, {direction}): {context}")
     features_str = "\n".join(features_detail)
 
     trend_str = ""
     if sensor_trends:
         trend_str = "\nSENSOR SLOPE DATA (recent rolling trend):\n" + "\n".join(
-            f"  • {s}: slope = {v:+.5f} per cycle" for s, v in sensor_trends.items()
+            f"- {s}: slope = {v:+.5f} per cycle" for s, v in sensor_trends.items()
         )
 
-    prompt = (
-        f"You are an aircraft engine prognostics expert writing a degradation briefing "
-        f"for a maintenance engineer. Based on the analysis below, explain:\n"
-        f"1. What physical degradation mechanism the sensor pattern suggests\n"
-        f"2. Why these specific sensors are the strongest indicators\n"
-        f"3. What the engineer should inspect or monitor next\n\n"
-        f"ANALYSIS RESULTS:\n"
-        f"- Detected fault mode: {degradation_type}\n"
-        f"- Confidence score: {confidence:.1%}\n"
-        f"- Top contributing sensors (SHAP attribution — negative = drives predicted RUL down):\n"
-        f"{features_str}\n"
-        f"{trend_str}\n\n"
-        f"RULES:\n"
-        f"- You MUST mention the fault mode '{degradation_type}' and confidence '{confidence:.1%}' verbatim.\n"
-        f"- Explain the physical meaning: what is likely happening inside the engine.\n"
-        f"- Be specific to the sensors listed — don't give generic advice.\n"
-        f"- Suggest 1-2 concrete inspection actions relevant to the fault mode.\n"
-        f"- Keep it to 4-6 sentences. Professional tone, no hedging.\n"
-    )
+    # ── RUL urgency block ──
+    if predicted_rul is not None:
+        rul_int = int(round(predicted_rul))
+        if rul_int <= crit_threshold:
+            urgency_level = "CRITICAL"
+            urgency_instruction = (
+                f"RUL of {rul_int} cycles is AT OR BELOW the critical threshold ({crit_threshold}). "
+                f"Recommend IMMEDIATE maintenance — do not defer."
+            )
+        elif rul_int <= warn_threshold:
+            urgency_level = "WARNING"
+            urgency_instruction = (
+                f"RUL of {rul_int} cycles is between the warning ({warn_threshold}) "
+                f"and critical ({crit_threshold}) thresholds. "
+                f"Schedule maintenance at the next available window."
+            )
+        else:
+            urgency_level = "HEALTHY"
+            urgency_instruction = (
+                f"RUL of {rul_int} cycles is above the warning threshold ({warn_threshold}). "
+                f"Continue monitoring; no immediate maintenance action required."
+            )
+        rul_str = (
+            f"\nPREDICTED RUL: {rul_int} cycles | URGENCY: {urgency_level} "
+            f"(critical ≤ {crit_threshold}, warning ≤ {warn_threshold})\n"
+            f"{urgency_instruction}"
+        )
+    else:
+        rul_int = None
+        urgency_level = "UNKNOWN"
+        rul_str = "\nPREDICTED RUL: not yet available"
+
+    prompt = f"""You are an aircraft engine prognostics expert writing a degradation briefing for a maintenance engineer.
+
+ANALYSIS DATA:
+- Degradation profile: {degradation_type}
+- Pattern similarity: {confidence:.1%} (cosine similarity to the {degradation_type} reference profile)
+- Top SHAP contributors (negative score = drives predicted RUL down):
+{features_str}
+{rul_str}
+{trend_str}
+
+OUTPUT INSTRUCTIONS — you MUST follow this structure exactly. Use Markdown. Do NOT produce a single paragraph.
+
+### Why It Was Detected
+Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why it points to {degradation_type}. Only use the sensors listed above — do not invent others.
+
+### Engineering Interpretation
+Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what is likely happening inside the engine. Do not repeat the sensor list.
+
+### Recommended Action
+Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, wash schedules, vibration checks, monitoring intervals, etc.
+
+RULES:
+- The degradation profile name "{degradation_type}" and similarity "{confidence:.1%}" MUST appear verbatim in the output.
+- Each section must have its ### heading exactly as shown.
+- Do not add a Diagnosis section — that is rendered separately by the UI.
+- Do not repeat information across sections.
+- No hedging phrases. Professional, engineering-focused tone.
+- Total output: no more than 180 words.
+"""
     return prompt
 
 
 def _validate_llm_output(text: str, degradation_type: str, confidence: float) -> bool:
     """
     Lightweight validation: confirm that the LLM output contains the
-    fault-mode label and confidence value that were passed in.
+    degradation profile label and pattern similarity value that were passed in.
     """
     if not text:
         return False
-    # Check fault mode label present (case-insensitive)
+    # Check degradation profile label present (case-insensitive)
     if degradation_type.lower() not in text.lower():
         return False
-    # Check confidence value appears (allow ±1% formatting variance)
+    # Check similarity value appears (allow ±1% formatting variance)
     conf_pct = f"{confidence * 100:.0f}%"
     conf_pct_1 = f"{confidence * 100:.1f}%"
     conf_decimal = f"{confidence:.2f}"
@@ -505,8 +644,14 @@ def _validate_llm_output(text: str, degradation_type: str, confidence: float) ->
 
 
 def _fallback_explanation(degradation_type: str, confidence: float,
-                          top_features: list[dict]) -> str:
-    """Templated fallback when LLM output fails validation or API is unavailable."""
+                          top_features: list[dict],
+                          predicted_rul: float | None = None,
+                          warn_threshold: int = 80,
+                          crit_threshold: int = 30) -> str:
+    """
+    Structured Markdown fallback when LLM output fails validation or API is unavailable.
+    Produces the same three-section format the UI expects.
+    """
     sensor_meanings = {
         "T24": "LPC outlet temperature (compressor inefficiency)",
         "T30": "HPC outlet temperature (compressor fouling/degradation)",
@@ -524,60 +669,116 @@ def _fallback_explanation(degradation_type: str, confidence: float,
         "W32": "LPT coolant bleed (downstream thermal stress)",
     }
 
-    top3 = top_features[:3]
-    details = []
-    for f in top3:
+    # ── Why It Was Detected bullets ──
+    detected_lines = []
+    for f in top_features[:5]:
         meaning = sensor_meanings.get(f["sensor"], f["sensor"])
         direction = "declining" if f["score"] < 0 else "elevated"
-        details.append(f"{f['sensor']} — {meaning}, {direction}")
+        detected_lines.append(f"- **{f['sensor']}** — {meaning}, {direction}")
+    detected_str = "\n".join(detected_lines)
 
-    details_str = "; ".join(details)
-
-    if "HPC" in degradation_type:
-        mechanism = (
-            "This pattern is consistent with high-pressure compressor blade erosion "
-            "or fouling, leading to reduced compression efficiency and increased fuel consumption. "
-            "Recommend borescope inspection of HPC stages and review of compressor wash history."
+    # ── Engineering Interpretation ──
+    if "HPC" in degradation_type and "Fan" in degradation_type:
+        interpretation = (
+            f"The combined sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
+            f"is consistent with simultaneous HPC blade erosion and fan aerodynamic efficiency loss. "
+            f"Declining corrected speeds (NRf, NRc) and elevated HPC temperatures confirm both "
+            f"compression and fan pathway degradation. "
+            f"Note: this identifies similarity to a known degradation profile; "
+            f"physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Borescope inspection of HPC stages 1–3\n"
+            "- **[Priority 2]** Fan blade visual inspection and FOD check\n"
+            "- **[Priority 3]** Vibration signature analysis across operating range"
+        )
+    elif "HPC" in degradation_type:
+        interpretation = (
+            f"The sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
+            f"is consistent with HPC blade erosion or fouling, causing reduced compression efficiency "
+            f"and increased specific fuel consumption. "
+            f"The decline in NRc and P30 indicates the HPC is no longer delivering design pressure ratio. "
+            f"Note: this identifies similarity to a known degradation profile; "
+            f"physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Borescope inspection of HPC stages\n"
+            "- **[Priority 2]** Review compressor wash history; schedule wash if overdue\n"
+            "- **[Priority 3]** Monitor P30 and phi trend over next 5 cycles"
         )
     elif "Fan" in degradation_type:
-        mechanism = (
-            "This pattern suggests fan blade surface degradation or foreign object damage "
-            "reducing aerodynamic efficiency. "
-            "Recommend fan blade visual inspection and vibration signature analysis."
+        interpretation = (
+            f"The sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
+            f"suggests fan blade surface degradation or FOD reducing aerodynamic efficiency. "
+            f"A declining NRf indicates true fan performance loss after correcting for ambient conditions. "
+            f"Note: this identifies similarity to a known degradation profile; "
+            f"physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Fan blade visual inspection and FOD check\n"
+            "- **[Priority 2]** Vibration signature analysis\n"
+            "- **[Priority 3]** Monitor NRf trend over next 5 cycles"
         )
     else:
-        mechanism = (
-            "Multiple degradation pathways are active simultaneously. "
-            "Recommend comprehensive inspection of both HPC and fan sections."
+        interpretation = (
+            f"The sensor pattern (similarity: **{confidence:.1%}**) does not map cleanly to a single "
+            f"degradation mode. Multiple pathways may be active. "
+            f"Note: physical confirmation requires inspection."
+        )
+        actions = (
+            "- **[Priority 1]** Comprehensive borescope inspection of HPC and fan sections\n"
+            "- **[Priority 2]** Vibration and performance trend review"
         )
 
+    # ── Urgency-scaled action prefix ──
+    if predicted_rul is not None:
+        rul_int = int(round(predicted_rul))
+        if rul_int <= crit_threshold:
+            action_note = f"> ⚠️ **CRITICAL** — RUL {rul_int} cycles ≤ critical threshold ({crit_threshold}). Immediate action required.\n\n"
+        elif rul_int <= warn_threshold:
+            action_note = f"> ⚡ **WARNING** — RUL {rul_int} cycles ≤ warning threshold ({warn_threshold}). Schedule at next window.\n\n"
+        else:
+            action_note = f"> ✅ **HEALTHY** — RUL {rul_int} cycles above warning threshold ({warn_threshold}). No immediate action.\n\n"
+    else:
+        action_note = ""
+
     return (
-        f"Detected fault mode: {degradation_type} (confidence: {confidence:.1%}). "
-        f"Key indicators: {details_str}. {mechanism}"
+        f"### Why It Was Detected\n\n"
+        f"{detected_str}\n\n"
+        f"### Engineering Interpretation\n\n"
+        f"{interpretation}\n\n"
+        f"### Recommended Action\n\n"
+        f"{action_note}"
+        f"{actions}\n"
     )
 
 
 def generate_llm_explanation(degradation_type: str, confidence: float,
                              top_features: list[dict],
-                             sensor_trends: dict | None = None) -> str:
+                             sensor_trends: dict | None = None,
+                             predicted_rul: float | None = None,
+                             warn_threshold: int = 80,
+                             crit_threshold: int = 30) -> str:
     """
-    Call Groq API (Llama 3.3 70B) to generate natural language explanation.
+    Call Groq API (GPT-OSS 120B) to generate natural language explanation.
     Falls back to a templated string if the API is unavailable or validation fails.
     """
     api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
-        return _fallback_explanation(degradation_type, confidence, top_features)
+        return _fallback_explanation(degradation_type, confidence, top_features,
+                                     predicted_rul, warn_threshold, crit_threshold)
 
-    prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends)
+    prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends,
+                                predicted_rul, warn_threshold, crit_threshold)
 
     try:
         from groq import Groq
         client = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=300,
+            max_tokens=500,
         )
         text = response.choices[0].message.content.strip() if response.choices else ""
 
@@ -585,14 +786,64 @@ def generate_llm_explanation(degradation_type: str, confidence: float,
             return text
         else:
             print("[DEGRAD] LLM output failed validation, using fallback.")
-            return _fallback_explanation(degradation_type, confidence, top_features)
+            return _fallback_explanation(degradation_type, confidence, top_features,
+                                         predicted_rul, warn_threshold, crit_threshold)
 
     except ImportError:
         print("[DEGRAD] groq package not installed. Using fallback.")
-        return _fallback_explanation(degradation_type, confidence, top_features)
+        return _fallback_explanation(degradation_type, confidence, top_features,
+                                     predicted_rul, warn_threshold, crit_threshold)
     except Exception as e:
         print(f"[DEGRAD] Groq API error: {e}")
-        return _fallback_explanation(degradation_type, confidence, top_features)
+        return _fallback_explanation(degradation_type, confidence, top_features,
+                                     predicted_rul, warn_threshold, crit_threshold)
+
+
+# ─────────────────────────────────────────────
+#  PAGE LAYOUT
+# ─────────────────────────────────────────────
+#  DIAGNOSIS HEADER HELPER
+# ─────────────────────────────────────────────
+
+def _build_diagnosis_header(
+    degradation_type: str | None,
+    confidence: float | None,
+    predicted_rul: float | None,
+    warn_threshold: int | None,
+    crit_threshold: int | None,
+) -> list:
+    """
+    Pinned diagnosis summary: fault mode on the left, similarity chip on the right.
+    Status and RUL are omitted — those live in the Status Overview card.
+    """
+    fault_label = (degradation_type or "No Pattern Detected").upper()
+    conf_display = f"{confidence:.1%}" if confidence is not None else "—"
+
+    return [
+        html.Div(
+            style={
+                "display": "flex", "alignItems": "center",
+                "justifyContent": "space-between",
+            },
+            children=[
+                html.Div(fault_label, style={
+                    "color": "white", "fontSize": "13px", "fontWeight": "800",
+                    "letterSpacing": "0.3px",
+                }),
+                html.Span(
+                    f"{conf_display} similarity",
+                    style={
+                        "background": "rgba(74,158,255,0.15)",
+                        "color": "#4a9eff",
+                        "border": "1px solid rgba(74,158,255,0.4)",
+                        "borderRadius": "5px", "padding": "2px 8px",
+                        "fontSize": "10px", "fontWeight": "700",
+                        "letterSpacing": "0.5px", "whiteSpace": "nowrap",
+                    }
+                ),
+            ]
+        ),
+    ]
 
 
 # ─────────────────────────────────────────────
@@ -605,6 +856,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     # ── Fetch engine metadata ──
     engine_label = "No engine selected"
     degradation_type = None
+    degradation_confidence = None
     model_type = None
     cached_explanation = None
     cached_explanation_ts = None
@@ -612,13 +864,14 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     if supabase and engine_db_id:
         try:
             resp = supabase.table("engines") \
-                .select("engine_id, degradation_type, model_type, llm_explanation, llm_explanation_updated_at") \
+                .select("engine_id, degradation_type, degradation_confidence, model_type, llm_explanation, llm_explanation_updated_at") \
                 .eq("id", engine_db_id) \
                 .single() \
                 .execute()
             if resp.data:
                 engine_label = f"Engine #{resp.data.get('engine_id', engine_db_id)}"
                 degradation_type = resp.data.get("degradation_type")
+                degradation_confidence = resp.data.get("degradation_confidence")
                 model_type = resp.data.get("model_type", "")
                 cached_explanation = resp.data.get("llm_explanation")
                 cached_explanation_ts = resp.data.get("llm_explanation_updated_at")
@@ -626,8 +879,16 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
             pass
 
     # ── Display values ──
-    deg_type_display = degradation_type or "No degradation detected"
-    deg_color = "#ff4d4d" if degradation_type else "rgba(168,212,255,0.5)"
+    deg_type_display = degradation_type or "No pattern detected"
+    # Colour coding: confirmed patterns = red, ambiguous = amber, none = dim blue
+    if degradation_type in ("HPC Degradation", "HPC + Fan Degradation"):
+        deg_color = "#ff4d4d"
+        deg_dot_color = "#ff4d4d"
+        deg_dot_shadow = "0 0 8px rgba(255,77,77,0.6)"
+    else:
+        deg_color = "rgba(168,212,255,0.5)"
+        deg_dot_color = "rgba(168,212,255,0.3)"
+        deg_dot_shadow = "none"
 
     # ── Header section (simplified - just page title + engine label) ──
     header = html.Div(
@@ -660,7 +921,8 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     "background": "rgba(13,32,69,0.6)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "20px",
-                    "display": "flex", "flexDirection": "column", "gap": "16px",
+                    "display": "flex", "flexDirection": "column",
+                    "justifyContent": "space-between", "gap": "12px",
                 },
                 children=[
                     # Section 1: Status Overview + Fault Mode
@@ -669,7 +931,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                             "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
                             "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "4px",
                         }),
-                        html.Div("DETECTED FAULT MODE", style={
+                        html.Div("DEGRADATION PATTERN", style={
                             "color": "rgba(168,212,255,0.6)", "fontSize": "10px",
                             "fontWeight": "600", "marginBottom": "10px",
                         }),
@@ -686,8 +948,8 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                 # Red indicator dot
                                 html.Div(style={
                                     "width": "10px", "height": "10px", "borderRadius": "50%",
-                                    "background": "#ff4d4d" if degradation_type else "rgba(168,212,255,0.3)",
-                                    "boxShadow": "0 0 8px rgba(255,77,77,0.6)" if degradation_type else "none",
+                                    "background": deg_dot_color,
+                                    "boxShadow": deg_dot_shadow,
                                 }),
                             ]
                         ),
@@ -703,7 +965,7 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                    "justifyContent": "space-between"},
                             children=[
                                 html.Div(children=[
-                                    html.Div("CONFIDENCE", style={
+                                    html.Div("PATTERN SIMILARITY", style={
                                         "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
                                         "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "10px",
                                     }),
@@ -723,9 +985,9 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     # Divider
                     html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.12)"}),
 
-                    # Section 3: Time to EOL (predicted RUL) + mini chart
+                    # Section 3: predicted RUL + mini chart
                     html.Div(children=[
-                        html.Div("TIME TO EOL (CYCLES)", style={
+                        html.Div("Predicted RUL (CYCLES)", style={
                             "color": "rgba(168,212,255,0.5)", "fontSize": "10px",
                             "fontWeight": "700", "letterSpacing": "1.2px", "marginBottom": "10px",
                         }),
@@ -799,17 +1061,48 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                     ),
                 ]
             ),
-            # Column 3: SHAP beeswarm chart (flex: 2)
+            # Column 3: SHAP waterfall chart (flex: 2)
             html.Div(
                 style={
                     "flex": "2", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
                     "borderRadius": "12px", "padding": "16px",
+                    "display": "flex", "flexDirection": "column",
                 },
                 children=[
-                    dcc.Graph(id="da-shap-beeswarm", config={"displayModeBar": False},
-                              figure=build_shap_beeswarm([])),
+                    # Header: title + cycle selector
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "justifyContent": "space-between", "marginBottom": "10px"},
+                        children=[
+                            html.Div("SHAP Waterfall", style={
+                                "color": "white", "fontSize": "16px", "fontWeight": "700",
+                            }),
+                            dcc.Dropdown(
+                                id="da-cycle-selector",
+                                options=[{"label": "Latest", "value": "latest"}],
+                                value="latest",
+                                clearable=False,
+                                searchable=False,
+                                className="dark-dropdown",
+                                style={
+                                    "width": "150px",
+                                    "background": "rgba(10,20,45,0.8)",
+                                    "border": "1.5px solid rgba(74,158,255,0.4)",
+                                    "borderRadius": "8px",
+                                    "color": "white",
+                                    "fontSize": "12px",
+                                },
+                            ),
+                        ]
+                    ),
+                    dcc.Graph(
+                        id="da-shap-waterfall",
+                        config={"displayModeBar": False},
+                        figure=build_shap_waterfall([]),
+                        style={"flex": "1", "minHeight": "0", "height": "380px"},
+                    ),
                 ]
             ),
         ]
@@ -818,84 +1111,206 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     # ── Row 2: SHAP trend chart (5:1 ratio) + AI explanation ──
     row2 = html.Div(
         style={"display": "flex", "gap": "20px", "padding": "0 28px 28px",
-               "alignItems": "stretch"},
+               "marginBottom": "28px", "alignItems": "stretch", "height": "440px"},
         children=[
-            # SHAP trend chart (flex: 5)
+            # SHAP trend chart (flex: 3)
             html.Div(
                 style={
-                    "flex": "5", "minWidth": "0",
+                    "flex": "3", "minWidth": "0",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
-                    "borderRadius": "12px", "padding": "16px", "height": "auto",
+                    "borderRadius": "12px", "padding": "16px",
+                    "display": "flex", "flexDirection": "column",
+                    "height": "440px",
+                    "boxSizing": "border-box",
                 },
                 children=[
-                    dcc.Graph(id="da-shap-trend", config={"displayModeBar": False},
-                              figure=build_shap_trend_chart([], [])),
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center",
+                               "justifyContent": "space-between", "marginBottom": "8px",
+                               "flexShrink": "0"},
+                        children=[
+                            html.Div("SHAP Value Trend Over Cycles", style={
+                                "color": "white", "fontSize": "16px", "fontWeight": "700",
+                            }),
+                            html.Div(
+                                style={"display": "flex", "gap": "6px"},
+                                children=[
+                                    html.Div("All", id="da-trend-filter-all", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                    }),
+                                    html.Div("Top 5", id="da-trend-filter-5", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "rgba(74,158,255,0.25)", "color": "white",
+                                        "border": "1px solid rgba(74,158,255,0.5)",
+                                    }),
+                                    html.Div("Top 10", id="da-trend-filter-10", n_clicks=0, style={
+                                        "padding": "4px 12px", "borderRadius": "6px",
+                                        "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+                                        "background": "transparent", "color": "rgba(168,212,255,0.6)",
+                                        "border": "1px solid rgba(74,158,255,0.25)",
+                                    }),
+                                ]
+                            ),
+                        ]
+                    ),
+                    dcc.Store(id="da-trend-filter", data="5"),
+                    # ── Chart + custom hover overlay ──
+                    html.Div(
+                        style={"flex": "1", "minHeight": "0", "position": "relative",
+                               "overflow": "hidden"},
+                        children=[
+                            dcc.Graph(
+                                id="da-shap-trend",
+                                config={"displayModeBar": False},
+                                figure=build_shap_trend_chart([], []),
+                                style={"width": "100%", "height": "100%"},
+                                clear_on_unhover=True,
+                            ),
+                            # Vertical dashed line
+                            html.Div(
+                                id="da-trend-vline",
+                                style={
+                                    "display": "none",
+                                    "position": "absolute",
+                                    "top": "0", "width": "1px",
+                                    "borderLeft": "1px dashed rgba(168,212,255,0.45)",
+                                    "pointerEvents": "none",
+                                    "zIndex": "10",
+                                }
+                            ),
+                            # Floating tooltip panel
+                            html.Div(
+                                id="da-trend-tooltip",
+                                style={
+                                    "display": "none",
+                                    "position": "absolute",
+                                    "background": "rgba(10,20,45,0.95)",
+                                    "border": "1px solid rgba(74,158,255,0.35)",
+                                    "borderRadius": "8px",
+                                    "padding": "10px 14px",
+                                    "pointerEvents": "none",
+                                    "zIndex": "20",
+                                    "minWidth": "170px",
+                                    "boxShadow": "0 4px 20px rgba(0,0,0,0.5)",
+                                },
+                                # dangerouslySetInnerHTML equivalent: use a single
+                                # child iframe trick isn't needed — we write innerHTML
+                                # directly from JS via a dummy Output on 'data-html'
+                            ),
+                        ]
+                    ),
                 ]
             ),
-            # AI Explanation (flex: 1) — matches chart height, content scrolls
+            # AI Explanation card — pinned diagnosis header + scrollable Markdown body
             html.Div(
                 style={
-                    "flex": "1", "minWidth": "200px",
+                    "flex": "2", "minWidth": "200px",
+                    "height": "440px", "boxSizing": "border-box",
                     "background": "rgba(13,32,69,0.5)",
                     "border": "1px solid rgba(74,158,255,0.15)",
-                    "borderRadius": "12px", "padding": "20px",
+                    "borderRadius": "12px", "padding": "16px 20px",
                     "display": "flex", "flexDirection": "column",
-                    "overflow": "hidden", "height": "350px",
+                    "overflow": "hidden",
                 },
                 children=[
-                    html.Div(style={"display": "flex", "flexDirection": "column", "gap": "8px",
-                                    "marginBottom": "14px", "flexShrink": "0"}, children=[
-                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px"}, children=[
-                            html.Div("AI EXPLANATION", style={
-                                "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
-                                "fontWeight": "700", "letterSpacing": "1px",
-                            }),
-                            html.Span("Llama 3.3 70B", style={
-                                "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
-                                "background": "rgba(74,158,255,0.1)",
-                                "borderRadius": "4px", "padding": "2px 6px",
-                            }),
-                        ]),
-                        html.Button(
-                            "Generate",
-                            id="da-generate-btn",
-                            n_clicks=0,
-                            style={
-                                "background": "linear-gradient(135deg, #4a9eff, #7b61ff)",
-                                "border": "none", "color": "white", "fontSize": "11px",
-                                "fontWeight": "700", "padding": "6px 14px",
-                                "borderRadius": "6px", "cursor": "pointer",
-                                "letterSpacing": "0.5px", "width": "fit-content",
-                            },
+                    # ── Pinned top bar: label + model badge + generate button ──
+                    html.Div(
+                        style={
+                            "display": "flex", "alignItems": "center",
+                            "justifyContent": "space-between",
+                            "marginBottom": "10px", "flexShrink": "0",
+                        },
+                        children=[
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "8px"},
+                                children=[
+                                    html.Div("AI EXPLANATION", style={
+                                        "color": "#ffffff", "fontSize": "16px",
+                                        "fontWeight": "700", "letterSpacing": "1px",
+                                    }),
+                                    html.Span("GPT-OSS 120B", style={
+                                        "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
+                                        "background": "rgba(74,158,255,0.1)",
+                                        "borderRadius": "4px", "padding": "2px 6px",
+                                    }),
+                                ]
+                            ),
+                            html.Button(
+                                "Generate",
+                                id="da-generate-btn",
+                                n_clicks=0,
+                                style={
+                                    "background": "linear-gradient(135deg, #4a9eff, #7b61ff)",
+                                    "border": "none", "color": "white", "fontSize": "11px",
+                                    "fontWeight": "700", "padding": "5px 12px",
+                                    "borderRadius": "6px", "cursor": "pointer",
+                                    "letterSpacing": "0.5px",
+                                },
+                            ),
+                        ]
+                    ),
+                    # ── Pinned diagnosis summary (always visible, no scroll) ──
+                    html.Div(
+                        id="da-llm-diagnosis-header",
+                        style={
+                            "background": "rgba(10,20,45,0.6)",
+                            "border": "1px solid rgba(74,158,255,0.2)",
+                            "borderRadius": "8px", "padding": "10px 12px",
+                            "marginBottom": "10px", "flexShrink": "0",
+                        },
+                        children=_build_diagnosis_header(
+                            degradation_type, degradation_confidence,
+                            None, None, None,  # RUL/urgency unknown at layout build time
                         ),
-                    ]),
+                    ),
+                    # ── Scrollable Markdown body ──
                     dcc.Loading(
                         id="da-llm-loading",
                         type="circle",
                         color="#4a9eff",
-                        style={"flex": "1", "minHeight": "0"},
+                        style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
+                        parent_style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
                         children=[
                             html.Div(
                                 id="da-llm-explanation",
                                 style={
-                                    "color": "rgba(168,212,255,0.8)", "fontSize": "12px",
-                                    "lineHeight": "1.7", "height": "100%",
+                                    "flex": "1", "minHeight": "0",
                                     "overflowY": "auto",
+                                    "paddingRight": "4px",
                                 },
-                                children=[
-                                    html.Div(cached_explanation, style={"marginBottom": "8px"})
-                                    if cached_explanation else
-                                    html.Div("Click 'Generate' to request an AI-powered analysis."),
+                                children=(
+                                    dcc.Markdown(
+                                        cached_explanation,
+                                        className="ai-explanation-md",
+                                    ) if cached_explanation else
                                     html.Div(
-                                        f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
-                                        if cached_explanation_ts else "",
-                                        style={"color": "rgba(168,212,255,0.4)", "fontSize": "10px",
-                                               "marginTop": "8px"},
-                                    ) if cached_explanation else None,
-                                ]
+                                        "Click 'Generate' to request an AI-powered analysis.",
+                                        style={
+                                            "color": "rgba(168,212,255,0.45)",
+                                            "fontSize": "12px", "lineHeight": "1.7",
+                                            "fontStyle": "italic", "marginTop": "4px",
+                                        }
+                                    )
+                                ),
                             ),
                         ]
+                    ),
+                    # ── Last-generated timestamp (pinned at bottom) ──
+                    html.Div(
+                        id="da-llm-timestamp",
+                        style={
+                            "color": "rgba(168,212,255,0.35)", "fontSize": "10px",
+                            "marginTop": "6px", "flexShrink": "0", "textAlign": "right",
+                        },
+                        children=(
+                            f"Last generated: {cached_explanation_ts[:16].replace('T', ' ')}"
+                            if cached_explanation_ts else ""
+                        ),
                     ),
                 ]
             ),
@@ -906,7 +1321,9 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
     stores = html.Div([
         dcc.Store(id="da-engine-db-id", data=engine_db_id),
         dcc.Store(id="da-degradation-type", data=degradation_type),
+        dcc.Store(id="da-degradation-confidence", data=degradation_confidence),
         dcc.Store(id="da-model-type", data=model_type),
+        dcc.Store(id="da-shap-history-store", data={"cycles": [], "history": []}),
         dcc.Interval(id="da-interval", interval=5_000, n_intervals=0),  # poll every 5s (same as overview)
     ])
 
@@ -992,7 +1409,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         return fig
 
     @app.callback(
-        Output("da-shap-beeswarm", "figure"),
+        Output("da-shap-waterfall", "figure"),
         Output("da-shap-trend", "figure"),
         Output("da-confidence-value", "children"),
         Output("da-confidence-ring", "children"),
@@ -1001,16 +1418,20 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         Output("da-fault-mode-label", "children"),
         Output("da-top-drivers-chart", "figure"),
         Output("da-interval", "disabled"),
+        Output("da-shap-history-store", "data"),
+        Output("da-cycle-selector", "options"),
         Input("da-interval", "n_intervals"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
+        State("da-degradation-confidence", "data"),
         State("da-model-type", "data"),
         State("da-top-drivers-filter", "data"),
         prevent_initial_call=False,
     )
-    def update_charts(n_intervals, engine_db_id, degradation_type, model_type, top_n_filter):
+    def update_charts(n_intervals, engine_db_id, degradation_type,
+                      stored_similarity, model_type, top_n_filter):
         """
-        Poll callback: fetch SHAP history, compute confidence, update charts.
+        Poll callback: fetch SHAP history, compute pattern similarity, update charts.
         Disables the interval once the prediction cycle is complete.
         Does NOT call the LLM — that is triggered only by button click.
         """
@@ -1020,15 +1441,17 @@ def register_degradation_analysis_callbacks(app, supabase=None):
 
         if not supabase or not engine_db_id:
             return (
-                build_shap_beeswarm([]),
+                build_shap_waterfall([]),
                 build_shap_trend_chart([], []),
                 "—",
                 _build_confidence_ring(0),
                 "—",
                 empty_sparkline,
-                "NO DEGRADATION DETECTED",
+                "NO PATTERN DETECTED",
                 build_top_drivers_chart(None),
                 False,
+                {"cycles": [], "history": []},
+                [{"label": "Latest", "value": "latest"}],
             )
 
         # ── Check if simulation is still running ──
@@ -1039,15 +1462,20 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         shap_history = []
         latest_shap = []
         predicted_ruls = []
+        shap_base_values = []
 
         try:
             resp = supabase.table("rul_predictions") \
-                .select("cycle, predicted_rul, shap_values") \
+                .select("cycle, predicted_rul, shap_values, shap_base_value") \
                 .eq("engine_id", engine_db_id) \
                 .order("cycle", desc=False) \
                 .execute()
 
             for row in (resp.data or []):
+                shap = _json.loads(row["shap_values"]) if isinstance(row["shap_values"], str) else row["shap_values"]
+                total_shap = sum(d["score"] for d in shap) if shap else None
+                # print(f"cycle={row['cycle']:>3}  predicted_rul={row['predicted_rul']:>8}  "
+                    #   f"base={row['shap_base_value']:>8}  sum(shap)={total_shap}")
                 cycle = row.get("cycle")
                 raw_shap = row.get("shap_values")
                 parsed_shap = []
@@ -1060,6 +1488,13 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 shap_history.append(parsed_shap)
                 pred_rul = row.get("predicted_rul")
                 predicted_ruls.append(float(pred_rul) if pred_rul is not None else None)
+                base_val = row.get("shap_base_value")
+                shap_base_values.append(float(base_val) if base_val is not None else 0.0)
+
+            # Debug: show how many rows have shap_values populated
+            rows_with_shap = sum(1 for s in shap_history if s)
+            print(f"[DEGRAD] engine={engine_db_id}: {len(cycles_list)} prediction rows, "
+                  f"{rows_with_shap} with shap_values")
 
             # Latest valid SHAP snapshot
             for snapshot in reversed(shap_history):
@@ -1067,37 +1502,52 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                     latest_shap = snapshot
                     break
 
+            # Latest base value
+            latest_base = 0.0
+            for bv in reversed(shap_base_values):
+                if bv != 0.0:
+                    latest_base = bv
+                    break
+
         except Exception as e:
             print(f"[DEGRAD] Error fetching SHAP data: {e}")
             return (
-                build_shap_beeswarm([]),
+                build_shap_waterfall([]),
                 build_shap_trend_chart([], []),
                 "—",
                 _build_confidence_ring(0),
                 "—",
                 empty_sparkline,
-                "NO DEGRADATION DETECTED",
+                "NO PATTERN DETECTED",
                 build_top_drivers_chart(None),
                 not sim_active,
+                {"cycles": [], "history": []},
+                [{"label": "Latest", "value": "latest"}],
             )
 
-        # ── Re-fetch degradation_type (may have updated since page load) ──
+        # ── Re-fetch degradation_type and stored similarity (may have updated) ──
         if supabase and engine_db_id:
             try:
                 eng_resp = supabase.table("engines") \
-                    .select("degradation_type") \
+                    .select("degradation_type, degradation_confidence, model_type") \
                     .eq("id", engine_db_id) \
                     .single() \
                     .execute()
                 if eng_resp.data:
-                    degradation_type = eng_resp.data.get("degradation_type") or degradation_type
+                    degradation_type   = eng_resp.data.get("degradation_type") or degradation_type
+                    stored_similarity  = eng_resp.data.get("degradation_confidence") or stored_similarity
+                    model_type         = eng_resp.data.get("model_type") or model_type
             except Exception:
                 pass
 
-        # ── Compute confidence ──
-        confidence = compute_confidence_score(degradation_type, latest_shap)
-        confidence_pct = int(round(confidence * 100)) if confidence is not None else 0
-        confidence_display = f"{confidence_pct}%"
+        # ── Pattern similarity score ──────────────────────────────────────────
+        similarity = compute_pattern_similarity(
+            degradation_type, latest_shap,
+            stored_similarity=stored_similarity,
+            model_type=model_type,
+        )
+        similarity_pct = int(round(similarity * 100)) if similarity is not None else 0
+        similarity_display = f"{similarity_pct}%" if similarity is not None else "—"
 
         # ── Latest RUL value ──
         latest_rul = None
@@ -1107,29 +1557,44 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 break
         rul_display = str(int(round(latest_rul))) if latest_rul is not None else "—"
 
-        # ── Fault mode label ──
-        fault_label = degradation_type.upper() if degradation_type else "NO DEGRADATION DETECTED"
+        # ── Fault mode label — surface insufficient state clearly ──
+        if degradation_type == "Insufficient Signal":
+            fault_label = "INSUFFICIENT SIGNAL"
+        elif degradation_type:
+            fault_label = degradation_type.upper()
+        else:
+            fault_label = "NO PATTERN DETECTED"
 
         # ── Build charts ──
-        beeswarm_fig = build_shap_beeswarm(latest_shap, shap_history=shap_history)
-        trend_fig = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
-        sparkline_fig = _build_rul_sparkline([v for v in predicted_ruls if v is not None])
-        top_drivers_fig = build_top_drivers_chart(latest_shap, top_n=top_n_filter or "all")
+        waterfall_fig    = build_shap_waterfall(latest_shap, cycle_label="Latest", base_value=latest_base)
+        trend_fig        = build_shap_trend_chart(cycles_list, shap_history, top_n=5)
+        sparkline_fig    = _build_rul_sparkline([v for v in predicted_ruls if v is not None])
+        top_drivers_fig  = build_top_drivers_chart(latest_shap, top_n=top_n_filter or "all")
+
+        # ── Build cycle selector options ──
+        cycle_options = [{"label": "Latest", "value": "latest"}] + [
+            {"label": f"Cycle {c}", "value": str(i)}
+            for i, c in enumerate(cycles_list) if c is not None
+        ]
 
         return (
-            beeswarm_fig,
+            waterfall_fig,
             trend_fig,
-            confidence_display,
-            _build_confidence_ring(confidence_pct),
+            similarity_display,
+            _build_confidence_ring(similarity_pct),
             rul_display,
             sparkline_fig,
             fault_label,
             top_drivers_fig,
             not sim_active,
+            {"cycles": cycles_list, "history": shap_history, "base_values": shap_base_values},
+            cycle_options,
         )
 
     @app.callback(
         Output("da-llm-explanation", "children"),
+        Output("da-llm-diagnosis-header", "children"),
+        Output("da-llm-timestamp", "children"),
         Input("da-generate-btn", "n_clicks"),
         State("da-engine-db-id", "data"),
         State("da-degradation-type", "data"),
@@ -1138,73 +1603,174 @@ def register_degradation_analysis_callbacks(app, supabase=None):
     def generate_explanation_on_click(n_clicks, engine_db_id, degradation_type):
         """
         Triggered ONLY by the 'Generate Explanation' button click.
-        Calls Groq API once per click, then caches the result
-        in engines.llm_explanation to avoid repeat API calls.
+        Returns:
+          - da-llm-explanation      → dcc.Markdown with three-section body
+          - da-llm-diagnosis-header → updated pinned summary chips
+          - da-llm-timestamp        → last-generated timestamp string
         """
         if not n_clicks or not supabase or not engine_db_id:
             raise dash.exceptions.PreventUpdate
 
-        # Fetch latest SHAP + degradation type
+        # ── Fetch full prediction history (SHAP + RUL) ──
         latest_shap = []
+        predicted_rul = None
+        sensor_trends = None
+        stored_similarity = None
+        model_type_fetched = None
+
         try:
             resp = supabase.table("rul_predictions") \
-                .select("shap_values") \
+                .select("cycle, predicted_rul, shap_values") \
                 .eq("engine_id", engine_db_id) \
-                .order("cycle", desc=True) \
-                .limit(1) \
+                .order("cycle", desc=False) \
                 .execute()
-            if resp.data:
-                raw_shap = resp.data[0].get("shap_values")
-                if raw_shap:
-                    latest_shap = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
-        except Exception as e:
-            return f"Error fetching SHAP data: {e}"
 
-        # Re-fetch degradation_type
+            rows = resp.data or []
+            all_cycles = []
+            all_shap = []
+            all_ruls = []
+
+            for row in rows:
+                raw_shap = row.get("shap_values")
+                parsed = []
+                if raw_shap:
+                    try:
+                        parsed = _json.loads(raw_shap) if isinstance(raw_shap, str) else raw_shap
+                    except Exception:
+                        parsed = []
+                all_cycles.append(row.get("cycle"))
+                all_shap.append(parsed)
+                rul = row.get("predicted_rul")
+                all_ruls.append(float(rul) if rul is not None else None)
+
+            # Latest valid SHAP snapshot
+            for snapshot in reversed(all_shap):
+                if snapshot:
+                    latest_shap = snapshot
+                    break
+
+            # Latest valid RUL
+            for v in reversed(all_ruls):
+                if v is not None:
+                    predicted_rul = v
+                    break
+
+            # ── Compute per-sensor slope over last 10 cycles ──
+            window = 10
+            recent_shap = [s for s in all_shap[-window:] if s]
+            if len(recent_shap) >= 3:
+                sensor_names = [e["sensor"] for e in latest_shap] if latest_shap else []
+                trends = {}
+                for sensor in sensor_names:
+                    vals = []
+                    for snapshot in recent_shap:
+                        for entry in snapshot:
+                            if entry["sensor"] == sensor:
+                                vals.append(entry["score"])
+                                break
+                    if len(vals) >= 3:
+                        import numpy as _np
+                        x = list(range(len(vals)))
+                        slope = float(_np.polyfit(x, vals, 1)[0])
+                        trends[sensor] = slope
+                if trends:
+                    sensor_trends = trends
+
+        except Exception as e:
+            err_md = dcc.Markdown(
+                f"**Error fetching prediction data:** {e}",
+                className="ai-explanation-md",
+            )
+            return err_md, dash.no_update, dash.no_update
+
+        # ── Re-fetch degradation_type, stored similarity and model_type ──
         try:
             eng_resp = supabase.table("engines") \
-                .select("degradation_type") \
+                .select("degradation_type, degradation_confidence, model_type") \
                 .eq("id", engine_db_id) \
                 .single() \
                 .execute()
             if eng_resp.data:
-                degradation_type = eng_resp.data.get("degradation_type") or degradation_type
+                degradation_type   = eng_resp.data.get("degradation_type") or degradation_type
+                stored_similarity  = eng_resp.data.get("degradation_confidence")
+                model_type_fetched = eng_resp.data.get("model_type")
         except Exception:
             pass
 
-        if not degradation_type:
-            return (
-                "No degradation pattern has been detected for this engine. "
-                "The engine is operating within normal parameters."
+        # ── Fetch configured thresholds ──
+        warn_threshold = 80
+        crit_threshold = 30
+        try:
+            thr_resp = supabase.table("alert_thresholds") \
+                .select("warning_threshold, critical_threshold") \
+                .order("updated_at", desc=True) \
+                .limit(1) \
+                .execute()
+            if thr_resp.data:
+                warn_threshold = thr_resp.data[0].get("warning_threshold", warn_threshold)
+                crit_threshold = thr_resp.data[0].get("critical_threshold", crit_threshold)
+        except Exception:
+            pass
+
+        # Don't generate if pattern is ambiguous, insufficient, or absent
+        if not degradation_type or degradation_type == "Insufficient Signal":
+            no_pattern_md = dcc.Markdown(
+                "No degradation pattern has been identified for this engine. "
+                "The engine is operating within normal parameters or the signal "
+                "is not yet strong enough to report.",
+                className="ai-explanation-md",
             )
+            return no_pattern_md, dash.no_update, dash.no_update
 
         if not latest_shap:
-            return "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles."
+            no_shap_md = dcc.Markdown(
+                "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles.",
+                className="ai-explanation-md",
+            )
+            return no_shap_md, dash.no_update, dash.no_update
 
-        confidence = compute_confidence_score(degradation_type, latest_shap)
-        if confidence is None:
-            confidence = 0.0
+        similarity = compute_pattern_similarity(
+            degradation_type, latest_shap,
+            stored_similarity=stored_similarity,
+            model_type=model_type_fetched,
+        )
+        if similarity is None:
+            similarity = 0.0
 
         explanation = generate_llm_explanation(
             degradation_type=degradation_type,
-            confidence=confidence,
+            confidence=similarity,
             top_features=latest_shap[:5],
-            sensor_trends=None,  # TODO: compute rolling slopes from sensor data
+            sensor_trends=sensor_trends,
+            predicted_rul=predicted_rul,
+            warn_threshold=warn_threshold,
+            crit_threshold=crit_threshold,
         )
 
         # ── Cache to engines table ──
+        now_iso = datetime.utcnow().isoformat()
         try:
             supabase.table("engines") \
                 .update({
                     "llm_explanation": explanation,
-                    "llm_explanation_updated_at": datetime.utcnow().isoformat(),
+                    "llm_explanation_updated_at": now_iso,
                 }) \
                 .eq("id", engine_db_id) \
                 .execute()
         except Exception as e:
             print(f"[DEGRAD] Failed to cache LLM explanation: {e}")
 
-        return explanation
+        diagnosis_children = _build_diagnosis_header(
+            degradation_type, similarity,
+            predicted_rul, warn_threshold, crit_threshold,
+        )
+        timestamp_str = f"Last generated: {now_iso[:16].replace('T', ' ')}"
+
+        return (
+            dcc.Markdown(explanation, className="ai-explanation-md"),
+            diagnosis_children,
+            timestamp_str,
+        )
 
     # ── Top drivers filter callback (instant response on button click) ──
     @app.callback(
@@ -1266,3 +1832,296 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             pass
 
         return build_top_drivers_chart(None), top_n, *styles
+
+    # ── SHAP trend filter callback (All / Top 5 / Top 10) ──
+    @app.callback(
+        Output("da-shap-trend", "figure", allow_duplicate=True),
+        Output("da-trend-filter", "data"),
+        Output("da-trend-filter-all", "style"),
+        Output("da-trend-filter-5", "style"),
+        Output("da-trend-filter-10", "style"),
+        Input("da-trend-filter-all", "n_clicks"),
+        Input("da-trend-filter-5", "n_clicks"),
+        Input("da-trend-filter-10", "n_clicks"),
+        State("da-shap-history-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_shap_trend_filter(n_all, n_5, n_10, store_data):
+        """Re-render SHAP trend chart when All / Top 5 / Top 10 button is clicked."""
+        from dash import callback_context as _ctx
+
+        active_style = {
+            "padding": "4px 12px", "borderRadius": "6px",
+            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+            "background": "rgba(74,158,255,0.25)", "color": "white",
+            "border": "1px solid rgba(74,158,255,0.5)",
+        }
+        inactive_style = {
+            "padding": "4px 12px", "borderRadius": "6px",
+            "fontSize": "11px", "fontWeight": "700", "cursor": "pointer",
+            "background": "transparent", "color": "rgba(168,212,255,0.6)",
+            "border": "1px solid rgba(74,158,255,0.25)",
+        }
+
+        triggered = _ctx.triggered[0]["prop_id"].split(".")[0] if _ctx.triggered else "da-trend-filter-all"
+        if triggered == "da-trend-filter-5":
+            top_n = 5
+            styles = (inactive_style, active_style, inactive_style)
+        elif triggered == "da-trend-filter-10":
+            top_n = 10
+            styles = (inactive_style, inactive_style, active_style)
+        else:
+            top_n = "all"
+            styles = (active_style, inactive_style, inactive_style)
+
+        if not store_data:
+            return build_shap_trend_chart([], [], top_n=top_n), str(top_n), *styles
+
+        cycles  = store_data.get("cycles", [])
+        history = store_data.get("history", [])
+        return build_shap_trend_chart(cycles, history, top_n=top_n), str(top_n), *styles
+
+    @app.callback(
+        Output("da-shap-waterfall", "figure", allow_duplicate=True),
+        Input("da-cycle-selector", "value"),
+        State("da-shap-history-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_waterfall_on_cycle_select(selected_value, store_data):
+        """Re-render the waterfall chart when the user picks a specific cycle."""
+        if not store_data:
+            return build_shap_waterfall([])
+
+        cycles      = store_data.get("cycles", [])
+        history     = store_data.get("history", [])
+        base_values = store_data.get("base_values", [])
+
+        if selected_value == "latest" or not selected_value:
+            # Show latest valid snapshot
+            latest_shap = []
+            latest_base = 0.0
+            for i, snapshot in enumerate(reversed(history)):
+                if snapshot:
+                    latest_shap = snapshot
+                    idx = len(history) - 1 - i
+                    latest_base = base_values[idx] if idx < len(base_values) else 0.0
+                    break
+            return build_shap_waterfall(latest_shap, cycle_label="Latest", base_value=latest_base)
+
+        # Selected value is the index into cycles/history
+        try:
+            idx = int(selected_value)
+            shap_data   = history[idx] if idx < len(history) else []
+            base_val    = base_values[idx] if idx < len(base_values) else 0.0
+            cycle_label = f"Cycle {cycles[idx]}" if idx < len(cycles) else f"Cycle {idx}"
+            return build_shap_waterfall(shap_data, cycle_label=cycle_label, base_value=base_val)
+        except (ValueError, IndexError):
+            return build_shap_waterfall([])
+
+    # ── Custom hover overlay: floating tooltip + vertical dashed line ──
+    app.clientside_callback(
+        """
+        function(hoverData, figure) {
+            var hidden = {display: 'none'};
+
+            var tooltipEl = document.getElementById('da-trend-tooltip');
+            var vlineEl   = document.getElementById('da-trend-vline');
+
+            if (!hoverData || !hoverData.points || hoverData.points.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+            if (!figure || !figure.data || figure.data.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                if (vlineEl)   vlineEl.style.display   = 'none';
+                return [hidden, hidden];
+            }
+
+            // ── Plot geometry ─────────────────────────────────────────────
+            var layout = figure.layout || {};
+            var margin = layout.margin || {l:50, r:20, t:60, b:40};
+            var plotW = 800, plotH = 380;
+
+            var graphEl = document.getElementById('da-shap-trend');
+            if (graphEl) {
+                var inner = graphEl.querySelector('.main-svg');
+                if (inner) {
+                    var rect = inner.getBoundingClientRect();
+                    plotW = rect.width  || plotW;
+                    plotH = rect.height || plotH;
+                }
+            }
+
+            var l = margin.l || 50;
+            var r = margin.r || 20;
+            var t = margin.t || 60;
+            var b = margin.b || 40;
+            var innerW = plotW - l - r;
+            var innerH = plotH - t - b;
+
+            // ── X pixel position of the hovered cycle ────────────────────
+            var hoveredCycle = hoverData.points[0].x;
+            var xaxis = layout.xaxis || {};
+            var xMin = xaxis.range ? xaxis.range[0] : null;
+            var xMax = xaxis.range ? xaxis.range[1] : null;
+            if (xMin === null || xMax === null) {
+                var allX = [];
+                figure.data.forEach(function(tr) { if (tr.x) allX = allX.concat(tr.x); });
+                if (allX.length) {
+                    xMin = Math.min.apply(null, allX);
+                    xMax = Math.max.apply(null, allX);
+                }
+            }
+            var xFrac = (xMin !== null && xMax !== xMin)
+                ? (hoveredCycle - xMin) / (xMax - xMin) : 0.5;
+            var xPx = l + xFrac * innerW;
+
+            // ── Vertical line ─────────────────────────────────────────────
+            var vlineStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          xPx + 'px',
+                top:           t + 'px',
+                height:        innerH + 'px',
+                width:         '1px',
+                borderLeft:    '1px dashed rgba(168,212,255,0.45)',
+                pointerEvents: 'none',
+                zIndex:        '10',
+            };
+
+            // ── Collect visible trace values at this cycle ────────────────
+            var rows = [];
+            figure.data.forEach(function(trace) {
+                if (!trace.x || !trace.y) return;
+                var xi = -1, bestDist = Infinity;
+                for (var i = 0; i < trace.x.length; i++) {
+                    var d = Math.abs(trace.x[i] - hoveredCycle);
+                    if (d < bestDist) { bestDist = d; xi = i; }
+                }
+                if (xi === -1 || bestDist > 1) return;
+                var val = trace.y[xi];
+                if (val === null || val === undefined) return;
+                var color = (trace.line && trace.line.color) ? trace.line.color : '#4a9eff';
+                rows.push({name: trace.name, color: color, val: val});
+            });
+            rows.sort(function(a, b) { return Math.abs(b.val) - Math.abs(a.val); });
+
+            if (rows.length === 0) {
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                return [vlineStyle, hidden];
+            }
+
+            // ── Choose layout: single column ≤8 rows, two columns otherwise ─
+            var twoCol = rows.length > 8;
+
+            // ── Build a single feature row cell ──────────────────────────
+            function makeCell(row) {
+                var valStr = (row.val >= 0 ? '+' : '') + row.val.toFixed(4);
+                return '<span style="display:inline-flex;align-items:center;gap:5px;'
+                     + 'white-space:nowrap;">'
+                     + '<span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;'
+                     + 'background:' + row.color + ';display:inline-block;"></span>'
+                     + '<span style="color:rgba(168,212,255,0.9);min-width:36px;font-size:11px;">'
+                     + row.name + '</span>'
+                     + '<span style="color:white;font-weight:600;font-size:11px;'
+                     + 'font-variant-numeric:tabular-nums;margin-left:4px;">'
+                     + valStr + '</span>'
+                     + '</span>';
+            }
+
+            // ── Header (full width in both layouts) ───────────────────────
+            var headerHtml = '<div style="font-weight:700;font-size:12px;color:white;'
+                           + 'margin-bottom:6px;padding-bottom:5px;'
+                           + 'border-bottom:1px solid rgba(74,158,255,0.25);">'
+                           + 'Cycle: ' + hoveredCycle + '</div>';
+
+            var bodyHtml = '';
+            if (!twoCol) {
+                // ── Single-column layout ──────────────────────────────────
+                rows.forEach(function(row) {
+                    bodyHtml += '<div style="display:flex;align-items:center;gap:7px;'
+                              + 'margin-bottom:3px;">' + makeCell(row) + '</div>';
+                });
+            } else {
+                // ── Two-column layout ─────────────────────────────────────
+                // Split: left column gets first half, right column gets second half
+                var half = Math.ceil(rows.length / 2);
+                var leftRows  = rows.slice(0, half);
+                var rightRows = rows.slice(half);
+
+                bodyHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;'
+                          + 'column-gap:14px;row-gap:3px;">';
+                var maxLen = Math.max(leftRows.length, rightRows.length);
+                for (var i = 0; i < maxLen; i++) {
+                    bodyHtml += '<div style="display:flex;align-items:center;">'
+                              + (i < leftRows.length  ? makeCell(leftRows[i])  : '') + '</div>';
+                    bodyHtml += '<div style="display:flex;align-items:center;'
+                              + 'padding-left:8px;border-left:1px solid rgba(74,158,255,0.15);">'
+                              + (i < rightRows.length ? makeCell(rightRows[i]) : '') + '</div>';
+                }
+                bodyHtml += '</div>';
+            }
+
+            var footerHtml = '<div style="color:rgba(168,212,255,0.35);font-size:10px;'
+                           + 'margin-top:5px;">Hover to view values</div>';
+
+            if (tooltipEl) {
+                tooltipEl.style.maxHeight = '';
+                tooltipEl.style.overflowY = '';
+                tooltipEl.innerHTML = headerHtml + bodyHtml + footerHtml;
+            }
+
+            // ── Sizing: wider for two-column ──────────────────────────────
+            var tooltipW = twoCol ? 340 : 190;
+            var offsetX  = 12;
+            var padding  = 6;
+
+            // ── Horizontal: default right, flip left if near right edge ───
+            var leftPos = xPx + offsetX;
+            if (leftPos + tooltipW > plotW - r - padding) {
+                leftPos = xPx - tooltipW - offsetX;
+            }
+            // Keep inside left edge
+            if (leftPos < l) leftPos = l;
+
+            // ── Vertical: read actual rendered height, then clamp ─────────
+            var tooltipH = tooltipEl ? tooltipEl.scrollHeight : 200;
+            var availH   = innerH;          // plot area height
+
+            // Start at the top of the plot area
+            var topPos = t + padding;
+            // If it still overflows the bottom, push it up
+            var bottomEdge = topPos + tooltipH;
+            var plotBottom = plotH - b - padding;
+            if (bottomEdge > plotBottom) {
+                topPos = plotBottom - tooltipH;
+            }
+            // Never go above the top margin
+            if (topPos < t + padding) topPos = t + padding;
+
+            var tooltipStyle = {
+                display:       'block',
+                position:      'absolute',
+                left:          leftPos + 'px',
+                top:           topPos + 'px',
+                background:    'rgba(10,20,45,0.95)',
+                border:        '1px solid rgba(74,158,255,0.35)',
+                borderRadius:  '8px',
+                padding:       '10px 14px',
+                pointerEvents: 'none',
+                zIndex:        '20',
+                minWidth:      tooltipW + 'px',
+                boxShadow:     '0 4px 20px rgba(0,0,0,0.5)',
+            };
+
+            return [vlineStyle, tooltipStyle];
+        }
+        """,
+        Output("da-trend-vline",   "style"),
+        Output("da-trend-tooltip", "style"),
+        Input("da-shap-trend", "hoverData"),
+        State("da-shap-trend", "figure"),
+        prevent_initial_call=True,
+    )
+
