@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -406,6 +407,10 @@ def register_user_management_callbacks(app, supabase=None):
         ctx = dash.callback_context
         if not ctx.triggered or not any(n_clicks_list):
             raise dash.exceptions.PreventUpdate
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
 
         import json
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
@@ -414,7 +419,8 @@ def register_user_management_callbacks(app, supabase=None):
         # Soft delete: mark as deleted (is_deleted = false means removed)
         if supabase:
             try:
-                db.update_records(supabase, "users", {"is_deleted": False}, filters=[('eq', "id", user_id)])
+                db.update_records(supabase, "users", {"is_deleted": False},
+                                  filters=[('eq', "id", user_id), ('eq', "organization_id", principal["organization_id"])])
             except Exception as e:
                 print(f"[ERROR] soft-delete user: {e}")
 
@@ -446,6 +452,10 @@ def register_user_management_callbacks(app, supabase=None):
         ctx = dash.callback_context
         if not ctx.triggered or not any(n_clicks_list):
             raise dash.exceptions.PreventUpdate
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
 
         import json
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
@@ -454,7 +464,8 @@ def register_user_management_callbacks(app, supabase=None):
         # Restore: set is_deleted back to true (active)
         if supabase:
             try:
-                db.update_records(supabase, "users", {"is_deleted": True}, filters=[('eq', "id", user_id)])
+                db.update_records(supabase, "users", {"is_deleted": True},
+                                  filters=[('eq', "id", user_id), ('eq', "organization_id", principal["organization_id"])])
             except Exception as e:
                 print(f"[ERROR] restore user: {e}")
 

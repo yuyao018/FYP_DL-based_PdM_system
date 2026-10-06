@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import trusted_profile
 from assets.schedule_modal import build_schedule_modal
 import dash
 from dash import dcc, html, Input, Output, State, ALL, MATCH
@@ -1470,11 +1471,11 @@ def _start_maintenance_report(supabase, schedule_id, user_id=None):
     started_at = report.get("started_at")
     if not started_at:
         schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
-            filters=[('eq', "id", schedule_id)], single=True)
+            filters=[('eq', "id", schedule_id), ('eq', "assign_to", user_id)], single=True)
         started_at = (schedule.data or {}).get("started_at") or datetime.now(timezone.utc).isoformat()
         if report.get("id"):
             db.update_records(supabase, "maintenance_reports", {"started_at": started_at},
-                filters=[('eq', "id", report["id"])])
+                filters=[('eq', "id", report["id"]), ('eq', "user_id", user_id)])
             report["started_at"] = started_at
         else:
             payload = {"maintenance_schedule_id": schedule_id, "started_at": started_at,
@@ -1486,7 +1487,8 @@ def _start_maintenance_report(supabase, schedule_id, user_id=None):
                 raise ValueError("The maintenance report could not be started.")
             report = result.data[0]
     db.update_records(supabase, "maintenance_schedules",
-        {"started_at": started_at, "status": "in_progress"}, filters=[('eq', "id", schedule_id)])
+        {"started_at": started_at, "status": "in_progress"},
+        filters=[('eq', "id", schedule_id), ('eq', "assign_to", user_id)])
     return report
 
 
@@ -2175,6 +2177,9 @@ def register_alert_log_callbacks(app, supabase=None):
     )
     def confirm_schedule(n_clicks, sel_date, start_time, end_time,
                          trigger_type, alerts_data, selected_idx, session, role, existing_schedule_id):
+        session = trusted_profile()
+        if not session:
+            raise dash.exceptions.PreventUpdate
         hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",
                   "width": "100vw", "height": "100vh", "background": "rgba(5,12,28,0.80)",
                   "zIndex": "1200", "alignItems": "center", "justifyContent": "center"}
@@ -2199,9 +2204,18 @@ def register_alert_log_callbacks(app, supabase=None):
                 # Resolve the engine_id for this alert
                 arow = _fetch_alert_row(supabase, alert_id)
                 engine_db_id = arow.get("engine_id")
+                engine_check = db.fetch_records(supabase, "engines", "id,organization_id,responsible_by",
+                    filters=[("eq", "id", engine_db_id), ("eq", "organization_id", session["organization_id"])], limit=1)
+                if not engine_check.data:
+                    raise PermissionError("Engine is outside your organization")
 
                 # ── EDIT EXISTING SCHEDULE ─────────────────────────────
                 if trigger_type == "view" and existing_schedule_id:
+
+                    owned = db.fetch_records(supabase, "maintenance_schedules", "id",
+                        filters=[("eq", "id", existing_schedule_id), ("eq", "assign_to", user_id)], limit=1)
+                    if not owned.data:
+                        raise PermissionError("Schedule is not assigned to this user")
 
                     update_payload = {
                         "scheduled_date": sel_date,
@@ -2214,7 +2228,7 @@ def register_alert_log_callbacks(app, supabase=None):
                             supabase,
                             "maintenance_schedules",
                             update_payload,
-                            filters=[('eq', "id", existing_schedule_id)],
+                            filters=[('eq', "id", existing_schedule_id), ('eq', "assign_to", user_id)],
                         )
                     )
 
@@ -2269,6 +2283,7 @@ def register_alert_log_callbacks(app, supabase=None):
                                     "end_time": end_time or "10:00",
                                     "status": "scheduled",
                                     "created_by": user_id,
+                    "assign_to": user_id,
                                 },
                             )
                         )
@@ -2327,9 +2342,9 @@ def register_alert_log_callbacks(app, supabase=None):
 
                                     if rows_to_insert:
                                         (
-                                            db.insert_records(
-                                                supabase,
-                                                "maintenance_alerts",
+                                    db.insert_records(
+                                        supabase,
+                                        "maintenance_alerts",
                                                 rows_to_insert,
                                             )
                                         )
@@ -2404,6 +2419,9 @@ def register_alert_log_callbacks(app, supabase=None):
     def save_report_progress(n_clicks, actions, comp_insp, comp_rep, findings, notes, fault, ai_use, schedule_id, report_id, session):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
+        session = trusted_profile()
+        if not session:
+            raise dash.exceptions.PreventUpdate
 
         now = datetime.now(timezone.utc).isoformat()
         payload = {
@@ -2417,8 +2435,7 @@ def register_alert_log_callbacks(app, supabase=None):
             "outcome":                   "in_progress",
             "updated_at":                now,
         }
-        if session and session.get("user_id"):
-            payload["user_id"] = session["user_id"]
+        payload["user_id"] = session["user_id"]
 
         if supabase:
             try:
@@ -2427,9 +2444,13 @@ def register_alert_log_callbacks(app, supabase=None):
                         supabase,
                         "maintenance_reports",
                         payload,
-                        filters=[('eq', "id", report_id)],
+                        filters=[('eq', "id", report_id), ('eq', "user_id", session["user_id"])],
                     )
                 elif schedule_id:
+                    owned_schedule = db.fetch_records(supabase, "maintenance_schedules", "id",
+                        filters=[("eq", "id", schedule_id), ("eq", "assign_to", session["user_id"])], limit=1)
+                    if not owned_schedule.data:
+                        raise PermissionError("Schedule is not assigned to this user")
                     payload["maintenance_schedule_id"] = schedule_id
                     payload["started_at"] = now
                     db.insert_records(supabase, "maintenance_reports", payload)
@@ -2517,6 +2538,9 @@ def register_alert_log_callbacks(app, supabase=None):
                         maintenance_schedule_id, report_id, alerts_data, selected_idx, session):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
+        session = trusted_profile()
+        if not session:
+            raise dash.exceptions.PreventUpdate
 
         confirm_hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",
                           "width": "100vw", "height": "100vh", "background": "rgba(5,12,28,0.85)",
@@ -2543,12 +2567,15 @@ def register_alert_log_callbacks(app, supabase=None):
             "completed_at":              now,
             "updated_at":                now,
         }
-        if session and session.get("user_id"):
-            payload["user_id"] = session["user_id"]
+        payload["user_id"] = session["user_id"]
 
         if supabase:
             try:
                 if not report_id and maintenance_schedule_id:
+                    assigned_schedule = db.fetch_records(supabase, "maintenance_schedules", "id",
+                        filters=[("eq", "id", maintenance_schedule_id), ("eq", "assign_to", session["user_id"])], limit=1)
+                    if not assigned_schedule.data:
+                        raise PermissionError("Schedule is not assigned to this user")
                     existing_report = _fetch_report(supabase, maintenance_schedule_id)
                     report_id = (existing_report or {}).get("id")
                 if report_id:
@@ -2556,13 +2583,13 @@ def register_alert_log_callbacks(app, supabase=None):
                         supabase,
                         "maintenance_reports",
                         payload,
-                        filters=[('eq', "id", report_id)],
+                        filters=[('eq', "id", report_id), ('eq', "user_id", session["user_id"])],
                     )
 
                 elif maintenance_schedule_id:
                     payload["maintenance_schedule_id"] = maintenance_schedule_id
                     schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
-                        filters=[("eq", "id", maintenance_schedule_id)], single=True)
+                        filters=[("eq", "id", maintenance_schedule_id), ("eq", "assign_to", session["user_id"])], single=True)
                     if (schedule.data or {}).get("started_at"):
                         payload["started_at"] = schedule.data["started_at"]
                     db.insert_records(supabase, "maintenance_reports", payload)
@@ -2575,7 +2602,7 @@ def register_alert_log_callbacks(app, supabase=None):
                     supabase,
                     "maintenance_schedules",
                     schedule_upd,
-                    filters=[('eq', "id", maintenance_schedule_id)],
+                    filters=[('eq', "id", maintenance_schedule_id), ('eq', "assign_to", session["user_id"])],
                 )
             except Exception as _e:
                 print(f"[ALERT] confirm outcome: {_e}")

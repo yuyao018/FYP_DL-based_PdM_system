@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role, trusted_profile
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -343,6 +344,11 @@ def register_alert_thresholds_callbacks(app, supabase=None):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
 
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
+
         if crit >= warn:
             return html.Span("Critical threshold must be lower than warning threshold.",
                             style={"color": "#ff6b6b", "fontSize": "13px"})
@@ -351,9 +357,7 @@ def register_alert_thresholds_callbacks(app, supabase=None):
             return html.Span("Supabase not connected.", style={"color": "#ff6b6b", "fontSize": "13px"})
 
         # Get user_id from session
-        user_id = None
-        if session_data:
-            user_id = session_data.get("user_id")
+        user_id = principal["user_id"]
 
         try:
             # Fetch the most recent threshold settings

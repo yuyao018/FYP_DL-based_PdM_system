@@ -2,6 +2,7 @@
 from assets import database_integration as db
 from dash import html, dcc, Input, Output, State, ctx
 from simulation_clock import SPEEDS, DEFAULT_SPEED
+from auth_security import trusted_profile
 
 
 ENGINE_PAGES = {"overview", "sensor-trends", "degradation-analysis", "alert-log"}
@@ -56,6 +57,7 @@ def register_simulation_callbacks(app, supabase):
         Input("url", "pathname"), Input("session-store", "data"),
     )
     def show_simulation(pathname, session):
+        session = trusted_profile()
         visible = selected_simulation_engine(pathname, session) is not None
         return not visible, not visible
 
@@ -76,6 +78,7 @@ def register_simulation_callbacks(app, supabase):
         State("simulation-speed", "value"),
     )
     def control_simulation(_poll, _apply, _pause, _resume, _auto, pathname, session, speed):
+        session = trusted_profile()
         engine_id = selected_simulation_engine(pathname, session)
         from dash import no_update
         from engine_simulation_manager import get_simulation_state, configure_simulation

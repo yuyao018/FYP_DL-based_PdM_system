@@ -1,9 +1,9 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
-import bcrypt
 from account_credentials import create_user_with_credentials, username_prefix
 
 def _svg_img(svg_str, size="22px"):
@@ -527,6 +527,11 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
         if not n_clicks or n_clicks == 0:
             raise dash.exceptions.PreventUpdate
 
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
+
         is_edit = edit_user_id is not None
 
         first_name = (first_name or "").strip()
@@ -549,11 +554,17 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
 
         # Get admin's organization_id from session
-        admin_org_id = (session or {}).get("organization_id") or None
+        admin_org_id = principal.get("organization_id") or None
 
-        if not is_edit and ((session or {}).get("role") != "admin" or not admin_org_id):
+        if not admin_org_id:
             return html.Span("An organization administrator must create this account.",
                              style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
+
+        if is_edit:
+            existing = db.fetch_records(supabase_admin or supabase, "users", "id,organization_id",
+                                        filters=[("eq", "id", edit_user_id)], limit=1).data or []
+            if not existing or str(existing[0].get("organization_id")) != str(admin_org_id):
+                raise dash.exceptions.PreventUpdate
 
         try:
             if is_edit:
@@ -564,21 +575,32 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
                     "email_address": email,
                     "department": department,
                     "username": username,
-                    "role": "admin" if role == "admin" else "user",
                 }
 
                 # Update password if provided
                 if password:
-                    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                    update_data["password_hash"] = hashed_pw
                     # Also update in Supabase Auth
-                    try:
-                        sb_admin = supabase_admin or supabase
-                        sb_admin.auth.admin.update_user_by_id(edit_user_id, {"password": password})
-                    except Exception:
-                        pass
+                    sb_admin = supabase_admin or supabase
+                    sb_admin.auth.admin.update_user_by_id(edit_user_id, {"password": password})
 
-                db.update_records(supabase, "users", update_data, filters=[('eq', "id", edit_user_id)])
+                db.update_records(supabase_admin or supabase, "users", update_data,
+                                  filters=[('eq', "id", edit_user_id),
+                                           ('eq', "organization_id", admin_org_id)])
+                # Role is a privileged column: update only from this server-side
+                # admin callback after verifying the target belongs to this org.
+                role_result = db.update_records(supabase_admin or supabase, "users",
+                                                {"role": "admin" if role == "admin" else "user"},
+                                                filters=[('eq', "id", edit_user_id),
+                                                         ('eq', "organization_id", admin_org_id)])
+                if getattr(role_result, "error", None):
+                    raise RuntimeError("Could not update user role")
+                if password:
+                    # This account's next login must be forced through the
+                    # password-change screen after an administrator reset.
+                    db.update_records(supabase_admin or supabase, "users",
+                                      {"last_login_at": None},
+                                      filters=[('eq', "id", edit_user_id),
+                                               ('eq', "organization_id", admin_org_id)])
 
                 return (
                     "",
@@ -589,7 +611,7 @@ def register_add_user_callbacks(app, supabase=None, supabase_admin=None):
             else:
                 # Generate credentials on the server; never trust preview values.
                 generated_username, delivered = create_user_with_credentials(
-                    supabase, supabase_admin or supabase,
+                    supabase_admin or supabase, supabase_admin or supabase,
                     first_name=first_name, last_name=last_name, email=email,
                     department=department, role="admin" if role == "admin" else "user",
                     organization_id=admin_org_id,

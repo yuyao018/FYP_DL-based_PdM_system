@@ -24,6 +24,10 @@ from change_password import create_change_password_layout, register_change_passw
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from flask import session as flask_session
+from auth_security import (RequestSupabaseProxy, authenticate_username,
+                           configure_flask_session, refresh_auth_session_if_needed,
+                           revoke_auth_session, trusted_profile)
 
 # Load environment variables
 load_dotenv()
@@ -34,8 +38,8 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 SUPABASE_ADMIN_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 supabase: Client | None = None
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY) if SUPABASE_URL and SUPABASE_ADMIN_KEY else None
 # if SUPABASE_URL and SUPABASE_KEY:
 #     try:
 #         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -50,30 +54,33 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY)
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
+configure_flask_session(server)
+server.before_request(refresh_auth_session_if_needed)
+request_supabase = RequestSupabaseProxy()
 from maintenance_recommendations import register_response_routes
 register_response_routes(server, supabase_admin)
-register_sensor_callbacks(app, supabase=supabase_admin)
-register_alert_log_callbacks(app, supabase=supabase_admin)
-register_user_management_callbacks(app, supabase=supabase_admin)
-register_add_user_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
-register_model_upload_callbacks(app, supabase=supabase_admin)
-register_alert_thresholds_callbacks(app, supabase=supabase_admin)
-register_engine_management_callbacks(app, supabase=supabase_admin)
-register_add_engine_callbacks(app, supabase=supabase_admin)
-register_overview_callbacks(app, supabase=supabase_admin)
-register_simulation_callbacks(app, supabase=supabase_admin)
-register_degradation_analysis_callbacks(app, supabase=supabase_admin)
-register_new_organization_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
-register_change_password_callbacks(app, supabase=supabase_admin, supabase_admin=supabase_admin)
-register_schedule_maintenance_callbacks(app, supabase=supabase_admin)
+register_sensor_callbacks(app, supabase=request_supabase)
+register_alert_log_callbacks(app, supabase=request_supabase)
+register_user_management_callbacks(app, supabase=request_supabase)
+register_add_user_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
+register_model_upload_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
+register_alert_thresholds_callbacks(app, supabase=request_supabase)
+register_engine_management_callbacks(app, supabase=request_supabase)
+register_add_engine_callbacks(app, supabase=request_supabase)
+register_overview_callbacks(app, supabase=request_supabase)
+register_simulation_callbacks(app, supabase=request_supabase)
+register_degradation_analysis_callbacks(app, supabase=request_supabase)
+register_new_organization_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
+register_change_password_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
+register_schedule_maintenance_callbacks(app, supabase=request_supabase)
 
 # Resume simulations for any engines that already have data on disk
 from engine_simulation_manager import resume_all_simulations
-resume_all_simulations(supabase)
+resume_all_simulations(supabase_admin)
 
 # Start email notification manager (daily report + threshold alerts)
 from email_notifications import start_notification_manager
-start_notification_manager(supabase)
+start_notification_manager(supabase_admin)
 
 # Main app layout with routing
 app.layout = html.Div([
@@ -107,6 +114,8 @@ app.layout = html.Div([
     State("session-store", "data"),
 )
 def display_page(pathname, search, session):
+    # dcc.Store is client-editable. Route access uses the signed Flask session.
+    session = trusted_profile()
     if not pathname or pathname == "/":
         # Parse ?next= query param for deep-link after login
         next_url = ""
@@ -118,6 +127,20 @@ def display_page(pathname, search, session):
 
     if pathname == "/dev-login":
         return create_dev_login_layout()
+
+    # Check the browser session before constructing any protected page.
+    if not session:
+        return create_login_layout(next_url=pathname)
+
+    user_role = (session or {}).get("role", "") or ""
+    admin_routes = ("/user-management", "/add-user", "/engine-management",
+                    "/add-engine", "/alert-thresholds")
+    admin_page = pathname in admin_routes or pathname.startswith(("/edit-user/", "/edit-engine/"))
+    developer_page = pathname in ("/dev-dashboard", "/dev-new-organization", "/model-upload")
+    if ((admin_page and user_role != "admin")
+            or (developer_page and user_role != "developer")):
+        return html.Div([html.H1("403"), html.P("Access Denied"),
+                         dcc.Link("Back to Dashboard", href="/dashboard")])
 
     if pathname == "/change-password":
         return create_change_password_layout()
@@ -136,8 +159,9 @@ def display_page(pathname, search, session):
     user_role = (session or {}).get("role", "") or ""
     org_id = (session or {}).get("organization_id", "") or None
 
-    # Use service role key for admin/developer, anon key for regular users
-    sb = supabase_admin if user_role in ("admin", "developer") else supabase
+    # Browser callbacks operate with the authenticated user's JWT; server-only
+    # service-role access is kept in narrow privileged operations.
+    sb = request_supabase
 
     # ── Developer role guard: redirect /dashboard → /dev-dashboard ──
     if pathname == "/dashboard" and user_role == "developer":
@@ -226,7 +250,7 @@ def display_page(pathname, search, session):
                              style={"color": "#4a9eff", "textDecoration": "none", "marginTop": "12px"}),
                 ]
             )
-        return create_model_upload_layout(supabase_admin, role=user_role)
+        return create_model_upload_layout(request_supabase, role=user_role)
 
     if pathname in routes:
         return routes[pathname]()
@@ -345,156 +369,29 @@ def handle_login(n_clicks, username, password, selected_role, next_url):
 
 
 def authenticate_login(username, password, selected_role, next_url=None):
-    """Shared credential verification, role validation, and session creation."""
-    print(f"[DEBUG] Login attempt: username={username}, selected_role={selected_role}")
-
+    """Authenticate against Supabase Auth; the browser store is display-only."""
     validation_error = validate_login_inputs(username, password)
     if validation_error:
-        return dash.no_update, html.Span(validation_error,
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-    if not supabase:
-        return dash.no_update, html.Span("Supabase not connected. Check your .env file.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
+        return dash.no_update, html.Span(validation_error, style={"color": "#ff6b6b"}), dash.no_update
     try:
-        # Step 1: Check if user exists and has password_hash set
-        print(f"[DEBUG-V2] Checking users table for {username}...")
-        user_check = db.fetch_records(
-            supabase,
-            "users",
-            "id, username, role, password_hash, email_address, organization_id, first_name, last_name, last_login_at",
-            filters=[('eq', "username", username)],
-        )
-
-        if not user_check.data:
-            print(f"[DEBUG-V2] User '{username}' not found in users table")
-            return dash.no_update, html.Span("Invalid username or password.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        user_row = user_check.data[0]
-        print(f"[DEBUG-V2] Found user. password_hash is {'SET' if user_row.get('password_hash') else 'NULL'}")
-
-        if user_row.get("password_hash") is None:
-            # password_hash is NULL — verify via Supabase Auth and backfill
-            print(f"[DEBUG] password_hash is NULL for {username}, trying Supabase Auth...")
-            email = user_row.get("email_address")
-            if not email:
-                return dash.no_update, html.Span("Invalid username or password.",
-                                      style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-            try:
-                auth_resp = supabase.auth.sign_in_with_password({
-                    "email": email,
-                    "password": password,
-                })
-                if not auth_resp or not auth_resp.user:
-                    return dash.no_update, html.Span("Invalid username or password.",
-                                          style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-                # Auth succeeded — backfill password_hash
-                import bcrypt as _bcrypt
-                hashed = _bcrypt.hashpw(password.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
-                db.update_records(
-                    supabase,
-                    "users",
-                    {"password_hash": hashed},
-                    filters=[('eq', "username", username)],
-                )
-                print(f"[OK] Backfilled password_hash for {username}")
-
-            except Exception as auth_e:
-                print(f"[DEBUG] Supabase Auth sign-in failed: {auth_e}")
-                return dash.no_update, html.Span("Invalid username or password.",
-                                      style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-        else:
-            # password_hash exists — verify with bcrypt in Python
-            import bcrypt as _bcrypt
-            stored_hash = user_row.get("password_hash")
-            try:
-                password_valid = _bcrypt.checkpw(
-                    password.encode("utf-8"),
-                    stored_hash.encode("utf-8")
-                )
-            except Exception as hash_err:
-                print(f"[DEBUG-V2] bcrypt.checkpw failed: {hash_err}")
-                # Fallback to RPC for non-bcrypt hashes (e.g., pgcrypto $2a$06$)
-                resp = db.call_database_function(supabase, "verify_login", {
-                    "p_username": username,
-                    "p_password": password,
-                })
-                password_valid = bool(resp.data)
-
-            print(f"[DEBUG-V2] Password valid: {password_valid}")
-
-            if not password_valid:
-                return dash.no_update, html.Span("Invalid username or password.",
-                                      style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        # Step 2: User is verified — proceed with login
-        user_profile = user_row
-        user_id = str(user_profile.get("id", ""))
-        organization_id = str(user_profile.get("organization_id", "") or "")
-        actual_role = user_profile.get("role", "user")
-        is_first_login = user_profile.get("last_login_at") is None
-
-        print(f"[DEBUG] User profile: role={actual_role}, selected={selected_role}, is_first_login={is_first_login}")
-
-        # Step 3: Validate selected role matches the user's actual role
-        selected = (selected_role or "user").lower()
-        if actual_role != selected:
-            print(f"[DEBUG] Role mismatch: actual={actual_role}, selected={selected}")
-            message = (
-                "Access denied. Developer account required."
-                if selected == "developer"
-                else f"Access denied. Your account is not registered as {'an admin' if selected == 'admin' else 'a user'}."
-            )
-            return dash.no_update, html.Span(
-                message,
-                style={"color": "#ff6b6b", "fontSize": "13px"}
-            ), dash.no_update
-
-        # Keep first-login status until the password change actually succeeds.
-        db.update_records(
-            supabase,
-            "users",
-            {"status": "active"} if is_first_login else {"last_login_at": "now()", "status": "active"},
-            filters=[('eq', "username", username)],
-        )
-
-        # Step 5: Build session data
-        session_data = {
-            "user_id":         user_id,
-            "username":        user_profile.get("username", username),
-            "first_name":      user_profile.get("first_name", ""),
-            "last_name":       user_profile.get("last_name", ""),
-            "role":            actual_role,
-            "organization_id": organization_id,
-        }
-
-        # Step 6: Redirect to password change if first login
-        if is_first_login:
-            session_data["must_change_password"] = True
-            print(f"[OK] First login: {username} — redirecting to change password")
-            return "/change-password", html.Span("Please update your password.",
-                                                 style={"color": "#4a9eff", "fontSize": "13px"}), session_data
-
-        print(f"[OK] Login: {username} | role: {actual_role} | user_id: {user_id} | org_id: {organization_id}")
-        if actual_role == "developer":
-            redirect_to = "/dev-dashboard"
-        else:
-            redirect_to = next_url if next_url else "/dashboard"
-        return redirect_to, html.Span("Login successful!",
-                                       style={"color": "#4aff9e", "fontSize": "13px"}), session_data
-
-    except Exception as e:
-        print(f"[ERROR] Login: {e}")
-        return dash.no_update, html.Span("Login failed. Please try again.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
+        if not all((supabase_admin, SUPABASE_URL, SUPABASE_KEY)):
+            raise RuntimeError("Supabase Auth is not configured")
+        profile = authenticate_username(username.strip(), password, selected_role,
+                                        supabase_admin, SUPABASE_URL, SUPABASE_KEY)
+        route = "/change-password" if profile["must_change_password"] else (
+            "/dev-dashboard" if profile["role"] == "developer" else (next_url or "/dashboard"))
+        message = "Please update your password." if profile["must_change_password"] else "Login successful!"
+        return route, html.Span(message), {k: v for k, v in profile.items() if k != "must_change_password"}
+    except Exception as exc:
+        # Keep the response generic: do not reveal whether a username exists.
+        print(f"[AUTH] Login rejected or unavailable ({type(exc).__name__})")
+        return dash.no_update, html.Span("Invalid username or password.", style={"color": "#ff6b6b"}), dash.no_update
 
 def mark_logged_out(session):
-    """Update this user's presence without signing out the shared auth client."""
-    user_id = (session or {}).get("user_id")
-    if not user_id:
+    """Mark the authenticated profile inactive, then clear its Auth session."""
+    profile = trusted_profile()
+    user_id = profile.get("user_id") if profile else None
+    if not user_id or not supabase_admin:
         return
     try:
         db.update_records(supabase_admin, "users", {"status": "inactive"}, filters=[('eq', "id", user_id)])
@@ -515,10 +412,9 @@ def handle_logout(n_clicks, session):
     if not n_clicks or n_clicks == 0:
         raise dash.exceptions.PreventUpdate
     mark_logged_out(session)
+    revoke_auth_session()
     print("[OK] User logged out (session cleared)")
     # Clear session and redirect to login
-    # NOTE: Do NOT call supabase.auth.sign_out() here — it would invalidate
-    # the shared server-side client's auth state, breaking login for everyone.
     return "/", None
 
 # Role toggle callback
@@ -565,66 +461,15 @@ def handle_dev_login(n_clicks, username, password):
         return dash.no_update, html.Span("Please enter your credentials.",
                               style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
-    if not supabase:
-        return dash.no_update, html.Span("Supabase not connected. Check your .env file.",
-                              style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
     try:
-        # Verify credentials via RPC
-        resp = supabase.rpc("verify_login", {
-            "p_username": username,
-            "p_password": password,
-        }).execute()
-
-        if not resp.data:
-            return dash.no_update, html.Span("Invalid username or password.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        # Fetch user profile
-        user_resp = supabase.table("users") \
-            .select("id, username, first_name, last_name, role, organization_id, last_login_at") \
-            .eq("username", username) \
-            .single() \
-            .execute()
-
-        user_profile = user_resp.data or {}
-        role = user_profile.get("role", "")
-
-        # Verify this is a developer account
-        if role != "developer":
-            return dash.no_update, html.Span("Access denied. Developer account required.",
-                                  style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
-
-        is_first_login = user_profile.get("last_login_at") is None
-
-        # Only the password-change handler completes a first login.
-        if not is_first_login:
-            db.update_records(supabase, "users", {"last_login_at": "now()"},
-                              filters=[("eq", "username", username)])
-
-        # Build session data
-        session_data = {
-            "user_id": str(user_profile.get("id", "")),
-            "username": user_profile.get("username", username),
-            "first_name": user_profile.get("first_name", ""),
-            "last_name": user_profile.get("last_name", ""),
-            "role": "developer",
-            "organization_id": str(user_profile.get("organization_id", "") or ""),
-        }
-
-        # Redirect to password change if first login
-        if is_first_login:
-            session_data["must_change_password"] = True
-            print(f"[OK] First dev login: {username} — redirecting to change password")
-            return "/change-password", html.Span("Please update your password.",
-                                                 style={"color": "#4a9eff", "fontSize": "13px"}), session_data
-
-        print(f"[OK] Dev Login: {username}")
-        return "/dev-dashboard", html.Span("Login successful!",
-                                       style={"color": "#4aff9e", "fontSize": "13px"}), session_data
+        profile = authenticate_username(username.strip(), password, "developer",
+                                        supabase_admin, SUPABASE_URL, SUPABASE_KEY)
+        path = "/change-password" if profile["must_change_password"] else "/dev-dashboard"
+        msg = "Please update your password." if profile["must_change_password"] else "Login successful!"
+        return path, html.Span(msg), {k: v for k, v in profile.items() if k != "must_change_password"}
 
     except Exception as e:
-        print(f"[ERROR] Dev Login: {e}")
+        print(f"[ERROR] Dev Login: {type(e).__name__}")
         return dash.no_update, html.Span("Login failed. Please try again.",
                               style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update
 
@@ -641,6 +486,7 @@ def handle_dev_logout(n_clicks, session):
     if not n_clicks or n_clicks == 0:
         raise dash.exceptions.PreventUpdate
     mark_logged_out(session)
+    revoke_auth_session()
     return "/dev-login", None
 
 
@@ -657,10 +503,13 @@ def handle_dev_logout(n_clicks, session):
     prevent_initial_call=True,
 )
 def filter_engines(status_filter, scope, engine_data, session):
+    session = trusted_profile()
+    if not session:
+        raise dash.exceptions.PreventUpdate
     selected = status_filter if status_filter in ("healthy", "warning", "critical") else None
     engine_data = engine_data or []
     if scope != "all":
-        user_id = (session or {}).get("user_id")
+        user_id = session["user_id"]
         engine_data = [e for e in engine_data if user_id and str(e.get("responsible_by")) == str(user_id)]
 
     # Filter engine data

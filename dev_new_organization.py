@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role
 import dash
 from dash import dcc, html, Input, Output, State
 import base64
@@ -74,43 +75,31 @@ def create_new_organization_layout():
                                     "borderRadius": "16px", "padding": "36px 40px",
                                 },
                                 children=[
-                                    html.H2("Create New Organization", style={
-                                        "color": "white", "fontWeight": "700", "fontSize": "22px",
-                                        "marginBottom": "6px", "marginTop": "0",
-                                    }),
-                                    html.P("A default admin account will be created for this organization.", style={
-                                        "color": "rgba(168,212,255,0.6)", "fontSize": "13px", "marginBottom": "30px",
-                                    }),
+                                    html.H2("Create New Organization", style={"color": "white", "fontWeight": "700", "fontSize": "22px", "marginBottom": "6px", "marginTop": "0"}),
+                                    html.P("A default admin account will be created for this organization.", style={"color": "rgba(168,212,255,0.6)", "fontSize": "13px", "marginBottom": "30px"}),
 
-                                    # ── Organization Name ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("ORGANIZATION NAME", style=field_label_style),
                                         dcc.Input(id="new-org-name", type="text", style=field_input_style),
                                     ]),
 
-                                    # ── Section header: Default Admin Account ──
                                     html.Div(style={
                                         "borderTop": "1px solid rgba(74,158,255,0.15)",
                                         "paddingTop": "20px", "marginTop": "10px", "marginBottom": "20px",
                                     }, children=[
-                                        html.H3("Default Admin Account", style={
-                                            "color": "#4a9eff", "fontWeight": "700", "fontSize": "16px", "margin": "0 0 4px 0",
-                                        }),
+                                        html.H3("Default Admin Account", style={"color": "#4a9eff", "fontWeight": "700", "fontSize": "16px", "margin": "0 0 4px 0"}),
                                     ]),
 
-                                    # ── Admin First Name ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("FIRST NAME", style=field_label_style),
                                         dcc.Input(id="new-org-admin-firstname", type="text", style=field_input_style),
                                     ]),
 
-                                    # ── Admin Last Name ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("LAST NAME", style=field_label_style),
                                         dcc.Input(id="new-org-admin-lastname", type="text", style=field_input_style),
                                     ]),
 
-                                    # ── Admin Email ──
                                     html.Div(style={"marginBottom": "20px"}, children=[
                                         html.Label("ADMIN EMAIL", style=field_label_style),
                                         dcc.Input(id="new-org-admin-email", type="email", style=field_input_style),
@@ -127,7 +116,6 @@ def create_new_organization_layout():
                                         },
                                     ),
 
-                                    # ── Submit button ──
                                     html.Button(
                                         "Create Organization",
                                         id="new-org-submit-btn",
@@ -172,6 +160,10 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
     def create_organization(n_clicks, org_name, first_name, last_name, email):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
+        try:
+            require_trusted_role("developer")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
 
         # ── Validation ──
         if not org_name or not org_name.strip():
@@ -187,7 +179,8 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
             return html.Span("Last name is required.",
                              style={"color": "#ff6b6b", "fontSize": "13px"})
 
-        if not supabase:
+        client = supabase_admin or supabase
+        if not client:
             return html.Span("Database not connected.",
                              style={"color": "#ff6b6b", "fontSize": "13px"})
 
@@ -196,14 +189,14 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
             username_prefix(first_name.strip(), last_name.strip())
             if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()):
                 raise ValueError("Please enter a valid administrator email address.")
-            if not _cfg("EMAIL_SENDER") or not _cfg("EMAIL_PASSWORD"):
+            if not _cfg("EMAIL_SENDER") or not (_cfg("RESEND_API_KEY") or _cfg("EMAIL_PASSWORD")):
                 raise ValueError("Configure outgoing email before creating accounts.")
         except ValueError as exc:
             return html.Span(str(exc), style={"color": "#ff6b6b", "fontSize": "13px"})
 
         try:
             # ── Step 1: Create the organization ──
-            org_resp = db.insert_records(supabase, "organizations", {
+            org_resp = db.insert_records(client, "organizations", {
                 "name": org_name.strip(),
             })
 
@@ -216,7 +209,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
             # ── Step 2: Create admin user via Supabase Auth + profile insert ──
             try:
                 username, delivered = create_user_with_credentials(
-                    supabase, supabase_admin if supabase_admin else supabase,
+                    client, client,
                     first_name=first_name.strip(), last_name=last_name.strip(),
                     email=email.strip(), department=None,
                     role="admin", organization_id=new_org_id,
@@ -227,7 +220,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
                 # Roll back only the organization created by this submission.
                 try:
                     db.delete_records(
-                        supabase_admin if supabase_admin else supabase,
+                        client,
                         "organizations", filters=[("eq", "id", new_org_id)],
                     )
                 except Exception as cleanup_err:

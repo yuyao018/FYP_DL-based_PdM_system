@@ -2,12 +2,15 @@
 Change Password Page — Forced password update on first login.
 """
 from assets import database_integration as db
+from flask import session as flask_session
+from auth_security import trusted_profile
 
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
-import bcrypt
 import string
+from datetime import datetime, timezone
+from datetime import datetime, timezone
 
 
 def validate_password_strength(password):
@@ -260,43 +263,38 @@ def register_change_password_callbacks(app, supabase=None, supabase_admin=None):
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), dash.no_update
 
-        if not session or not session.get("user_id"):
+        profile = trusted_profile()
+        if not profile or not profile.get("must_change_password"):
             return "/", html.Span(
                 "Session expired. Please log in again.",
                 style={"color": "#ff6b6b", "fontSize": "13px"}
             ), None
 
-        user_id = session["user_id"]
-        admin_client = supabase_admin or supabase
+        user_id = profile["user_id"]
 
         try:
-            if not supabase or not admin_client:
+            if not supabase:
                 raise RuntimeError("Database unavailable")
-            # Hash the new password with bcrypt
-            hashed_pw = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            # Change the password using this user's Auth JWT, never an admin API.
+            response = supabase.auth.update_user({"password": new_password})
+            if not getattr(response, "user", None) or str(response.user.id) != user_id:
+                raise RuntimeError("Supabase Auth did not confirm the password update")
+            metadata = dict(profile.get("user_metadata") or {})
+            metadata["must_change_password"] = False
+            supabase.auth.update_user({"data": metadata})
 
-            # Change Auth first; do not complete first login if this fails.
-            admin_client.auth.admin.update_user_by_id(user_id, {"password": new_password})
-
-            # Update password_hash in the users table
-            if supabase:
-                db.update_records(
-                    supabase,
-                    "users",
-                    {"password_hash": hashed_pw, "last_login_at": "now()"},
-                    filters=[('eq', "id", user_id)],
-                )
+            # This is a self-profile field allowed by the RLS grant and
+            # records that the first-login reset is complete.
+            db.update_records(supabase, "users", {"last_login_at": datetime.now(timezone.utc).isoformat()},
+                              filters=[("eq", "id", user_id)])
 
             # Update session — remove the must_change_password flag
-            updated_session = {**session}
-            updated_session.pop("must_change_password", None)
-
-            # Redirect to dashboard
-            role = session.get("role", "user")
+            flask_session["auth_must_change_password"] = False
+            role = profile.get("role", "user")
             redirect_path = "/dev-dashboard" if role == "developer" else "/dashboard"
 
             print(f"[OK] Password changed for user {user_id}")
-            return redirect_path, "", updated_session
+            return redirect_path, "", {k: v for k, v in (session or {}).items() if k != "must_change_password"}
 
         except Exception as e:
             print(f"[ERROR] Password change failed: {e}")

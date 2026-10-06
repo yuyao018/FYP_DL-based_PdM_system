@@ -4,7 +4,6 @@ import threading
 import unicodedata
 from html import escape
 
-import bcrypt
 from assets import database_integration as db
 from email_notifications import _cfg, _send_email
 
@@ -61,7 +60,7 @@ def send_welcome_email(email, first_name, username, password):
 def create_user_with_credentials(client, admin_client, *, first_name, last_name,
                                  email, department, role, organization_id):
     """Return (username, delivered); no temporary password is returned to the UI."""
-    if not _cfg("EMAIL_SENDER") or not _cfg("EMAIL_PASSWORD"):
+    if not _cfg("EMAIL_SENDER") or not (_cfg("RESEND_API_KEY") or _cfg("EMAIL_PASSWORD")):
         raise ValueError("Configure outgoing email before creating accounts.")
     # Serializes allocation in this process; the database username unique constraint
     # remains the authority for concurrent app instances.
@@ -70,6 +69,7 @@ def create_user_with_credentials(client, admin_client, *, first_name, last_name,
         password = generate_password()
         response = admin_client.auth.admin.create_user({
             "email": email, "password": password, "email_confirm": True,
+            "user_metadata": {"must_change_password": True},
         })
         user_id = response.user.id
         try:
@@ -79,7 +79,6 @@ def create_user_with_credentials(client, admin_client, *, first_name, last_name,
                 "email_address": email, "department": department,
                 "role": role, "organization_id": organization_id,
                 "status": "active", "last_login_at": None,
-                "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
                 "created_at": "now()",
             })
         except Exception:

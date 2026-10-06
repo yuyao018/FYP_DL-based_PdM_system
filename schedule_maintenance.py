@@ -1,4 +1,6 @@
 from assets.schedule_modal import build_schedule_modal
+from auth_security import trusted_profile
+from scheduling_agent_service import authorized_engine
 from scheduling_agent import build_scheduling_agent, register_scheduling_agent
 from assets import database_integration as db
 import dash
@@ -402,7 +404,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
     if supabase:
         try:
             q = supabase.table("maintenance_schedules") \
-                .select("id, engine_id, scheduled_date, start_time, end_time, status, created_by") \
+                .select("id, engine_id, scheduled_date, start_time, end_time, status, created_by, assign_to") \
                 .order("scheduled_date", desc=False)
 
             print(f"[SM] Loading schedules: role={role}, org_id={org_id}, user_id={user_id}")
@@ -434,9 +436,9 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
             else:
                 # Regular users only see their own schedules
                 if user_id:
-                    q = q.eq("created_by", user_id)
+                    q = q.eq("assign_to", user_id)
                 else:
-                    q = q.eq("created_by", "00000000-0000-0000-0000-000000000000")
+                    q = q.eq("assign_to", "00000000-0000-0000-0000-000000000000")
 
             sched_resp = q.execute()
 
@@ -731,6 +733,15 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                         start_time, end_time,
                         existing_events, session, role):
 
+        session = trusted_profile()
+        if not session:
+            raise dash.exceptions.PreventUpdate
+        try:
+            authorized_engine(supabase, engine_id, session)
+        except ValueError as exc:
+            return (dash.no_update, dash.no_update, dash.no_update,
+                    html.Span(str(exc), style={"color": "#ff6b6b", "fontSize": "12px"}))
+
         hidden_style = {
             "display": "none",
             "position": "fixed", "top": "0", "left": "0",
@@ -819,7 +830,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # ── Persist to Supabase if available ─────────────────────────────
         if supabase:
             try:
-                session_user_id = (session or {}).get("user_id") or None
+                session_user_id = session["user_id"]
                 result = db.insert_records(supabase, "maintenance_schedules", {
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
@@ -956,6 +967,10 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                              engine_id, sel_date, start_time, end_time,
                              selected_ev, existing_events, session):
 
+        session = trusted_profile()
+        if not session:
+            raise dash.exceptions.PreventUpdate
+
         hidden_style = {
             "display": "none",
             "position": "fixed", "top": "0", "left": "0",
@@ -973,16 +988,28 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
 
         # ── DELETE ────────────────────────────────────────────────────────
         if triggered == "sm-edit-delete-btn":
+            try:
+                authorized_engine(supabase, (selected_ev or {}).get("engine_id"), session)
+            except ValueError:
+                raise dash.exceptions.PreventUpdate
+            if not db_id:
+                raise dash.exceptions.PreventUpdate
             updated = [e for e in events if e.get("_idx") != ev_idx]
             if supabase and db_id:
                 try:
-                    supabase.table("maintenance_schedules") \
-                        .delete().eq("id", db_id).execute()
+                    supabase.table("maintenance_schedules").delete() \
+                        .eq("id", db_id).eq("created_by", session["user_id"]).execute()
                 except Exception as e:
                     print(f"[SM][WARN] Delete failed: {e}")
             return updated, [_build_calendar(updated, 0)], hidden_style, ""
 
         # ── SAVE (edit) ───────────────────────────────────────────────────
+        try:
+            authorized_engine(supabase, engine_id, session)
+            authorized_engine(supabase, (selected_ev or {}).get("engine_id"), session)
+        except ValueError as exc:
+            return dash.no_update, dash.no_update, dash.no_update, html.Span(str(exc), style={"color": "#ff6b6b"})
+
         if not engine_id:
             return dash.no_update, dash.no_update, dash.no_update, \
                 html.Span("Please select an engine.", style={"color": "#ff6b6b", "fontSize": "12px"})
@@ -1043,7 +1070,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                     "scheduled_date": sel_date,
                     "start_time":     start_time,
                     "end_time":       end_time,
-                }).eq("id", db_id).execute()
+                }).eq("id", db_id).eq("created_by", session["user_id"]).execute()
             except Exception as e:
                 print(f"[SM][WARN] Update failed: {e}")
                 return (dash.no_update, dash.no_update, dash.no_update,

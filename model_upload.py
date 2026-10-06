@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -7,14 +8,7 @@ import os
 from datetime import datetime
 from assets.components import (build_dev_sidebar, icon_sidebar)
 
-# Shared model storage directory
-
-
 MODEL_TYPES = ["FD001", "FD002", "FD003", "FD004"]
-
-# ─────────────────────────────────────────────
-#  SVG ICON HELPERS
-# ─────────────────────────────────────────────
 
 def _svg_img(svg_str, size="22px"):
     b64 = base64.b64encode(svg_str.strip().encode("utf-8")).decode("utf-8")
@@ -103,10 +97,6 @@ def icon_close():
     </svg>''', size="16px")
 
 
-# ─────────────────────────────────────────────
-#  SIDEBAR  (Admin Panel variant — shared pattern)
-# ─────────────────────────────────────────────
-
 def build_admin_sidebar(active_page="model"):
     nav_item_base = {
         "display": "flex", "alignItems": "center", "gap": "10px",
@@ -173,10 +163,6 @@ def build_admin_sidebar(active_page="model"):
     )
 
 
-# ─────────────────────────────────────────────
-#  TOPBAR
-# ─────────────────────────────────────────────
-
 def build_topbar():
     return html.Div(
         style={
@@ -194,10 +180,6 @@ def build_topbar():
         ]
     )
 
-
-# ─────────────────────────────────────────────
-#  PANEL WRAPPER
-# ─────────────────────────────────────────────
 
 def panel(title, icon_fn, children):
     return html.Div(
@@ -217,10 +199,6 @@ def panel(title, icon_fn, children):
     )
 
 
-# ─────────────────────────────────────────────
-#  CURRENTLY ACTIVE MODEL CARD
-# ─────────────────────────────────────────────
-
 def info_box(label, value):
     return html.Div(
         style={
@@ -229,9 +207,7 @@ def info_box(label, value):
             "borderRadius": "8px", "padding": "12px 16px",
         },
         children=[
-            html.Div(label.upper(), style={"color": "#4a9eff", "fontSize": "10px",
-                                            "fontWeight": "700", "letterSpacing": "0.8px",
-                                            "marginBottom": "6px"}),
+            html.Div(label.upper(), style={"color": "#4a9eff", "fontSize": "10px", "fontWeight": "700", "letterSpacing": "0.8px", "marginBottom": "6px"}),
             html.Div(value, style={"color": "white", "fontSize": "14px", "fontWeight": "700"}),
         ]
     )
@@ -249,10 +225,6 @@ def build_active_model_panel(active_model=None):
         ])
     ])
 
-
-# ─────────────────────────────────────────────
-#  UPLOAD DROPZONE
-# ─────────────────────────────────────────────
 
 def build_upload_panel():
     return panel("Upload New Model", icon_upload, [
@@ -274,7 +246,8 @@ def build_upload_panel():
                              style={"color": "white", "fontSize": "14px", "fontWeight": "600"}),
                     html.Div("Only Keras .h5 model files accepted",
                              style={"color": "rgba(168,212,255,0.5)", "fontSize": "12px"}),
-                    html.Button("Browse File", id="browse-file-btn", n_clicks=0, style={
+                    html.Button("Browse File", id="browse-file-btn", n_clicks=0,
+                    style={
                         "background": "rgba(74,158,255,0.15)", "border": "1px solid rgba(74,158,255,0.4)",
                         "color": "#a8d4ff", "borderRadius": "8px", "padding": "8px 20px",
                         "fontSize": "13px", "fontWeight": "700", "cursor": "pointer", "marginTop": "4px",
@@ -289,7 +262,7 @@ def build_upload_panel():
                 "display": "flex", "alignItems": "center", "justifyContent": "center",
                 "cursor": "pointer", "marginBottom": "16px", "padding": "24px 0px",
             },
-            accept=".h5",
+            # Let invalid extensions reach stage_file so users see its error.
             multiple=False,
         ),
 
@@ -336,10 +309,7 @@ def build_upload_panel():
     ])
 
 
-# ─────────────────────────────────────────────
 #  STAGED FILE PREVIEW CARD
-# ─────────────────────────────────────────────
-
 def staged_file_card(filename, size_mb):
     return html.Div(
         style={
@@ -352,20 +322,15 @@ def staged_file_card(filename, size_mb):
                 icon_model_file(),
                 html.Div(children=[
                     html.Div(filename, style={"color": "white", "fontSize": "13px", "fontWeight": "700"}),
-                    html.Div(f"{size_mb} MB · Uploaded just now",
-                             style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px"}),
+                    html.Div(f"{size_mb} MB · Uploaded just now", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px"}),
                 ])
             ]),
-            html.Div(id="remove-staged-file-btn", n_clicks=0, style={"cursor": "pointer"},
-                     children=[icon_close()])
+            html.Div(id="remove-staged-file-btn", n_clicks=0, style={"cursor": "pointer"}, children=[icon_close()])
         ]
     )
 
 
-# ─────────────────────────────────────────────
 #  VERSION HISTORY TABLE
-# ─────────────────────────────────────────────
-
 def status_label(status):
     cfg = {
         "active":   ("#00c875",),
@@ -411,10 +376,7 @@ def build_version_history(history=None):
             "borderRadius": "14px", "overflow": "hidden",
         },
         children=[
-            html.Div("VERSION HISTORY", style={
-                "color": "white", "fontSize": "13px", "fontWeight": "700",
-                "letterSpacing": "0.5px", "padding": "16px 20px 12px",
-            }),
+            html.Div("VERSION HISTORY", style={ "color": "white", "fontSize": "13px", "fontWeight": "700", "letterSpacing": "0.5px", "padding": "16px 20px 12px"}),
             html.Div(
                 style={
                     "display": "grid", "gridTemplateColumns": "1.4fr 1fr 1fr 0.8fr 0.8fr",
@@ -434,19 +396,13 @@ def build_version_history(history=None):
             html.Div(id="version-history-body", children=[
                 history_row(h, is_last=(i == len(history) - 1)) for i, h in enumerate(history)
             ] if history else [
-                html.Div("No version history available", style={
-                    "color": "rgba(168,212,255,0.5)", "fontSize": "13px", 
-                    "padding": "20px", "textAlign": "center"
-                })
+                html.Div("No version history available", style={"color": "rgba(168,212,255,0.5)", "fontSize": "13px", "padding": "20px", "textAlign": "center"})
             ]),
         ]
     )
 
 
-# ─────────────────────────────────────────────
 #  MAIN PAGE BODY
-# ─────────────────────────────────────────────
-
 def build_model_type_selector(selected="FD001"):
     """Inline dropdown model type selector pushed to the far right of the header row."""
     return html.Div(
@@ -502,10 +458,7 @@ def build_model_upload_body(active_model=None, history=None, selected_type="FD00
     ]
 
 
-# ─────────────────────────────────────────────
 #  PAGE LAYOUT ENTRY POINT
-# ─────────────────────────────────────────────
-
 def create_model_upload_layout(supabase=None, role=None):
     active_model = None
     history = None
@@ -586,10 +539,7 @@ def create_model_upload_layout(supabase=None, role=None):
     )
 
 
-# ─────────────────────────────────────────────
 #  CALLBACKS
-# ─────────────────────────────────────────────
-
 def _fetch_history_for_type(supabase, model_type):
     """Helper: fetch version history + active model for a given model_type.
 
@@ -659,7 +609,8 @@ def _fetch_history_for_type(supabase, model_type):
     return active_model, history
 
 
-def register_model_upload_callbacks(app, supabase=None):
+def register_model_upload_callbacks(app, supabase=None, supabase_admin=None):
+    admin_client = supabase_admin or supabase
 
     # ── Model type dropdown: refresh active model panel + version history ──
     @app.callback(
@@ -762,6 +713,11 @@ def register_model_upload_callbacks(app, supabase=None):
         if not n_clicks or not staged_file:
             raise dash.exceptions.PreventUpdate
 
+        try:
+            principal = require_trusted_role("developer")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
+
         if not supabase:
             return (
                 html.Span("Supabase not connected.", style={"color": "#ff6b6b", "fontSize": "13px"}),
@@ -770,17 +726,7 @@ def register_model_upload_callbacks(app, supabase=None):
                 dash.no_update,
             )
 
-        user_id = None
-        if session_data:
-            user_id = session_data.get("user_id")
-
-        if not user_id:
-            return (
-                html.Span("User not authenticated.", style={"color": "#ff6b6b", "fontSize": "13px"}),
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
+        user_id = principal["user_id"]
 
         selected_type = model_type or "FD001"
 
@@ -792,10 +738,10 @@ def register_model_upload_callbacks(app, supabase=None):
             _, b64data = staged_file["contents"].split(",", 1)
             file_bytes = base64.b64decode(b64data)
             db.upload_file(
-                supabase, "models", f"{selected_type}/{save_filename}", file_bytes,
+                admin_client, "models", f"{selected_type}/{save_filename}", file_bytes,
                 file_options={"content-type": "application/octet-stream"},
             )
-            db.insert_records(supabase, "model_versions", {
+            db.insert_records(admin_client, "model_versions", {
                 "id": version_id,
                 "uploaded_by": user_id,
                 "filename": save_filename,
@@ -804,11 +750,11 @@ def register_model_upload_callbacks(app, supabase=None):
                 "model_type": selected_type,
             })
             db.update_records(
-                supabase, "model_versions", {"status": "archived"},
+                admin_client, "model_versions", {"status": "archived"},
                 filters=[('eq', "status", "active"), ('eq', "model_type", selected_type)],
             )
             db.update_records(
-                supabase, "model_versions", {"status": "active"},
+                admin_client, "model_versions", {"status": "active"},
                 filters=[('eq', "id", version_id)],
             )
 
@@ -827,7 +773,7 @@ def register_model_upload_callbacks(app, supabase=None):
             # ── Auto-reload the model in running simulations ──
             try:
                 from engine_simulation_manager import reload_model
-                reload_model(selected_type, supabase=supabase)
+                reload_model(selected_type, supabase=admin_client)
                 print(f"[MODEL] Auto-reloaded {selected_type} model for running simulations")
             except Exception as _reload_err:
                 print(f"[MODEL][WARN] Failed to reload model: {_reload_err}")
@@ -866,12 +812,16 @@ def register_model_upload_callbacks(app, supabase=None):
         ctx = dash.callback_context
         if not ctx.triggered or not any(n_clicks_list):
             raise dash.exceptions.PreventUpdate
+        try:
+            principal = require_trusted_role("developer")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
 
         import json as _json
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
         version_id = _json.loads(trigger_id)["index"]
 
-        if not version_id or not supabase:
+        if not version_id or not admin_client:
             raise dash.exceptions.PreventUpdate
 
         selected_type = model_type or "FD001"
@@ -879,7 +829,7 @@ def register_model_upload_callbacks(app, supabase=None):
         try:
             # Archive current active model for this type
             db.update_records(
-                supabase,
+                admin_client,
                 "model_versions",
                 {"status": "archived"},
                 filters=[('eq', "status", "active"), ('eq', "model_type", selected_type)],
@@ -887,7 +837,7 @@ def register_model_upload_callbacks(app, supabase=None):
 
             # Set the selected version as active
             db.update_records(
-                supabase,
+                admin_client,
                 "model_versions",
                 {"status": "active"},
                 filters=[('eq', "id", version_id)],
@@ -896,7 +846,7 @@ def register_model_upload_callbacks(app, supabase=None):
             # Reload model in running simulations
             try:
                 from engine_simulation_manager import reload_model
-                reload_model(selected_type, supabase=supabase)
+                reload_model(selected_type, supabase=admin_client)
                 print(f"[MODEL] Restored and reloaded {selected_type} model version {version_id}")
             except Exception:
                 pass

@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -359,6 +360,10 @@ def register_engine_management_callbacks(app, supabase=None):
         ctx = dash.callback_context
         if not ctx.triggered or not any(n_clicks_list):
             raise dash.exceptions.PreventUpdate
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
 
         if deleted_engines_data is None:
             deleted_engines_data = []
@@ -374,7 +379,7 @@ def register_engine_management_callbacks(app, supabase=None):
                     supabase,
                     "engines",
                     {"is_deleted": False},
-                    filters=[('eq', "id", engine_id)],
+                    filters=[('eq', "id", engine_id), ('eq', "organization_id", principal["organization_id"])],
                 )
                 print(f"[OK] Soft-deleted engine {engine_id}")
             except Exception as e:
@@ -414,6 +419,10 @@ def register_engine_management_callbacks(app, supabase=None):
         ctx = dash.callback_context
         if not ctx.triggered or not any(n_clicks_list):
             raise dash.exceptions.PreventUpdate
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
 
         if engines_data is None:
             engines_data = []
@@ -431,7 +440,7 @@ def register_engine_management_callbacks(app, supabase=None):
                     supabase,
                     "engines",
                     {"is_deleted": True},
-                    filters=[('eq', "id", engine_id)],
+                    filters=[('eq', "id", engine_id), ('eq', "organization_id", principal["organization_id"])],
                 )
                 print(f"[OK] Restored engine {engine_id}")
             except Exception as e:

@@ -1,4 +1,5 @@
 from assets import database_integration as db
+from auth_security import require_trusted_role
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -442,6 +443,11 @@ def register_add_engine_callbacks(app, supabase=None):
         State("add-engine-org-store", "data"),
     )
     def load_users_dropdown(_, org_id):
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            return []
+        org_id = principal.get("organization_id")
         if not supabase:
             return []
         try:
@@ -472,6 +478,10 @@ def register_add_engine_callbacks(app, supabase=None):
         prevent_initial_call=True,
     )
     def autofill_user_info(user_id):
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            return "", "", ""
         if not user_id or not supabase:
             return "", "", ""
         try:
@@ -479,7 +489,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 supabase,
                 "users",
                 "first_name, last_name, email_address, department",
-                filters=[('eq', "id", user_id)],
+                filters=[('eq', "id", user_id), ('eq', "organization_id", principal["organization_id"])],
                 single=True,
             )
             u = resp.data or {}
@@ -509,11 +519,30 @@ def register_add_engine_callbacks(app, supabase=None):
         if not n_clicks or n_clicks == 0:
             raise dash.exceptions.PreventUpdate
 
+        try:
+            principal = require_trusted_role("admin")
+        except PermissionError:
+            raise dash.exceptions.PreventUpdate
+        # Never accept tenant identity from an editable browser store.
+        org_id = principal.get("organization_id")
+        if not org_id:
+            return html.Span("An organization administrator is required.", style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
+
+        if assign_to_user_id:
+            assigned = db.fetch_records(
+                supabase, "users", "id", filters=[("eq", "id", assign_to_user_id),
+                                                    ("eq", "organization_id", org_id)], limit=1)
+            if not assigned.data:
+                return html.Span("Select a user from your organization.", style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
+
         is_edit = edit_engine_id is not None
 
         if not engine_id or not model_type:
             return html.Span("Please fill in required fields (Engine ID and Model Type).",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
+
+        if model_type not in {"FD001", "FD002", "FD003", "FD004"}:
+            return html.Span("Select a supported engine model.", style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
 
         try:
             engine_id = int(engine_id)
@@ -532,6 +561,11 @@ def register_add_engine_callbacks(app, supabase=None):
         try:
             # ── EDIT MODE: update existing engine ──
             if is_edit:
+                existing_engine = db.fetch_records(
+                    supabase, "engines", "id",
+                    filters=[("eq", "id", edit_engine_id), ("eq", "organization_id", org_id)], limit=1)
+                if not existing_engine.data:
+                    raise PermissionError("Engine is outside your organization")
                 update_data = {
                     "engine_id": engine_id,
                     "model_type": model_type,
@@ -541,7 +575,8 @@ def register_add_engine_callbacks(app, supabase=None):
                 if location:
                     update_data["installation_location"] = location
 
-                db.update_records(supabase, "engines", update_data, filters=[('eq', "id", edit_engine_id)])
+                db.update_records(supabase, "engines", update_data,
+                                  filters=[('eq', "id", edit_engine_id), ('eq', "organization_id", org_id)])
                 print(f"[OK] Engine {edit_engine_id} updated")
                 return (
                     "",
@@ -603,7 +638,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 new_engine_db_id = str(result.data[0].get("id", ""))
 
             # ── 4. Get engine data from storage and start simulation ──
-            from storage_utils import _get_supabase_admin, ENGINE_DATA_BUCKET
+            from storage_utils import ENGINE_DATA_BUCKET
             from data_utils import get_org_folder
             import json as _json
             import random
@@ -617,7 +652,7 @@ def register_add_engine_callbacks(app, supabase=None):
             has_cycles = False
             file_path = None
             try:
-                _sb_storage = _get_supabase_admin()
+                _sb_storage = supabase
                 if _sb_storage:
                     # List available JSON files in the model_type folder
                     file_list = db.list_files(_sb_storage, ENGINE_DATA_BUCKET, model_type)
@@ -667,7 +702,7 @@ def register_add_engine_callbacks(app, supabase=None):
                         engine_db_id=new_engine_db_id,
                         json_path=file_path,
                         model_type=model_type,
-                        supabase=supabase,
+                        supabase=__import__("storage_utils")._get_supabase_admin(),
                     )
                 except Exception as _sim_err:
                     print(f"[WARN] Could not start simulation for engine {engine_id}: {_sim_err}")

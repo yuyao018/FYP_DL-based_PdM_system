@@ -1,6 +1,7 @@
 """Independent floating Scheduling Agent UI and callbacks."""
 import dash
 from dash import html, dcc, Input, Output, State, ctx
+from auth_security import trusted_profile
 
 
 def render_message(role, content):
@@ -59,6 +60,9 @@ def register_scheduling_agent(app, sb):
                  (Output("sa-use", "disabled"), True, False)],
     )
     def send(_clicks, engine_id, message, history, session):
+        session = trusted_profile()
+        if not session:
+            raise dash.exceptions.PreventUpdate
         if ctx.triggered_id == "sa-engine":
             return [render_message("assistant", "Ready to plan for this engine. Ask for a day or a preferred time.")], [], [], None, ""
         if not message or not message.strip():
@@ -90,6 +94,9 @@ def register_scheduling_agent(app, sb):
     )
     def use_slot(clicks, token, engine_id, session, events):
         if not clicks:
+            raise dash.exceptions.PreventUpdate
+        session = trusted_profile()
+        if not session:
             raise dash.exceptions.PreventUpdate
         from scheduling_agent_service import book_choice
         from itsdangerous import BadSignature
