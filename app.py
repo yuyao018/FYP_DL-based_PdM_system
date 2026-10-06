@@ -102,7 +102,25 @@ app.layout = html.Div([
             "whiteSpace": "nowrap",
         },
     ),
-    html.Div(id='page-content'),
+    dcc.Loading(
+        id="page-navigation-loading",
+        target_components={"page-content": "children"},
+        type=None,
+        fullscreen=True,
+        delay_show=150,
+        overlay_style={
+            "backgroundColor": "#0a1628",
+            "visibility": "visible",
+            "opacity": "1",
+        },
+        custom_spinner=html.Div(
+            html.Div(className="page-loading-spinner"),
+            className="page-loading-screen",
+            role="status",
+            **{"aria-label": "Loading page"},
+        ),
+        children=html.Div(id="page-content"),
+    ),
     build_simulation_panel(),
 ])
 

@@ -959,25 +959,17 @@ def register_overview_callbacks(app, supabase=None):
 
         if supabase and engine_db_id:
             try:
-                # Retry up to 2 times on transient network errors (Windows socket issue)
-                _resp_data = None
-                for _attempt in range(3):
-                    try:
-                        resp = db.fetch_records(
-                            supabase,
-                            "rul_predictions",
-                            "cycle, predicted_rul, shap_values",
-                            filters=[('eq', "engine_id", engine_db_id)],
-                            order_by=[("cycle", False)],
-                        )
-                        _resp_data = resp.data or []
-                        break
-                    except Exception as _net_err:
-                        if _attempt < 2:
-                            import time as _t
-                            _t.sleep(1)
-                        else:
-                            raise
+                # Keep the refresh request bounded. The chart polls every five
+                # seconds, so a transient failure can be retried on the next poll
+                # without blocking this callback for repeated network timeouts.
+                resp = db.fetch_records(
+                    supabase,
+                    "rul_predictions",
+                    "cycle, predicted_rul, shap_values",
+                    filters=[('eq', "engine_id", engine_db_id)],
+                    order_by=[("cycle", False)],
+                )
+                _resp_data = resp.data or []
 
                 for row in _resp_data:
                     cycles_list.append(row.get("cycle"))

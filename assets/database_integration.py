@@ -1,3 +1,11 @@
+import logging
+import time
+
+
+_SLOW_QUERY_SECONDS = 1.0
+_logger = logging.getLogger(__name__)
+
+
 def _apply_filters(query, filters):
     """Apply supported filters; not_in excludes records with listed values."""
     for operator, column, value in filters:
@@ -27,7 +35,13 @@ def fetch_records(client, table, columns="*", *, filters=(), order_by=(), limit=
         query = query.range(*row_range)
     if single:
         query = query.single()
-    return query.execute()
+    started = time.perf_counter()
+    try:
+        return query.execute()
+    finally:
+        elapsed = time.perf_counter() - started
+        if elapsed >= _SLOW_QUERY_SECONDS:
+            _logger.warning("Slow Supabase read: table=%s elapsed=%.2fs", table, elapsed)
 
 
 def insert_records(client, table, data):
