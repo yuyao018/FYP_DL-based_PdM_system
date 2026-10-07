@@ -612,6 +612,9 @@ SENSOR_SHORT = [
 
 def _compute_feature_importance(model, X: np.ndarray, num_features: int, background: np.ndarray = None, pred_raw: float = None, bias: float = 0.0,
                                 rul_cap: float = None, sensor_labels=None) -> tuple[list[dict], float]:
+    # Set this before either attribution path so the fallback can run even if
+    # SHAP fails before its normal aggregation setup.
+    n = num_features
     try:
         # Background: zero baseline (neutral reference)
         if background is not None:
@@ -641,7 +644,6 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
 
         # Aggregate over time window, raw sensor block only → (14,)
         # raw_shap = shap_arr[0, :, :14].mean(axis=0)
-        n = num_features
         raw_shap = shap_arr[0, :, :n]
         mean_shap = shap_arr[0, :, n:2*n]
         std_shap = shap_arr[0, :, 2*n:3*n]
@@ -723,8 +725,10 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
         print(f"[SIM][WARN] SHAP GradientExplainer failed, falling back to input×gradient:\n"
               f"{traceback.format_exc(limit=3)}")
         try:
-            import torch
-            model.train()
+            # torch is imported at module scope. A function-local import here
+            # would make it local throughout this function and break the SHAP
+            # path with UnboundLocalError before the fallback is reached.
+            model.eval()
             t = torch.tensor(X, dtype=torch.float32, requires_grad=True)
             output = model(t)
             output.backward()
@@ -736,8 +740,9 @@ def _compute_feature_importance(model, X: np.ndarray, num_features: int, backgro
             max_abs = np.abs(attr).max()
             if max_abs > 0:
                 attr = attr / max_abs
+            labels = sensor_labels if sensor_labels is not None else SENSOR_SHORT
             result = [
-                {"sensor": SENSOR_SHORT[i], "score": round(float(attr[i]), 4)}
+                {"sensor": labels[i], "score": round(float(attr[i]), 4)}
                 for i in range(n)
             ]
             result.sort(key=lambda x: abs(x["score"]), reverse=True)

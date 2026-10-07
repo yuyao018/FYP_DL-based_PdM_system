@@ -32,7 +32,7 @@ from auth_security import (RequestSupabaseProxy, authenticate_username,
 # Load environment variables
 load_dotenv()
 
-# Initialize Supabase client (with fallback for development without credentials)
+# Initialize Supabase client 
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 SUPABASE_ADMIN_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")

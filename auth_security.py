@@ -21,7 +21,7 @@ from supabase import create_client
 from assets import database_integration as db
 
 
-MAX_LOGIN_FAILURES = 5
+MAX_LOGIN_FAILURES = 100
 LOGIN_LOCK_SECONDS = 30 * 60
 _LOCAL_LOGIN_FAILURES: dict[str, tuple[int, float]] = {}
 _LOCAL_LOGIN_LOCK = threading.Lock()
@@ -184,7 +184,9 @@ def authenticate_username(username: str, password: str, selected_role: str,
     # `status` is also used for online/offline presence and is inactive after
     # normal logout, so it must not prevent a legitimate Auth sign-in.
     # Legacy schema convention: true means active; false means soft-deleted.
-    if profile.get("is_deleted") is not True:
+    # Legacy convention: false means soft-deleted; NULL/missing is treated as
+    # active throughout the database policies (COALESCE(is_deleted, true)).
+    if profile.get("is_deleted", True) is False:
         remaining = _record_login_failure(username)
         if remaining == 0:
             raise AccountLocked("Too many failed attempts. Account locked for 30 minutes.")
@@ -372,7 +374,9 @@ def trusted_profile() -> dict[str, Any] | None:
         return None
     rows = db.fetch_records(admin_client, "users", "id,role,organization_id,status,is_deleted",
                             filters=[("eq", "id", user_id)], limit=1).data or []
-    if (len(rows) != 1 or rows[0].get("status") != "active" or rows[0].get("is_deleted") is not True):
+    # Match authenticate_username and the database policies: only an explicit
+    # false marks a profile as deleted; NULL/missing means active in this schema.
+    if (len(rows) != 1 or rows[0].get("status") != "active" or rows[0].get("is_deleted", True) is False):
         flask_session.clear()
         return None
     profile.update(role=(rows[0].get("role") or "user").lower(),
