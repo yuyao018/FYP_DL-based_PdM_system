@@ -14,14 +14,11 @@ import bcrypt
 import hashlib
 import hmac
 import threading
-
 from flask import current_app, g, session as flask_session
 from supabase import create_client
-
 from assets import database_integration as db
 
-
-MAX_LOGIN_FAILURES = 100
+MAX_LOGIN_FAILURES = 5
 LOGIN_LOCK_SECONDS = 30 * 60
 _LOCAL_LOGIN_FAILURES: dict[str, tuple[int, float]] = {}
 _LOCAL_LOGIN_LOCK = threading.Lock()
