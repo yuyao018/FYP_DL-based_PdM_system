@@ -45,12 +45,12 @@ def _bookings(sb, engine):
         filters=[('eq', "responsible_by", engine["responsible_by"])],
     ).data or []
     ids = [str(e["id"]) for e in assigned]
-    fields = "id, engine_id, scheduled_date, start_time, end_time, status, created_by"
+    fields = "id, engine_id, scheduled_date, start_time, end_time, status, created_by, assign_to"
     rows = db.fetch_records(
         sb,
         "maintenance_schedules",
         fields,
-        filters=[('eq', "created_by", engine["responsible_by"])],
+        filters=[('eq', "assign_to", engine["responsible_by"])],
     ).data or []
     if ids:
         rows += db.fetch_records(
@@ -96,7 +96,8 @@ def create_manual_booking(sb, engine_id, day, start_time, end_time, notes, sessi
             "engine_id": engine_id, "scheduled_date": day,
             "start_time": start_time, "end_time": end_time,
             "notes": notes or "", "status": "scheduled",
-            "created_by": engine["responsible_by"],
+            "created_by": session["user_id"],
+            "assign_to": engine["responsible_by"],
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -194,6 +195,7 @@ def accept(sb, proposal, source="email"):
             "scheduled_date": proposal["scheduled_date"], "start_time": proposal["start_time"],
             "end_time": proposal["end_time"], "status": "scheduled",
             "created_by": proposal["technician"],
+            "assign_to": proposal["technician"],
             "notes": "Accepted via Scheduling Agent." if source == "agent" else "Accepted via signed maintenance recommendation email.",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })

@@ -74,7 +74,7 @@ def _vec_from_shap(parsed: list[dict]) -> np.ndarray | None:
 
 
 def generate_signatures(supabase_url: str, supabase_key: str,
-                        warn_threshold: float = 62.0,
+                        warn_threshold: float = 50.0,
                         output_path: Path = OUTPUT_PATH) -> dict:
     """
     Build and save SHAP importance signatures for all four datasets.
@@ -211,6 +211,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Optional: override warn_threshold via CLI arg
-    thresh = float(sys.argv[1]) if len(sys.argv) > 1 else 62.0
+    thresh = float(sys.argv[1]) if len(sys.argv) > 1 else 50.0
 
     generate_signatures(url, key, warn_threshold=thresh)

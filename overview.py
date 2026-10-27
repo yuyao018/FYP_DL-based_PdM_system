@@ -7,6 +7,23 @@ import base64
 import numpy as np
 from assets.components import (build_sidebar, build_topbar, icon_sidebar)
 
+def build_sensor_placeholder(message="Loading sensor trends…"):
+    """Match the dashboard before the first sensor callback returns."""
+    fig = go.Figure()
+    fig.update_layout(
+        template="none", paper_bgcolor="#0f1d34", plot_bgcolor="#0f1d34",
+        height=160, margin=dict(l=12, r=12, t=12, b=12),
+        xaxis=dict(visible=False, range=[0, 1]),
+        yaxis=dict(visible=False, range=[0, 1]),
+        showlegend=False,
+        annotations=[dict(
+            text=message, x=0.5, y=0.5, xref="paper", yref="paper",
+            showarrow=False,
+            font=dict(family="Arial, sans-serif", size=11, color="#7fa4ca"),
+        )],
+    )
+    return fig
+
 def build_engine_3d_model(status="healthy", degradation_type=None):
     """
     Returns an html.Iframe pointing to the static engine_3d_viewer.html in assets/.
@@ -33,7 +50,7 @@ def build_engine_3d_model(status="healthy", degradation_type=None):
 # ─────────────────────────────────────────────
 
 def build_rul_chart(cycles=None, actual_ruls=None, predicted_ruls=None,
-                    warn_thresh: int = 62, crit_thresh: int = 30,
+                    warn_thresh: int = 50, crit_thresh: int = 30,
                     window_size: int = 45):
     """
     Plot actual RUL and predicted RUL over cycles from real rul_predictions data.
@@ -704,6 +721,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-up",
+                                        figure=build_sensor_placeholder(),
                                         config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
@@ -715,6 +733,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-down",
+                                        figure=build_sensor_placeholder(),
                                         config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
@@ -726,6 +745,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                                     "letterSpacing": "0.3px"}),
                                     dcc.Graph(
                                         id="sensor-mini-all",
+                                        figure=build_sensor_placeholder(),
                                         config={"displayModeBar": False, "responsive": True},
                                         style={"height": "160px"},
                                     ),
@@ -925,10 +945,10 @@ def register_overview_callbacks(app, supabase=None):
     )
     def refresh_rul_chart(n_intervals, engine_db_id):
         import json as _json
-        from engine_simulation_manager import WINDOW_SIZES, is_running as _sim_is_running
+        from engine_simulation_manager import WINDOW_SIZES
         from degradation_analysis import compute_pattern_similarity
         MAX_LIFE = 130
-        WARN_THRESH = 62
+        WARN_THRESH = 50
         CRIT_THRESH = 30
         _window_size = 45  # default
 
@@ -1000,9 +1020,9 @@ def register_overview_callbacks(app, supabase=None):
             window_size=_window_size,
         )
 
-        # ── Check if simulation is still running ──
-        _sim_active = _sim_is_running(engine_db_id) if engine_db_id else False
-        _disable_poll = not _sim_active
+        # Sensor history can finish loading after a simulation stops or during startup.
+        # Keep the shared timer active so those charts can recover on the next poll.
+        _disable_poll = not bool(engine_db_id)
 
         # ── No predictions yet — show neutral waiting state ──
         if latest_pred_rul is None:
@@ -1251,13 +1271,7 @@ def register_overview_callbacks(app, supabase=None):
         """Build a mini chart from pre-computed sensor data for given IDs."""
         fig = go.Figure()
         if not sensor_data or not sensor_ids:
-            fig.add_annotation(
-                text="Awaiting data\u2026", x=0.5, y=0.5,
-                xref="paper", yref="paper", showarrow=False,
-                font=dict(color="rgba(168,212,255,0.5)", size=11),
-            )
-            fig.update_layout(**_mini_chart_layout())
-            return fig
+            return build_sensor_placeholder("No matching sensor trends yet")
         for sid in sensor_ids:
             if sid not in sensor_data:
                 continue
@@ -1278,7 +1292,7 @@ def register_overview_callbacks(app, supabase=None):
         Output("sensor-mini-all", "figure"),
         Output("sensor-mini-legend", "children"),
         Input("rul-poll-interval", "n_intervals"),
-        State("overview-engine-id-store", "data"),
+        Input("overview-engine-id-store", "data"),
         prevent_initial_call=False,
     )
     def update_sensor_mini_charts(n_intervals, engine_db_id):
@@ -1301,13 +1315,7 @@ def register_overview_callbacks(app, supabase=None):
                 pass
 
         if not history:
-            empty = go.Figure()
-            empty.add_annotation(
-                text="Awaiting data\u2026", x=0.5, y=0.5,
-                xref="paper", yref="paper", showarrow=False,
-                font=dict(color="rgba(168,212,255,0.5)", size=11),
-            )
-            empty.update_layout(**_mini_chart_layout())
+            empty = build_sensor_placeholder("Waiting for sensor readings…")
             return empty, empty, empty, []
 
         # Extract and dynamically classify by slope direction

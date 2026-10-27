@@ -104,14 +104,15 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
             # ── Base query builder: always filter by org_id ──
             def eng_query():
-                q = dict(client=supabase, table="engines", columns="*", filters=[], count="exact")
+                q = dict(client=supabase, table="engines",
+                         columns="id,engine_id,responsible_by,model_type,created_at", filters=[])
                 if org_id:
                     q["filters"].append(('eq', "organization_id", org_id))
                 q["filters"].append(('eq', "is_deleted", True))
                 return q
 
             response     = db.fetch_records(**eng_query())
-            total_count  = response.count or 0
+            engines_by_id = {e["id"]: e for e in (response.data or []) if e.get("id")}
 
             # warning_count / critical_count are derived below from engine_data
             # after applying the fetched thresholds, so the cards and summary
@@ -267,12 +268,9 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                         return ""
 
                 for eid, alert in best.items():
-                    # Fetch engine display info
-                    try:
-                        eng_resp = db.get_engine(supabase, eid, "id, engine_id")
-                        eng = eng_resp.data or {}
-                    except Exception:
-                        eng = {}
+                    # These engines were already loaded above; avoid one RLS
+                    # query and network round trip per maintenance alert.
+                    eng = engines_by_id.get(eid, {})
 
                     eng_db_id = eng.get("id") or eid
                     eng_display_id = str(eng.get("engine_id", "?")).zfill(2)

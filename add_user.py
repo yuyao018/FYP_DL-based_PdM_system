@@ -140,15 +140,14 @@ ACCESS_PREVIEW = [
     ("Sensor Trends",        "sensor"),
     ("Degradation Analysis", "degradation_analysis"),
     ("Alert Log",            "alert_log"),
-    ("Acknowledge Alerts",   "acknowledge"),
     ("Upload .h5 Model",     "model_upload"),
     ("Admin Panel",          "admin_panel"),
 ]
 
 # Which features each role gets, by key
 ROLE_ACCESS = {
-    "user":  {"overview", "sensor", "degradation_analysis", "alert_log", "acknowledge"},
-    "admin": {"overview", "sensor", "degradation_analysis", "alert_log", "acknowledge",
+    "user":  {"overview", "sensor", "degradation_analysis", "alert_log"},
+    "admin": {"overview", "sensor", "degradation_analysis", "alert_log",
               "model_upload", "admin_panel"},
 }
 

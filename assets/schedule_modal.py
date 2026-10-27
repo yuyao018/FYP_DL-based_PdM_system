@@ -319,24 +319,7 @@ def register_schedule_modal_callbacks(app, supabase=None):
                         if result.data:
                             schedule_id = result.data[0]["id"]
 
-                    # Link every alert for this engine to the schedule.
-                    if schedule_id and engine_db_id:
-                        try:
-                            engine_alerts_resp = supabase.table("alert_logs") \
-                                .select("id").eq("engine_id", engine_db_id).execute()
-                            engine_alert_ids = [r["id"] for r in (engine_alerts_resp.data or [])]
-                            if engine_alert_ids:
-                                linked_resp = supabase.table("maintenance_alerts") \
-                                    .select("alert_id").in_("alert_id", engine_alert_ids).execute()
-                                linked_ids = {r["alert_id"] for r in (linked_resp.data or [])}
-                                rows_to_insert = [
-                                    {"maintenance_schedule_id": schedule_id, "alert_id": aid}
-                                    for aid in engine_alert_ids if aid not in linked_ids
-                                ]
-                                if rows_to_insert:
-                                    supabase.table("maintenance_alerts").insert(rows_to_insert).execute()
-                        except Exception as _e:
-                            print(f"[SCHED-MODAL] maintenance_alerts mapping: {_e}")
+                    # Database triggers link active alerts in the same transaction.
             except Exception as _e:
                 print(f"[SCHED-MODAL] confirm_schedule DB error: {_e}")
                 return (dash.no_update,

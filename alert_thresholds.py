@@ -217,7 +217,7 @@ def build_threshold_body(warn, crit):
 # ─────────────────────────────────────────────
 
 def create_alert_thresholds_layout(supabase=None):
-    warn, crit = 80, 30
+    warn, crit = 50, 30
 
     try:
         if supabase:

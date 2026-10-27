@@ -1,5 +1,6 @@
 from assets import database_integration as db
 from auth_security import trusted_profile
+from maintenance_alert_links import schedules_for_alerts
 from assets.schedule_modal import build_schedule_modal
 import dash
 from dash import dcc, html, Input, Output, State, ALL, MATCH
@@ -284,7 +285,7 @@ def summary_card(value, label, color="white", border=None):
 
 
 #  RUL SPARKLINE
-def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=62):
+def build_rul_sparkline(progression, crit_thresh=30, warn_thresh=50):
     x = list(range(45, 45 + len(progression)))
     y = progression
     fig = go.Figure()
@@ -613,7 +614,7 @@ def alert_detail_panel(alert, report=None):
                 figure=build_rul_sparkline(
                     alert["rul_progression"],
                     crit_thresh=alert.get("crit_thresh", 30),
-                    warn_thresh=alert.get("warn_thresh", 62),
+                    warn_thresh=alert.get("warn_thresh", 50),
                 ),
                 config={"displayModeBar": False},
                 style={"height": "160px"},
@@ -1184,11 +1185,11 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
     try:
         if supabase:
             # Fetch thresholds
-            warn_thresh, crit_thresh = 62, 30
+            warn_thresh, crit_thresh = 50, 30
             try:
                 t_resp = db.get_alert_thresholds(supabase, "warning_threshold,critical_threshold")
                 if t_resp.data:
-                    warn_thresh = int(t_resp.data[0].get("warning_threshold", 62))
+                    warn_thresh = int(t_resp.data[0].get("warning_threshold", 50))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", 30))
             except Exception:
                 pass
@@ -1248,37 +1249,15 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                 engine_id = str(next(iter(engines_lookup.values())).get("engine_id", "—")).zfill(2)
 
 
-            # Fetch the active maintenance schedule per engine.
-            schedules_by_engine  = {}   # engine_id → schedule row
-            schedules_by_id      = {}   # schedule_id → schedule row
-            reports_by_schedule  = {}   # schedule_id → report row
-
-            if engine_ids:
-                try:
-                    sched_resp = (
-                        db.fetch_records(
-                            supabase,
-                            "maintenance_schedules",
-                            "id,engine_id,scheduled_date,created_by,status,"
-                            "started_at,completed_at,start_time,end_time",
-                            filters=[('in_', "engine_id", engine_ids)],
-                            order_by=[("created_at", True)],
-                        )
-                    )
-                    # Keep the most-recent schedule per engine
-                    for s in (sched_resp.data or []):
-                        eid = s.get("engine_id")
-                        if eid and eid not in schedules_by_engine:
-                            schedules_by_engine[eid] = s
-                        if s.get("id"):
-                            schedules_by_id[s["id"]] = s
-                except Exception as e:
-                    print(f"[ALERT] schedules fetch: {e}")
+            # Job identity comes from the junction table, including follow-up history.
+            schedules_by_alert = schedules_for_alerts(supabase, logs)
+            schedules_by_id = {s["id"]: s for s in schedules_by_alert.values()}
+            reports_by_schedule = {}
 
             assigned_user_ids = list({
-                s.get("created_by")
-                for s in schedules_by_engine.values()
-                if s.get("created_by")
+                s.get("assign_to")
+                for s in schedules_by_id.values()
+                if s.get("assign_to")
             })
             usernames_by_id = {}
             if assigned_user_ids:
@@ -1306,7 +1285,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                             "maintenance_reports",
                             "id,maintenance_schedule_id,"
                             "fault_confirmed,ai_recommendation_usefulness,"
-                            "follow_up_reason,completed_at,outcome,user_id",
+                            "follow_up_reason,outcome,user_id",
                             filters=[('in_', "maintenance_schedule_id", schedule_ids)],
                             order_by=[("created_at", True)],
                         )
@@ -1335,8 +1314,8 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                 snapshot_cycle  = log.get("trigger_cycle")
                 alert_engine_id = log.get("engine_id")
 
-                # Resolve schedule for this engine (one schedule per engine)
-                sched_info      = schedules_by_engine.get(alert_engine_id, {})
+                # Resolve the job actually linked to this alert.
+                sched_info      = schedules_by_alert.get(str(log.get("id")), {})
                 maint_sched_id  = sched_info.get("id")
                 maint_started   = sched_info.get("started_at")
                 maint_completed = sched_info.get("completed_at")
@@ -1346,7 +1325,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
 
                 # Scheduled date + user from linked schedule
                 sched_date_v = sched_info.get("scheduled_date", "")
-                assigned_uid = sched_info.get("created_by")
+                assigned_uid = sched_info.get("assign_to")
 
                 # RUL progression
                 rul_progression = []
@@ -1453,7 +1432,12 @@ def _fetch_report(supabase, maintenance_schedule_id):
             )
         )
 
-        return resp.data[0] if resp.data else None
+        report = dict(resp.data[0]) if resp.data else None
+        if report:
+            schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at,completed_at",
+                filters=[("eq", "id", maintenance_schedule_id)], single=True)
+            report.update(schedule.data or {})
+        return report
 
     except Exception as e:
         print(f"[ALERT] fetch maintenance report: {e}")
@@ -1462,33 +1446,27 @@ def _fetch_report(supabase, maintenance_schedule_id):
 
 def _start_maintenance_report(supabase, schedule_id, user_id=None):
     """Persist the first report opening as the start; preserve it on reopen."""
-    response = db.fetch_records(supabase, "maintenance_reports", "*",
-        filters=[('eq', "maintenance_schedule_id", schedule_id)],
-        order_by=[("created_at", True)], limit=1)
-    report = dict(response.data[0]) if response.data else {}
+    report = _fetch_report(supabase, schedule_id) or {}
     if report.get("outcome") in ("completed", "follow_up_required"):
         return report
-    started_at = report.get("started_at")
-    if not started_at:
-        schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
-            filters=[('eq', "id", schedule_id), ('eq', "assign_to", user_id)], single=True)
-        started_at = (schedule.data or {}).get("started_at") or datetime.now(timezone.utc).isoformat()
-        if report.get("id"):
-            db.update_records(supabase, "maintenance_reports", {"started_at": started_at},
-                filters=[('eq', "id", report["id"]), ('eq', "user_id", user_id)])
-            report["started_at"] = started_at
-        else:
-            payload = {"maintenance_schedule_id": schedule_id, "started_at": started_at,
-                       "outcome": "in_progress"}
-            if user_id:
-                payload["user_id"] = user_id
-            result = db.insert_records(supabase, "maintenance_reports", payload)
-            if not result.data:
-                raise ValueError("The maintenance report could not be started.")
-            report = result.data[0]
+    schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
+        filters=[('eq', "id", schedule_id), ('eq', "assign_to", user_id)], single=True)
+    if not schedule.data:
+        raise PermissionError("Schedule is not assigned to this user")
+    started_at = schedule.data.get("started_at") or datetime.now(timezone.utc).isoformat()
+    if not report.get("id"):
+        payload = {"maintenance_schedule_id": schedule_id, "outcome": "in_progress"}
+        if user_id:
+            payload["user_id"] = user_id
+        result = db.insert_records(supabase, "maintenance_reports", payload)
+        if not result.data:
+            raise ValueError("The maintenance report could not be started.")
+        report = dict(result.data[0])
     db.update_records(supabase, "maintenance_schedules",
         {"started_at": started_at, "status": "in_progress"},
         filters=[('eq', "id", schedule_id), ('eq', "assign_to", user_id)])
+    # Presentation-only fields; timestamps are persisted on the schedule.
+    report["started_at"] = started_at
     return report
 
 
@@ -2251,7 +2229,7 @@ def register_alert_log_callbacks(app, supabase=None):
                                     "id,scheduled_date,created_by",
                                     filters=[
                                         ("eq", "engine_id", engine_db_id),
-                                        ("not_in", "status", ["completed", "cancelled"]),
+                                        ("in_", "status", ["scheduled", "in_progress"]),
                                     ],
                                     limit=1,
                                     order_by=[("created_at", True)],
@@ -2283,7 +2261,7 @@ def register_alert_log_callbacks(app, supabase=None):
                                     "end_time": end_time or "10:00",
                                     "status": "scheduled",
                                     "created_by": user_id,
-                    "assign_to": user_id,
+                                    "assign_to": user_id,
                                 },
                             )
                         )
@@ -2296,93 +2274,39 @@ def register_alert_log_callbacks(app, supabase=None):
                                 f"{sched_db_id} for engine {engine_db_id}"
                             )
 
-                    # ── Link engine alerts to this maintenance schedule ──────────────
-                        if sched_db_id and engine_db_id:
-                            try:
-                                # Get alerts for this engine
-                                engine_alerts_resp = (
-                                    db.fetch_records(
-                                        supabase,
-                                        "alert_logs",
-                                        "id",
-                                        filters=[('eq', "engine_id", engine_db_id)],
-                                    )
-                                )
-
-                                engine_alert_ids = [
-                                    row["id"]
-                                    for row in (engine_alerts_resp.data or [])
-                                ]
-
-                                if engine_alert_ids:
-                                    # Find alerts already linked to a maintenance schedule
-                                    linked_resp = (
-                                        db.fetch_records(
-                                            supabase,
-                                            "maintenance_alerts",
-                                            "alert_id",
-                                            filters=[('in_', "alert_id", engine_alert_ids)],
-                                        )
-                                    )
-
-                                    linked_alert_ids = {
-                                        row["alert_id"]
-                                        for row in (linked_resp.data or [])
-                                    }
-
-                                    # Only link alerts that have not already been assigned
-                                    rows_to_insert = [
-                                        {
-                                            "maintenance_schedule_id": sched_db_id,
-                                            "alert_id": aid,
-                                        }
-                                        for aid in engine_alert_ids
-                                        if aid not in linked_alert_ids
-                                    ]
-
-                                    if rows_to_insert:
-                                        (
-                                    db.insert_records(
-                                        supabase,
-                                        "maintenance_alerts",
-                                                rows_to_insert,
-                                            )
-                                        )
-
-                                        print(
-                                            f"[ALERT] Linked {len(rows_to_insert)} alerts "
-                                            f"to maintenance schedule {sched_db_id}"
-                                        )
-
-                            except Exception as _e:
-                                print(f"[ALERT] maintenance_alerts mapping: {_e}")
+                    # Database triggers link active alerts atomically with the booking.
             except Exception as _e:
                 print(f"[ALERT] confirm_schedule DB error: {_e}")
 
-        # ── Update local store — all alerts for the same engine ──────
-        # (runs unconditionally now — see note above)
-        if sched_db_id:
-            clicked_engine = alerts_data[idx].get("engine_id") if idx < len(alerts_data) else None
-            for i, a in enumerate(alerts_data):
-                same_engine = (a.get("engine_id") == clicked_engine) if clicked_engine else (i == idx)
-                if same_engine and (a.get("maintenance_status") or "maintenance_required") \
-                        not in ("completed", "follow_up_required"):
-                    alerts_data[i]["maintenance_status"]      = "scheduled"
-                    alerts_data[i]["scheduled_date"]          = sel_date
-                    alerts_data[i]["start_time"]              = start_time or "09:00"
-                    alerts_data[i]["maintenance_schedule_id"] = sched_db_id
-        else:
-            # No schedule created — at minimum update the clicked row in the store
-            alerts_data[idx]["maintenance_status"]    = "scheduled"
-            alerts_data[idx]["scheduled_date"]        = sel_date
-            alerts_data[idx]["start_time"]            = start_time or "09:00"
+        # Refresh exact links after the database transaction; never mark unrelated alerts scheduled.
+        if not sched_db_id:
+            return (dash.no_update,
+                    html.Span("Schedule could not be saved. Please try again.",
+                              style={"color": "#ff6b6b"}), *([dash.no_update] * 6))
+        try:
+            jobs = schedules_for_alerts(supabase, [dict(id=a.get("alert_id"),
+                engine_id=a.get("engine_id")) for a in alerts_data])
+        except Exception:
+            return (dash.no_update,
+                    html.Span("Schedule saved, but alert links could not be loaded. Refresh the page.",
+                              style={"color": "#ff6b6b"}), *([dash.no_update] * 6))
+        for a in alerts_data:
+            job = jobs.get(str(a.get("alert_id")))
+            if job:
+                if a.get("maintenance_schedule_id") != job["id"]:
+                    a["report"] = None
+                a.update(maintenance_status=job.get("status"),
+                         scheduled_date=job.get("scheduled_date"),
+                         start_time=job.get("start_time"),
+                         maintenance_started_at=job.get("started_at"),
+                         maintenance_completed_at=job.get("completed_at"),
+                         maintenance_schedule_id=job["id"])
 
         alerts = [_alert_from_store(a) for a in alerts_data]
         report = (alerts[idx].get("report")) if idx < len(alerts) else None
         detail = alert_detail_panel(alerts[idx], report=report)
         rows   = [alert_table_row(i, a, is_selected=(i == idx)) for i, a in enumerate(alerts)]
-        current_schedule = {"status": "scheduled", "scheduled_date": sel_date,
-                            "start_time": start_time or "09:00"} if sched_db_id else None
+        current_schedule = jobs.get(str(alerts_data[idx].get("alert_id")))
         badge, btn_children, btn_style = _engine_status_bar_contents(alerts, current_schedule=current_schedule)
         return hidden, "", alerts_data, badge, btn_children, btn_style, detail, rows
 
@@ -2452,7 +2376,6 @@ def register_alert_log_callbacks(app, supabase=None):
                     if not owned_schedule.data:
                         raise PermissionError("Schedule is not assigned to this user")
                     payload["maintenance_schedule_id"] = schedule_id
-                    payload["started_at"] = now
                     db.insert_records(supabase, "maintenance_reports", payload)
             except Exception as _e:
                 print(f"[ALERT] save progress: {_e}")
@@ -2564,7 +2487,6 @@ def register_alert_log_callbacks(app, supabase=None):
             "technician_notes":          notes or "",
             "outcome":                   new_status,
             "follow_up_reason":          followup_reason or "" if is_followup else "",
-            "completed_at":              now,
             "updated_at":                now,
         }
         payload["user_id"] = session["user_id"]
@@ -2588,10 +2510,6 @@ def register_alert_log_callbacks(app, supabase=None):
 
                 elif maintenance_schedule_id:
                     payload["maintenance_schedule_id"] = maintenance_schedule_id
-                    schedule = db.fetch_records(supabase, "maintenance_schedules", "started_at",
-                        filters=[("eq", "id", maintenance_schedule_id), ("eq", "assign_to", session["user_id"])], single=True)
-                    if (schedule.data or {}).get("started_at"):
-                        payload["started_at"] = schedule.data["started_at"]
                     db.insert_records(supabase, "maintenance_reports", payload)
                 schedule_upd = {
                     "status": new_status,

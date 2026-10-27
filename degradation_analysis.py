@@ -18,6 +18,7 @@ import json as _json
 import os
 import base64
 import traceback
+import re
 from datetime import datetime
 from pathlib import Path
 from assets.components import (build_sidebar, build_topbar, icon_shap)
@@ -514,48 +515,91 @@ def build_shap_trend_chart(cycles: list, shap_history: list[list[dict]], top_n: 
 
 
 # ─────────────────────────────────────────────
-#  LLM EXPLANATION (Groq — GPT-OSS 120B)
+#  LLM EXPLANATION (Groq with deterministic fallback)
 # ─────────────────────────────────────────────
+
+def _sensor_meanings() -> dict[str, str]:
+    return {
+        "T24": "LPC outlet temperature", "T30": "HPC outlet temperature",
+        "T50": "LPT outlet temperature", "P30": "HPC outlet pressure",
+        "Nf": "fan speed", "Nc": "core speed", "Ps30": "HPC static pressure",
+        "phi": "fuel-flow-to-pressure ratio", "NRf": "corrected fan speed",
+        "NRc": "corrected core speed", "BPR": "bypass ratio",
+        "htBleed": "bleed enthalpy", "W31": "HPT coolant bleed flow",
+        "W32": "LPT coolant bleed flow",
+    }
+
+
+def _shap_direction(score: float) -> str:
+    if score < 0:
+        return "contributes toward lower predicted RUL"
+    if score > 0:
+        return "contributes toward higher predicted RUL"
+    return "has near-zero contribution to predicted RUL"
+
+
+def _plain_priority_labels(text: str) -> str:
+    """Render priority labels as plain text even if the LLM returns links."""
+    text = re.sub(r"\[Priority\s*(\d+)\]\([^)]*\)", r"Priority \1:", text, flags=re.IGNORECASE)
+    return re.sub(r"\[Priority\s*(\d+)\]", r"Priority \1:", text, flags=re.IGNORECASE)
+
+
+def _get_raw_sensor_slopes(engine_db_id: str, sensor_names: list[str], window: int = 10) -> dict[str, float]:
+    """Calculate recent trends from raw sensor readings, never from SHAP scores."""
+    try:
+        import engine_simulation_manager as sim
+        rows = sim.get_sensor_history(str(engine_db_id))[-window:]
+    except Exception:
+        return {}
+    label_to_column = dict(zip(sim.SENSOR_SHORT, sim.SENSOR_COLS))
+    trends = {}
+    for name in sensor_names:
+        column = label_to_column.get(name)
+        if not column:
+            continue
+        points = []
+        for row in rows:
+            sensors = row.get("sensors", {})
+            value = sensors.get(column, row.get(column))
+            cycle = row.get("cycle")
+            if value is None or cycle is None:
+                continue
+            try:
+                value, cycle = float(value), float(cycle)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value) and np.isfinite(cycle):
+                points.append((cycle, value))
+        if len(points) >= 3:
+            points.sort(key=lambda point: point[0])
+            x = np.asarray([point[0] for point in points], dtype=float)
+            y = np.asarray([point[1] for point in points], dtype=float)
+            trends[name] = float(np.polyfit(x, y, 1)[0])
+    return trends
 
 def _build_llm_prompt(degradation_type: str, confidence: float,
                       top_features: list[dict], sensor_trends: dict | None = None,
                       predicted_rul: float | None = None,
-                      warn_threshold: int = 80,
+                      warn_threshold: int = 50,
                       crit_threshold: int = 30) -> str:
     """
-    Construct a structured Markdown prompt for Groq (GPT-OSS 120B).
-    The model is instructed to return four named Markdown sections so
+    Construct a structured Markdown prompt for Groq.
+    The model is instructed to return three named Markdown sections so
     the output renders cleanly in a dcc.Markdown component.
     """
-    sensor_context = {
-        "T24": "LPC outlet temperature — rises indicate compressor inefficiency",
-        "T30": "HPC outlet temperature — elevated values suggest compressor degradation or fouling",
-        "T50": "LPT outlet temperature — changes reflect turbine blade wear or thermal fatigue",
-        "P30": "HPC outlet pressure — drop indicates compressor blade erosion or tip clearance increase",
-        "Nf": "Fan speed — reduction suggests fan blade damage or increased aerodynamic drag",
-        "Nc": "Core speed — decline indicates HPC performance loss, possible blade erosion",
-        "Ps30": "HPC static pressure — deviation signals compressor stall margin reduction",
-        "phi": "Fuel-flow-to-Ps30 ratio — increase means the engine burns more fuel for same output (efficiency loss)",
-        "NRf": "Corrected fan speed — normalizes for ambient conditions; drop = true fan degradation",
-        "NRc": "Corrected core speed — normalizes for conditions; decline = true HPC degradation",
-        "BPR": "Bypass ratio — shift indicates fan vs core thrust balance changing",
-        "htBleed": "Bleed enthalpy — changes reflect thermal state of compressor bleed air",
-        "W31": "HPT coolant bleed flow — increase may indicate turbine thermal protection response",
-        "W32": "LPT coolant bleed flow — increase suggests downstream thermal stress",
-    }
+    sensor_context = _sensor_meanings()
 
     features_detail = []
     for f in top_features[:5]:
         name = f["sensor"]
         score = f["score"]
-        direction = "reducing RUL" if score < 0 else "slightly increasing RUL"
         context = sensor_context.get(name, "sensor function unknown")
-        features_detail.append(f"- **{name}** (score: {score:+.3f}, {direction}): {context}")
+        features_detail.append(f"- **{name}** (SHAP score: {score:+.3f}; {_shap_direction(score)}): {context}")
     features_str = "\n".join(features_detail)
 
     trend_str = ""
     if sensor_trends:
-        trend_str = "\nSENSOR SLOPE DATA (recent rolling trend):\n" + "\n".join(
+        trend_str = "\nRAW SENSOR VALUE SLOPES (positive means measured values increased; negative means they decreased):\n" + "\n".join(
             f"- {s}: slope = {v:+.5f} per cycle" for s, v in sensor_trends.items()
         )
 
@@ -595,7 +639,7 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
     ANALYSIS DATA:
     - Degradation profile: {degradation_type}
     - Pattern similarity: {confidence:.1%} (cosine similarity to the {degradation_type} reference profile)
-    - Top SHAP contributors (negative score = drives predicted RUL down):
+    - Top SHAP contributors (SHAP sign describes contribution to predicted RUL, not measured-value direction):
     {features_str}
     {rul_str}
     {trend_str}
@@ -603,21 +647,23 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
     OUTPUT INSTRUCTIONS — you MUST follow this structure exactly. Use Markdown. Do NOT produce a single paragraph.
 
     ### Why It Was Detected
-    Write 3–5 bullet points. Each bullet: sensor name in bold, then one sentence on what the sensor reading means physically and why 
-    it points to {degradation_type}. Only use the sensors listed above — do not invent others.
+    Write 3–5 bullet points using only the sensors listed above. Explain each SHAP score as contribution to predicted RUL.
+    State that a measured sensor value increased or decreased only when its raw sensor slope above supports that direction.
+    If no raw slope is provided for a sensor, do not state the direction of its measured value.
+    Never infer measured-value direction from the SHAP sign, and do not invent other sensors.
 
     ### Engineering Interpretation
     Write exactly 2–3 sentences. Explain the physical degradation mechanism linking the sensors above to {degradation_type}. State what 
     is likely happening inside the engine. Do not repeat the sensor list.
 
     ### Recommended Action
-    Write 2–3 bullet points in priority order. Scale urgency to {urgency_level}. Be specific to {degradation_type} — borescope stages, 
-    wash schedules, vibration checks, monitoring intervals, etc.
+    Write 2–3 concise bullet points. Scale urgency to {urgency_level}; refer only to the diagnosed profile and sensors listed above.
 
     RULES:
     - The degradation profile name "{degradation_type}" and similarity "{confidence:.1%}" MUST appear verbatim in the output.
     - Each section must have its ### heading exactly as shown.
     - Do not add a Diagnosis section — that is rendered separately by the UI.
+    - Do not create Markdown links. If labeling priorities, write labels as plain text such as Priority 1:.
     - Do not repeat information across sections.
     - No hedging phrases. Professional, engineering-focused tone.
     - Total output: no more than 180 words.
@@ -625,12 +671,16 @@ def _build_llm_prompt(degradation_type: str, confidence: float,
     return prompt
 
 
-def _validate_llm_output(text: str, degradation_type: str, confidence: float) -> bool:
+def _validate_llm_output(text: str, degradation_type: str, confidence: float,
+                         top_features: list[dict] | None = None) -> bool:
     """
     Lightweight validation: confirm that the LLM output contains the
     degradation profile label and pattern similarity value that were passed in.
     """
     if not text:
+        return False
+    required_sections = ("### Why It Was Detected", "### Engineering Interpretation", "### Recommended Action")
+    if any(section not in text for section in required_sections):
         return False
     # Check degradation profile label present (case-insensitive)
     if degradation_type.lower() not in text.lower():
@@ -642,133 +692,91 @@ def _validate_llm_output(text: str, degradation_type: str, confidence: float) ->
     if (conf_pct not in text and conf_pct_1 not in text
             and conf_decimal not in text and f"{confidence:.1%}" not in text):
         return False
+    if top_features:
+        allowed = {feature.get("sensor") for feature in top_features if feature.get("sensor")}
+        sensor_names = _sensor_meanings()
+        sensor_pattern = r"(?<![A-Za-z0-9])(?:" + "|".join(
+            re.escape(name) for name in sorted(sensor_names, key=len, reverse=True)
+        ) + r")(?![A-Za-z0-9])"
+        if any(name not in allowed for name in re.findall(sensor_pattern, text)):
+            return False
     return True
 
 
 def _fallback_explanation(degradation_type: str, confidence: float,
-                          top_features: list[dict],
+                          top_features: list[dict], sensor_trends: dict | None = None,
                           predicted_rul: float | None = None,
-                          warn_threshold: int = 80,
+                          warn_threshold: int = 50,
                           crit_threshold: int = 30) -> str:
-    """
-    Structured Markdown fallback when LLM output fails validation or API is unavailable.
-    Produces the same three-section format the UI expects.
-    """
-    sensor_meanings = {
-        "T24": "LPC outlet temperature (compressor inefficiency)",
-        "T30": "HPC outlet temperature (compressor fouling/degradation)",
-        "T50": "LPT outlet temperature (turbine wear)",
-        "P30": "HPC outlet pressure (blade erosion)",
-        "Nf": "Fan speed (fan blade damage)",
-        "Nc": "Core speed (HPC performance loss)",
-        "Ps30": "HPC static pressure (stall margin reduction)",
-        "phi": "Fuel efficiency ratio (efficiency loss)",
-        "NRf": "Corrected fan speed (fan degradation)",
-        "NRc": "Corrected core speed (HPC degradation)",
-        "BPR": "Bypass ratio (thrust balance shift)",
-        "htBleed": "Bleed enthalpy (compressor thermal state)",
-        "W31": "HPT coolant bleed (turbine thermal stress)",
-        "W32": "LPT coolant bleed (downstream thermal stress)",
-    }
-
-    # ── Why It Was Detected bullets ──
+    """Build a fallback using only the current prediction's SHAP features."""
+    meanings = _sensor_meanings()
     detected_lines = []
-    for f in top_features[:5]:
-        meaning = sensor_meanings.get(f["sensor"], f["sensor"])
-        direction = "declining" if f["score"] < 0 else "elevated"
-        detected_lines.append(f"- **{f['sensor']}** — {meaning}, {direction}")
-    detected_str = "\n".join(detected_lines)
+    for feature in top_features[:5]:
+        name = feature.get("sensor", "Unknown sensor")
+        try:
+            score = float(feature.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        line = (f"- **{name}** — {meanings.get(name, 'sensor measurement')}; "
+                f"SHAP attribution {score:+.3f} {_shap_direction(score)}.")
+        slope = (sensor_trends or {}).get(name)
+        if slope is not None and np.isfinite(slope):
+            direction = "increased" if slope > 0 else "decreased" if slope < 0 else "was stable"
+            line += f" The measured value {direction} in recent cycles (slope {slope:+.5f} per cycle)."
+        detected_lines.append(line)
 
-    # ── Engineering Interpretation ──
-    if "HPC" in degradation_type and "Fan" in degradation_type:
-        interpretation = (
-            f"The combined sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
-            f"is consistent with simultaneous HPC blade erosion and fan aerodynamic efficiency loss. "
-            f"Declining corrected speeds (NRf, NRc) and elevated HPC temperatures confirm both "
-            f"compression and fan pathway degradation. "
-            f"Note: this identifies similarity to a known degradation profile; "
-            f"physical confirmation requires inspection."
-        )
-        actions = (
-            "- **[Priority 1]** Borescope inspection of HPC stages 1–3\n"
-            "- **[Priority 2]** Fan blade visual inspection and FOD check\n"
-            "- **[Priority 3]** Vibration signature analysis across operating range"
-        )
-    elif "HPC" in degradation_type:
-        interpretation = (
-            f"The sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
-            f"is consistent with HPC blade erosion or fouling, causing reduced compression efficiency "
-            f"and increased specific fuel consumption. "
-            f"The decline in NRc and P30 indicates the HPC is no longer delivering design pressure ratio. "
-            f"Note: this identifies similarity to a known degradation profile; "
-            f"physical confirmation requires inspection."
-        )
-        actions = (
-            "- **[Priority 1]** Borescope inspection of HPC stages\n"
-            "- **[Priority 2]** Review compressor wash history; schedule wash if overdue\n"
-            "- **[Priority 3]** Monitor P30 and phi trend over next 5 cycles"
-        )
-    elif "Fan" in degradation_type:
-        interpretation = (
-            f"The sensor pattern for **{degradation_type}** (similarity: **{confidence:.1%}**) "
-            f"suggests fan blade surface degradation or FOD reducing aerodynamic efficiency. "
-            f"A declining NRf indicates true fan performance loss after correcting for ambient conditions. "
-            f"Note: this identifies similarity to a known degradation profile; "
-            f"physical confirmation requires inspection."
-        )
-        actions = (
-            "- **[Priority 1]** Fan blade visual inspection and FOD check\n"
-            "- **[Priority 2]** Vibration signature analysis\n"
-            "- **[Priority 3]** Monitor NRf trend over next 5 cycles"
-        )
+    feature_names = [f.get("sensor", "Unknown sensor") for f in top_features[:5]]
+    feature_list = ", ".join(f"**{name}**" for name in feature_names) or "no valid SHAP sensors"
+    interpretation = (
+        f"Pattern matching identified **{degradation_type}** with **{confidence:.1%}** similarity to its reference profile. "
+        f"The strongest SHAP contributors for this prediction are {feature_list}. "
+        "SHAP scores describe influence on predicted RUL; they do not by themselves indicate whether measured sensor values rose or fell."
+    )
+
+    if predicted_rul is None:
+        urgency = ""
     else:
-        interpretation = (
-            f"The sensor pattern (similarity: **{confidence:.1%}**) does not map cleanly to a single "
-            f"degradation mode. Multiple pathways may be active. "
-            f"Note: physical confirmation requires inspection."
-        )
-        actions = (
-            "- **[Priority 1]** Comprehensive borescope inspection of HPC and fan sections\n"
-            "- **[Priority 2]** Vibration and performance trend review"
-        )
-
-    # ── Urgency-scaled action prefix ──
-    if predicted_rul is not None:
         rul_int = int(round(predicted_rul))
         if rul_int <= crit_threshold:
-            action_note = f"> ⚠️ **CRITICAL** — RUL {rul_int} cycles ≤ critical threshold ({crit_threshold}). Immediate action required.\n\n"
+            urgency = f"> **CRITICAL** — RUL {rul_int} cycles is at or below the critical threshold ({crit_threshold}). Immediate maintenance review is recommended.\n\n"
         elif rul_int <= warn_threshold:
-            action_note = f"> ⚡ **WARNING** — RUL {rul_int} cycles ≤ warning threshold ({warn_threshold}). Schedule at next window.\n\n"
+            urgency = f"> **WARNING** — RUL {rul_int} cycles is at or below the warning threshold ({warn_threshold}). Plan maintenance at the next suitable window.\n\n"
         else:
-            action_note = f"> ✅ **HEALTHY** — RUL {rul_int} cycles above warning threshold ({warn_threshold}). No immediate action.\n\n"
-    else:
-        action_note = ""
+            urgency = f"> **HEALTHY** — RUL {rul_int} cycles is above the warning threshold ({warn_threshold}). Continue monitoring.\n\n"
 
-    return (
-        f"### Why It Was Detected\n\n"
-        f"{detected_str}\n\n"
-        f"### Engineering Interpretation\n\n"
-        f"{interpretation}\n\n"
-        f"### Recommended Action\n\n"
-        f"{action_note}"
-        f"{actions}\n"
+    actions = (
+        f"- Priority 1: Review the measured values and recent trends for {feature_list} against engine-specific baselines.\n"
+        f"- Priority 2: Inspect the systems associated with **{degradation_type}** using approved maintenance procedures.\n"
+        "- Priority 3: Corroborate this pattern match with inspection findings before taking maintenance action."
     )
+    explanation = (
+        "### Why It Was Detected\n\n" + "\n".join(detected_lines) + "\n\n"
+        "### Engineering Interpretation\n\n" + interpretation + "\n\n"
+        "### Recommended Action\n\n" + urgency + actions + "\n"
+    )
+    return _plain_priority_labels(explanation)
 
 
 def generate_llm_explanation(degradation_type: str, confidence: float, top_features: list[dict], sensor_trends: dict | None = None,
-                             predicted_rul: float | None = None, warn_threshold: int = 80, crit_threshold: int = 30) -> str:
-    """
-    Call Groq API (GPT-OSS 120B) to generate natural language explanation.
-    Falls back to a templated string if the API is unavailable or validation fails.
-    """
+                             predicted_rul: float | None = None, warn_threshold: int = 50,
+                             crit_threshold: int = 30, return_source: bool = False):
+    """Use Groq when available; otherwise return a data-grounded local explanation."""
+    def result(text: str, source: str):
+        text = _plain_priority_labels(text)
+        return (text, source) if return_source else text
+
+    def fallback():
+        return result(_fallback_explanation(
+            degradation_type, confidence, top_features, sensor_trends,
+            predicted_rul, warn_threshold, crit_threshold,
+        ), "Template fallback")
+
     api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
-        return _fallback_explanation(degradation_type, confidence, top_features,
-                                     predicted_rul, warn_threshold, crit_threshold)
+        return fallback()
 
     prompt = _build_llm_prompt(degradation_type, confidence, top_features, sensor_trends,
-                                predicted_rul, warn_threshold, crit_threshold)
-
+                               predicted_rul, warn_threshold, crit_threshold)
     try:
         from groq import Groq
         client = Groq(api_key=api_key)
@@ -778,21 +786,15 @@ def generate_llm_explanation(degradation_type: str, confidence: float, top_featu
             temperature=0.3,
             max_tokens=500,
         )
-        text = response.choices[0].message.content.strip() if response.choices else ""
-
-        if _validate_llm_output(text, degradation_type, confidence):
-            return text
-        else:
-            print("[DEGRAD] LLM output failed validation, using fallback.")
-            return _fallback_explanation(degradation_type, confidence, top_features, predicted_rul, warn_threshold, crit_threshold)
-
+        generated_text = response.choices[0].message.content.strip() if response.choices else ""
+        if _validate_llm_output(generated_text, degradation_type, confidence, top_features):
+            return result(generated_text, "Groq · GPT-OSS 120B")
+        print("[DEGRAD] LLM output failed validation, using fallback.")
     except ImportError:
         print("[DEGRAD] groq package not installed. Using fallback.")
-        return _fallback_explanation(degradation_type, confidence, top_features, predicted_rul, warn_threshold, crit_threshold)
-    except Exception as e:
-        print(f"[DEGRAD] Groq API error: {e}")
-        return _fallback_explanation(degradation_type, confidence, top_features,
-                                     predicted_rul, warn_threshold, crit_threshold)
+    except Exception as exc:
+        print(f"[DEGRAD] Groq API error: {exc}")
+    return fallback()
 
 
 # ─────────────────────────────────────────────
@@ -1229,11 +1231,11 @@ def create_degradation_analysis_layout(supabase=None, engine_db_id=None):
                                         "color": "rgba(168,212,255,0.7)", "fontSize": "11px",
                                         "fontWeight": "700", "letterSpacing": "1px",
                                     }),
-                                    html.Span("GPT-OSS 120B", style={
+                                    html.Span("", style={
                                         "color": "rgba(74,158,255,0.6)", "fontSize": "10px",
                                         "background": "rgba(74,158,255,0.1)",
                                         "borderRadius": "4px", "padding": "2px 6px",
-                                    }),
+                                    }, id="da-llm-model-badge"),
                                 ]
                             ),
                             html.Button(
@@ -1592,6 +1594,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
     @app.callback(
         Output("da-llm-explanation", "children"),
         Output("da-llm-diagnosis-header", "children"),
+        Output("da-llm-model-badge", "children"),
         Output("da-llm-timestamp", "children"),
         Input("da-generate-btn", "n_clicks"),
         State("da-engine-db-id", "data"),
@@ -1604,6 +1607,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         Returns:
           - da-llm-explanation      → dcc.Markdown with three-section body
           - da-llm-diagnosis-header → updated pinned summary chips
+          - da-llm-model-badge     → provider label for the current response
           - da-llm-timestamp        → last-generated timestamp string
         """
         if not n_clicks or not supabase or not engine_db_id:
@@ -1655,33 +1659,16 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                     predicted_rul = v
                     break
 
-            # ── Compute per-sensor slope over last 10 cycles ──
-            window = 10
-            recent_shap = [s for s in all_shap[-window:] if s]
-            if len(recent_shap) >= 3:
-                sensor_names = [e["sensor"] for e in latest_shap] if latest_shap else []
-                trends = {}
-                for sensor in sensor_names:
-                    vals = []
-                    for snapshot in recent_shap:
-                        for entry in snapshot:
-                            if entry["sensor"] == sensor:
-                                vals.append(entry["score"])
-                                break
-                    if len(vals) >= 3:
-                        import numpy as _np
-                        x = list(range(len(vals)))
-                        slope = float(_np.polyfit(x, vals, 1)[0])
-                        trends[sensor] = slope
-                if trends:
-                    sensor_trends = trends
+            sensor_trends = _get_raw_sensor_slopes(
+                engine_db_id, [entry.get("sensor") for entry in latest_shap[:5]]
+            )
 
         except Exception as e:
             err_md = dcc.Markdown(
                 f"**Error fetching prediction data:** {e}",
                 className="ai-explanation-md",
             )
-            return err_md, dash.no_update, dash.no_update
+            return err_md, dash.no_update, dash.no_update, dash.no_update
 
         # ── Re-fetch degradation_type, stored similarity and model_type ──
         try:
@@ -1698,7 +1685,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             pass
 
         # ── Fetch configured thresholds ──
-        warn_threshold = 80
+        warn_threshold = 50
         crit_threshold = 30
         try:
             thr_resp = db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
@@ -1716,14 +1703,14 @@ def register_degradation_analysis_callbacks(app, supabase=None):
                 "is not yet strong enough to report.",
                 className="ai-explanation-md",
             )
-            return no_pattern_md, dash.no_update, dash.no_update
+            return no_pattern_md, dash.no_update, dash.no_update, dash.no_update
 
         if not latest_shap:
             no_shap_md = dcc.Markdown(
                 "Insufficient SHAP data to generate analysis. Awaiting more prediction cycles.",
                 className="ai-explanation-md",
             )
-            return no_shap_md, dash.no_update, dash.no_update
+            return no_shap_md, dash.no_update, dash.no_update, dash.no_update
 
         similarity = compute_pattern_similarity(
             degradation_type, latest_shap,
@@ -1733,7 +1720,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         if similarity is None:
             similarity = 0.0
 
-        explanation = generate_llm_explanation(
+        explanation, explanation_source = generate_llm_explanation(
             degradation_type=degradation_type,
             confidence=similarity,
             top_features=latest_shap[:5],
@@ -1741,6 +1728,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
             predicted_rul=predicted_rul,
             warn_threshold=warn_threshold,
             crit_threshold=crit_threshold,
+            return_source=True,
         )
 
         # ── Cache to engines table ──
@@ -1762,6 +1750,7 @@ def register_degradation_analysis_callbacks(app, supabase=None):
         return (
             dcc.Markdown(explanation, className="ai-explanation-md"),
             diagnosis_children,
+            explanation_source,
             timestamp_str,
         )
 

@@ -12,7 +12,7 @@ Configuration (add to .env):
     EMAIL_SENDER=your-sender@gmail.com
     EMAIL_PASSWORD=your-app-password          # Gmail App Password
     EMAIL_RECIPIENTS=a@co.com,b@co.com        # comma-separated
-    DASHBOARD_URL=https://fyp-dl-based-pdm-system.onrender.com  # base URL for the Open Dashboard button
+    DASHBOARD_URL=http://localhost:8050  # base URL for the Open Dashboard button
     EMAIL_DAILY_HOUR=9                        # hour (0-23) for daily report, default 9
     SMTP_HOST=smtp.gmail.com                  # optional, default smtp.gmail.com
     SMTP_PORT=587                             # optional, default 587
@@ -31,6 +31,7 @@ from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
+from assets import database_integration as db
 
 
 # ─────────────────────────────────────────────
@@ -92,19 +93,16 @@ def _send_email(subject: str, html_body: str, recipients_override: list = None) 
 def _fetch_thresholds(supabase) -> tuple[int, int]:
     """Return (warn_thresh, crit_thresh) from the alert_thresholds table."""
     try:
-        resp = supabase.table("alert_thresholds") \
-            .select("warning_threshold, critical_threshold") \
-            .order("updated_at", desc=True) \
-            .limit(1) \
-            .execute()
+        resp = db.get_alert_thresholds(
+            supabase, "warning_threshold, critical_threshold")
         if resp.data:
             return (
-                int(resp.data[0].get("warning_threshold", 62)),
+                int(resp.data[0].get("warning_threshold", 50)),
                 int(resp.data[0].get("critical_threshold", 30)),
             )
     except Exception:
         pass
-    return 62, 30
+    return 50, 30
 
 
 def _fetch_fleet_summary(supabase) -> dict:
@@ -116,7 +114,7 @@ def _fetch_fleet_summary(supabase) -> dict:
     total = critical = warning = normal = 0
 
     try:
-        engines_resp = supabase.table("engines").select("id").execute()
+        engines_resp = db.fetch_records(supabase, "engines", "id")
         engine_ids   = [e["id"] for e in (engines_resp.data or []) if e.get("id")]
         total        = len(engine_ids)
 
@@ -124,11 +122,10 @@ def _fetch_fleet_summary(supabase) -> dict:
             return {"total": 0, "critical": 0, "warning": 0, "normal": 0}
 
         # Fetch latest predicted_rul per engine
-        pred_resp = supabase.table("rul_predictions") \
-            .select("engine_id, predicted_rul") \
-            .in_("engine_id", engine_ids) \
-            .order("predicted_at", desc=True) \
-            .execute()
+        pred_resp = db.fetch_records(
+            supabase, "rul_predictions", "engine_id, predicted_rul",
+            filters=[("in_", "engine_id", engine_ids)],
+            order_by=[("predicted_at", True)])
 
         # Keep only the first (latest) row per engine
         seen: set = set()
@@ -171,7 +168,7 @@ def _fmt_date(dt: Optional[datetime] = None) -> str:
 
 
 def _daily_report_html(summary: dict) -> str:
-    login_url = _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com") + "/login"
+    login_url = _cfg("DASHBOARD_URL", "http://localhost:8050") + "/login"
     date_str = _fmt_date()
 
     return f"""<!DOCTYPE html>
@@ -242,7 +239,7 @@ def _threshold_alert_html(
     triggered_at: Optional[datetime] = None,
     recommendation_html: str = "",
 ) -> str:
-    base_url = _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com")
+    base_url = _cfg("DASHBOARD_URL", "http://localhost:8050")
     # Deep link: after login, navigate directly to this engine's alert log
     dashboard_url = f"{base_url}/?next=/alert-log/{engine_db_id}"
     date_str = _fmt_date(triggered_at)
@@ -317,7 +314,7 @@ def _threshold_alert_html(
 # ─────────────────────────────────────────────
 #  ALERT DEDUPLICATION & RE-ALERT LOGIC
 #  - Fires once when threshold first crossed
-#  - Re-fires every 12h if not acknowledged by the responsible person
+#  - Re-fires every 12h if the alert remains active
 #  - Escalation from warning → critical always fires immediately
 # ─────────────────────────────────────────────
 
@@ -334,7 +331,7 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
     Logic:
       - healthy → reset state, no alert
       - First time crossing threshold → alert
-      - Same level already sent → check if 12h passed AND not acknowledged
+      - Same level already sent → check if 12h passed AND the alert remains active
       - Escalation (warning → critical) → always alert
     """
     with _alert_lock:
@@ -347,20 +344,18 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
 
         if prev is None:
             # First time this session — check DB to avoid duplicate sends
-            # within the same app session. But only block if already acknowledged/resolved.
+            # within the same app session. But only block if already resolved.
             # An existing "active" row means it was logged before but email may not have
             # been sent (e.g. app restarted). We should still attempt to send.
             if supabase:
                 try:
-                    resp = supabase.table("alert_logs") \
-                        .select("status, triggered_at") \
-                        .eq("engine_id", engine_db_id) \
-                        .order("triggered_at", desc=True) \
-                        .limit(1) \
-                        .execute()
+                    resp = db.fetch_records(
+                        supabase, "alert_logs", "status, triggered_at",
+                        filters=[("eq", "engine_id", engine_db_id)],
+                        order_by=[("triggered_at", True)], limit=1)
                     if resp.data:
                         latest_status = resp.data[0].get("status")
-                        if latest_status in ("acknowledged", "resolved"):
+                        if latest_status == "resolved":
                             # Already handled — don't re-alert
                             _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
                             return False
@@ -382,19 +377,17 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
         if new_level == "warning" and prev_level == "critical":
             return False
 
-        # Same level — check if 12h passed and still not acknowledged
+        # Same level — check if 12h passed and still the alert remains active
         if now - last_sent >= _REALERT_INTERVAL:
-            # Check DB: is the latest alert still unacknowledged?
+            # Check DB: is the latest alert still active?
             if supabase:
                 try:
-                    resp = supabase.table("alert_logs") \
-                        .select("status") \
-                        .eq("engine_id", engine_db_id) \
-                        .order("triggered_at", desc=True) \
-                        .limit(1) \
-                        .execute()
+                    resp = db.fetch_records(
+                        supabase, "alert_logs", "status",
+                        filters=[("eq", "engine_id", engine_db_id)],
+                        order_by=[("triggered_at", True)], limit=1)
                     if resp.data and resp.data[0].get("status") == "active":
-                        # Not acknowledged after 12h — re-alert
+                        # Still active after 12h — re-alert
                         _alert_state[engine_db_id] = {"level": new_level, "last_sent": now}
                         return True
                 except Exception:
@@ -422,11 +415,8 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
 
     try:
         # Get engine's organization_id and responsible_by
-        eng_resp = supabase.table("engines") \
-            .select("organization_id, responsible_by") \
-            .eq("id", engine_db_id) \
-            .single() \
-            .execute()
+        eng_resp = db.get_engine(
+            supabase, engine_db_id, "organization_id, responsible_by")
 
         if not eng_resp.data:
             print(f"[EMAIL] No engine row found for id={engine_db_id}")
@@ -439,11 +429,9 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
         # Get responsible user's email
         if responsible_by:
             try:
-                user_resp = supabase.table("users") \
-                    .select("email_address") \
-                    .eq("id", responsible_by) \
-                    .single() \
-                    .execute()
+                user_resp = db.fetch_records(
+                    supabase, "users", "email_address",
+                    filters=[("eq", "id", responsible_by)], single=True)
                 email = (user_resp.data or {}).get("email_address")
                 if email:
                     recipients.add(email)
@@ -456,12 +444,11 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
         # Get all admins in the same organization
         if org_id:
             try:
-                admins_resp = supabase.table("users") \
-                    .select("email_address, username") \
-                    .eq("organization_id", org_id) \
-                    .eq("role", "admin") \
-                    .eq("is_deleted", False) \
-                    .execute()
+                admins_resp = db.fetch_records(
+                    supabase, "users", "email_address, username",
+                    filters=[("eq", "organization_id", org_id),
+                             ("eq", "role", "admin"),
+                             ("eq", "is_deleted", False)])
                 print(f"[EMAIL] Found {len(admins_resp.data or [])} admin(s) in org {org_id}")
                 for u in (admins_resp.data or []):
                     email = u.get("email_address")
@@ -530,7 +517,7 @@ def check_and_send_threshold_alert(
         }
         if trigger_cycle is not None:
             insert_data["trigger_cycle"] = int(trigger_cycle)
-        supabase.table("alert_logs").insert(insert_data).execute()
+        db.insert_records(supabase, "alert_logs", insert_data)
         print(f"[EMAIL] Logged alert to alert_logs: engine={engine_db_id} severity={level} "
               f"rul={pred_rul:.1f} cycle={trigger_cycle}")
     except Exception:
@@ -550,7 +537,7 @@ def check_and_send_threshold_alert(
 
         recommendation_html = email_section(
             supabase, engine_db_id, pred_rul,
-            _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com"),
+            _cfg("DASHBOARD_URL", "http://localhost:8050"),
         )
         html = _threshold_alert_html(
             engine_display_id=str(engine_display_id).zfill(2),

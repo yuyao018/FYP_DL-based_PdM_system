@@ -42,7 +42,7 @@ def generate_password():
 
 
 def send_welcome_email(email, first_name, username, password):
-    url = _cfg("DASHBOARD_URL", "https://fyp-dl-based-pdm-system.onrender.com").rstrip("/") + "/"
+    url = _cfg("DASHBOARD_URL", "http://localhost:8050").rstrip("/") + "/"
     body = f"""<html><body style="font-family:Arial,sans-serif;line-height:1.6">
     <h2>Your monitoring system account</h2>
     <p>Hello {escape(first_name)},</p>

@@ -1,5 +1,15 @@
 # AI-Driven Predictive Maintenance System for Turbofan Engines
 
+## Login security: temporary lockout
+
+Sign-in uses the account username and password. Five failed attempts lock the
+account for 30 minutes. A successful sign-in clears the failure counter. Local
+development uses an in-process counter. Production uses the configured Redis
+connection so lockouts are shared across app instances and survive restarts.
+Set `REDIS_URL` and `FLASK_SESSION_TYPE=redis` in the deployment
+environment. Use HTTPS and keep
+`FLASK_SECRET_KEY` private.
+
 ## Simulation speed
 
 Each selected engine has a shared floating Simulation panel on Overview, Sensor

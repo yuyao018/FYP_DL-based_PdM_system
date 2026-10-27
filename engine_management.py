@@ -202,7 +202,7 @@ def create_engine_management_layout(supabase=None, org_id=None):
     else:
         try:
             # ── Fetch alert thresholds ──
-            warn_thresh = 62
+            warn_thresh = 50
             crit_thresh = 30
             max_life    = 125
             try:

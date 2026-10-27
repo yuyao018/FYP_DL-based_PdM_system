@@ -925,12 +925,12 @@ def _fetch_thresholds(supabase) -> tuple[float, float]:
             lambda: db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
         )
         if resp.data:
-            warn = float(resp.data[0].get("warning_threshold", 62))
+            warn = float(resp.data[0].get("warning_threshold", 50))
             crit = float(resp.data[0].get("critical_threshold", 30))
             return warn, crit
     except Exception:
         print(f"[SIM][WARN] Could not fetch alert_thresholds, using defaults: {traceback.format_exc(limit=2)}")
-    return 62.0, 30.0
+    return 50.0, 30.0
 
 
 # ─────────────────────────────────────────────
@@ -960,7 +960,7 @@ def _get_active_model_version_id(supabase, model_type: str) -> str | None:
 #  CONDITION STATUS HELPER
 # ─────────────────────────────────────────────
 
-def _rul_to_status(predicted_rul: float, warn_thresh: float = 62, crit_thresh: float = 30) -> str:
+def _rul_to_status(predicted_rul: float, warn_thresh: float = 50, crit_thresh: float = 30) -> str:
     if predicted_rul <= crit_thresh:
         return "critical"
     if predicted_rul <= warn_thresh:
@@ -979,6 +979,28 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
     if not cycles:
         print(f"[SIM] No cycle data for engine {engine_db_id} — simulation aborted.")
         return
+
+    # ── Resume from last saved cycle (skip already-processed cycles) ──────────
+    resume_from_cycle = 0
+    try:
+        eng_resp = db.get_engine(supabase, engine_db_id, "current_cycle, condition_status")
+        if eng_resp.data:
+            clock.observe(eng_resp.data.get("condition_status") or "healthy",
+                          int(eng_resp.data.get("current_cycle") or 0))
+        if eng_resp.data and eng_resp.data.get("current_cycle"):
+            resume_from_cycle = int(eng_resp.data["current_cycle"])
+            print(f"[SIM] engine={engine_db_id} resuming from cycle {resume_from_cycle}")
+    except Exception:
+        pass  # start from the beginning if we can't read the saved cycle
+
+    # Publish already-observed sensor history before loading the prediction model.
+    # Charts must not wait for model downloads, initialization, or prediction setup.
+    if resume_from_cycle > 0:
+        with _SENSOR_LOCK:
+            _SENSOR_BUFFER[engine_db_id] = deque(
+                (row for row in cycles if row.get("cycle", 0) <= resume_from_cycle),
+                maxlen=SENSOR_BUFFER_MAX,
+            )
 
     model = _load_model(model_type, supabase=supabase)
     scaler_mean, scaler_std = _SCALER_CACHE.get(model_type, (None, None))
@@ -1008,19 +1030,6 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
     warn_thresh, crit_thresh = _fetch_thresholds(supabase)
     print(f"[SIM] engine={engine_db_id} thresholds: warn={warn_thresh} crit={crit_thresh}")
 
-    # ── Resume from last saved cycle (skip already-processed cycles) ──────────
-    resume_from_cycle = 0
-    try:
-        eng_resp = db.get_engine(supabase, engine_db_id, "current_cycle, condition_status")
-        if eng_resp.data:
-            clock.observe(eng_resp.data.get("condition_status") or "healthy",
-                          int(eng_resp.data.get("current_cycle") or 0))
-        if eng_resp.data and eng_resp.data.get("current_cycle"):
-            resume_from_cycle = int(eng_resp.data["current_cycle"])
-            print(f"[SIM] engine={engine_db_id} resuming from cycle {resume_from_cycle}")
-    except Exception:
-        pass  # start from the beginning if we can't read the saved cycle
-
     # Fast-forward: replay raw sensor rows silently up to resume_from_cycle
     # so the window buffer has valid history for prediction.
     # No sleep, no Supabase writes — pure buffer warm-up.
@@ -1031,7 +1040,6 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
                 break
             vec = _extract_raw_sensors(row, include_os=_include_os)
             if vec is not None:
-                _push_sensor_row(engine_db_id, row)
                 buffer.push(vec)
         print(f"[SIM] engine={engine_db_id} buffer warmed up to cycle {resume_from_cycle}")
 
@@ -1148,11 +1156,7 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
             if pred_rul is not None:
                 new_status = _rul_to_status(pred_rul, warn_thresh=warn_thresh, crit_thresh=crit_thresh)
                 clock.observe(new_status, cycle_num)
-                fault_mode = (
-                    "critical_degradation" if new_status == "critical" else
-                    "moderate_degradation" if new_status == "warning" else
-                    None
-                )
+
 
                 # ── Degradation pattern matching (cosine similarity vs. reference signatures) ──
                 pattern_label, pattern_similarity = _detect_degradation_type(
@@ -1167,8 +1171,6 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
                         "predicted_rul": round(pred_rul, 2),
                         "predicted_at":  datetime.now(timezone.utc).isoformat(),
                     }
-                    if fault_mode:
-                        row_data["fault_mode"] = fault_mode
                     if model_version_id:
                         row_data["model_version_id"] = model_version_id
                     if shap_data:
@@ -1428,8 +1430,6 @@ def resume_all_simulations(supabase):
                         "stop": threading.Event(),
                         "model_type": model_type,
                     }
-            # Ensure model is loaded so _CLUSTER_CACHE is populated for FD002/FD004.
-            _load_model(model_type, supabase=supabase)
             # Pre-load sensor rows into the ring buffer for display
             try:
                 cycles_data = _json.loads(open(json_path).read()) if isinstance(d, str) else d
@@ -1440,6 +1440,8 @@ def resume_all_simulations(supabase):
                 print(f"[SIM] Pre-loaded {len(cycles_data)} sensor rows for completed engine {engine_db_id}")
             except Exception:
                 pass
+            # Normalize completed-engine charts once model metadata is available.
+            _load_model(model_type, supabase=supabase)
             continue
 
         # ── Start simulation thread ──

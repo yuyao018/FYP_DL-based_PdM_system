@@ -403,9 +403,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
 
     if supabase:
         try:
-            q = supabase.table("maintenance_schedules") \
-                .select("id, engine_id, scheduled_date, start_time, end_time, status, created_by, assign_to") \
-                .order("scheduled_date", desc=False)
+            schedule_filters = []
 
             print(f"[SM] Loading schedules: role={role}, org_id={org_id}, user_id={user_id}")
 
@@ -413,11 +411,10 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 # Admin sees all schedules for any engine in their org
                 if org_id:
                     try:
-                        e_resp = supabase.table("engines") \
-                            .select("id") \
-                            .eq("organization_id", org_id) \
-                            .eq("is_deleted", True) \
-                            .execute()
+                        e_resp = db.fetch_records(
+                            supabase, "engines", "id",
+                            filters=[("eq", "organization_id", org_id),
+                                     ("eq", "is_deleted", True)])
                         org_engine_ids = [str(r["id"]) for r in (e_resp.data or [])]
                         print(f"[SM] Admin org engine IDs: {org_engine_ids}")
                     except Exception as e:
@@ -425,22 +422,25 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                         print(f"[SM] Failed to fetch org engines: {e}")
 
                     if org_engine_ids:
-                        q = q.in_("engine_id", org_engine_ids)
+                        schedule_filters.append(("in_", "engine_id", org_engine_ids))
                     else:
                         print(f"[SM] No engines found for org_id={org_id}, showing all schedules")
                         # org has no engines — nothing to show
-                        q = q.eq("id", "00000000-0000-0000-0000-000000000000")
+                        schedule_filters.append(("eq", "id", "00000000-0000-0000-0000-000000000000"))
                 else:
                     # No org_id for admin — show everything (super-admin)
                     print("[SM] Admin with no org_id — showing all schedules")
             else:
                 # Regular users only see their own schedules
                 if user_id:
-                    q = q.eq("assign_to", user_id)
+                    schedule_filters.append(("eq", "assign_to", user_id))
                 else:
-                    q = q.eq("assign_to", "00000000-0000-0000-0000-000000000000")
+                    schedule_filters.append(("eq", "assign_to", "00000000-0000-0000-0000-000000000000"))
 
-            sched_resp = q.execute()
+            sched_resp = db.fetch_records(
+                supabase, "maintenance_schedules",
+                "id, engine_id, scheduled_date, start_time, end_time, status, created_by, assign_to",
+                filters=schedule_filters, order_by=[("scheduled_date", False)])
 
             # ── For admin: batch-fetch usernames for all created_by IDs ──────
             user_name_map: dict[str, str] = {}  # user_id → display name
@@ -451,10 +451,9 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 })
                 if created_by_ids:
                     try:
-                        u_resp = supabase.table("users") \
-                            .select("id, username, first_name, last_name") \
-                            .in_("id", created_by_ids) \
-                            .execute()
+                        u_resp = db.fetch_records(
+                            supabase, "users", "id, username, first_name, last_name",
+                            filters=[("in_", "id", created_by_ids)])
                         for u in (u_resp.data or []):
                             uid = str(u["id"])
                             first = u.get("first_name") or ""
@@ -737,7 +736,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         if not session:
             raise dash.exceptions.PreventUpdate
         try:
-            authorized_engine(supabase, engine_id, session)
+            booking_engine = authorized_engine(supabase, engine_id, session)
         except ValueError as exc:
             return (dash.no_update, dash.no_update, dash.no_update,
                     html.Span(str(exc), style={"color": "#ff6b6b", "fontSize": "12px"}))
@@ -792,21 +791,14 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         status = "warning"
         if supabase:
             try:
-                resp = supabase.table("engines") \
-                    .select("engine_id, model_type") \
-                    .eq("id", engine_id) \
-                    .single().execute()
+                resp = db.get_engine(supabase, engine_id, "engine_id, model_type")
                 if resp.data:
                     engine_label = f"ENGINE-{str(resp.data.get('engine_id', '?')).zfill(2)}"
                 # Fetch latest RUL to derive status
-                pred = supabase.table("rul_predictions") \
-                    .select("predicted_rul") \
-                    .eq("engine_id", engine_id) \
-                    .order("predicted_at", desc=True) \
-                    .limit(1).execute()
+                pred = db.get_latest_prediction(supabase, engine_id, "predicted_rul")
                 if pred.data:
                     rul = float(pred.data[0].get("predicted_rul", 100))
-                    status = "critical" if rul <= 30 else "warning" if rul <= 62 else "healthy"
+                    status = "critical" if rul <= 30 else "warning" if rul <= 50 else "healthy"
             except Exception:
                 pass
 
@@ -838,6 +830,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
                     "end_time":       end_time,
                     "status":         "scheduled",
                     "created_by":     session_user_id,
+                    "assign_to":      booking_engine["responsible_by"],
                     "created_at":     datetime.utcnow().isoformat(),
                 })
                 if result.data:
@@ -997,8 +990,10 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
             updated = [e for e in events if e.get("_idx") != ev_idx]
             if supabase and db_id:
                 try:
-                    supabase.table("maintenance_schedules").delete() \
-                        .eq("id", db_id).eq("created_by", session["user_id"]).execute()
+                    db.delete_records(
+                        supabase, "maintenance_schedules",
+                        filters=[("eq", "id", db_id),
+                                 ("eq", "created_by", session["user_id"])])
                 except Exception as e:
                     print(f"[SM][WARN] Delete failed: {e}")
             return updated, [_build_calendar(updated, 0)], hidden_style, ""
@@ -1039,8 +1034,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         status = (selected_ev or {}).get("status", "warning")
         if supabase:
             try:
-                resp = supabase.table("engines").select("engine_id") \
-                    .eq("id", engine_id).single().execute()
+                resp = db.get_engine(supabase, engine_id, "engine_id")
                 if resp.data:
                     engine_label = f"ENGINE-{str(resp.data.get('engine_id', '?')).zfill(2)}"
             except Exception:
@@ -1065,12 +1059,13 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # Persist to Supabase
         if supabase and db_id:
             try:
-                supabase.table("maintenance_schedules").update({
+                db.update_records(supabase, "maintenance_schedules", {
                     "engine_id":      engine_id,
                     "scheduled_date": sel_date,
                     "start_time":     start_time,
                     "end_time":       end_time,
-                }).eq("id", db_id).eq("created_by", session["user_id"]).execute()
+                }, filters=[("eq", "id", db_id),
+                            ("eq", "created_by", session["user_id"])])
             except Exception as e:
                 print(f"[SM][WARN] Update failed: {e}")
                 return (dash.no_update, dash.no_update, dash.no_update,
