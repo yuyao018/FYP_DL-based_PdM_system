@@ -1,0 +1,29 @@
+/* Keep Dash's input wrapper and editable text box at the same height. */
+.engine-form-text-field {
+    min-height: 44px;
+}
+
+.engine-form-text-field .dash-input-container {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    height: 42px !important;
+    min-height: 42px !important;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    box-sizing: border-box;
+}
+
+.engine-form-text-field input {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    height: 42px !important;
+    min-height: 42px !important;
+    padding: 0 12px !important;
+    margin: 0;
+    line-height: 20px !important;
+    box-sizing: border-box !important;
+}

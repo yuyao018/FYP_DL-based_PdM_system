@@ -8,6 +8,8 @@ import base64
 from datetime import datetime
 from assets.components import (build_admin_sidebar, build_topbar)
 
+ENGINE_TABLE_COLUMNS = "minmax(110px, 1fr) minmax(95px, 0.8fr) minmax(100px, 0.8fr) minmax(190px, 1.4fr) minmax(120px, 1fr) minmax(100px, 0.8fr) minmax(205px, 1.4fr)"
+
 def status_badge(status):
     status_lower = status.lower()
     cfg = {
@@ -16,7 +18,7 @@ def status_badge(status):
         "critical": {"bg": "rgba(255,77,77,0.18)",  "border": "#ff4d4d", "text": "#ff4d4d"},
     }
     c = cfg.get(status_lower, cfg["healthy"])
-    label = status_lower.upper()
+    label = status_lower.title()
 
     badge = html.Span(label, style={
         "background": c["bg"], "color": c["text"], "border": f"1px solid {c['border']}",
@@ -28,8 +30,10 @@ def status_badge(status):
 def engine_table_row(engine, idx):
     return html.Div(
         style={
+            "minWidth": "1164px",
             "display": "grid",
-            "gridTemplateColumns": "0.8fr 1.2fr 0.8fr 1fr 0.8fr 1fr",
+            "gridTemplateColumns": ENGINE_TABLE_COLUMNS,
+            "columnGap": "16px",
             "alignItems": "center",
             "padding": "12px 24px",
             "borderBottom": "1px solid rgba(74,158,255,0.08)",
@@ -39,10 +43,11 @@ def engine_table_row(engine, idx):
                      style={"color": "white", "fontSize": "13px", "fontWeight": "600"}),
             html.Span(engine.get("model_type", "—"), 
                      style={"color": "#a8d4ff", "fontSize": "13px"}),
-            html.Div([
-                status_badge(engine.get("condition_status", "healthy")),
-                maintenance_badge(engine.get("maintenance_status")),
-            ], style={"display": "flex", "flexDirection": "column", "gap": "6px", "alignItems": "flex-start"}),
+            status_badge(engine.get("condition_status", "healthy")),
+            html.Div(children=maintenance_badge(engine.get("maintenance_status"))
+                     if engine.get("maintenance_status") else html.Span(
+                         "—", style={"color": "rgba(168,212,255,0.4)"}),
+                     title="Maintenance workflow; condition reflects the last sensor prediction."),
             html.Span(f"{engine.get('current_cycle', 0)} cycles", 
                      style={"color": "#a8d4ff", "fontSize": "12px"}),
             html.Span(engine.get("created_at", "—"), 
@@ -83,8 +88,10 @@ def engine_table_row(engine, idx):
 def deleted_engine_table_row(engine, idx):
     return html.Div(
         style={
+            "minWidth": "1164px",
             "display": "grid",
-            "gridTemplateColumns": "0.8fr 1.2fr 0.8fr 1fr 0.8fr 1fr",
+            "gridTemplateColumns": ENGINE_TABLE_COLUMNS,
+            "columnGap": "16px",
             "alignItems": "center",
             "padding": "12px 24px",
             "borderBottom": "1px solid rgba(74,158,255,0.05)",
@@ -94,6 +101,7 @@ def deleted_engine_table_row(engine, idx):
             html.Span(f"ENGINE-{str(engine['engine_id']).zfill(2)}", style={"color": "rgba(168,212,255,0.5)", "fontSize": "13px", "fontWeight": "600"}),
             html.Span(engine.get("model_type", "N/A"), style={"color": "rgba(168,212,255,0.4)", "fontSize": "13px"}),
             html.Span("Deleted", style={"color": "rgba(255,77,77,0.6)", "fontSize": "12px"}),
+            html.Span("—", style={"color": "rgba(168,212,255,0.4)"}),
             html.Span(f"{engine.get('current_cycle', 0)} cycles", style={"color": "rgba(168,212,255,0.4)", "fontSize": "13px"}),
             html.Span((engine.get("created_at") or "")[:10], style={"color": "rgba(168,212,255,0.4)", "fontSize": "12px"}),
             html.Div(style={"display": "flex", "gap": "8px"}, children=[
@@ -120,7 +128,7 @@ def build_engines_table(engines, deleted_engines=None):
     return html.Div(
         style={
             "background": "#101e36", "border": "1px solid rgba(74,158,255,0.15)",
-            "borderRadius": "14px", "overflow": "hidden",
+            "borderRadius": "14px", "overflowX": "auto",
         },
         children=[
             html.Div(
@@ -134,7 +142,9 @@ def build_engines_table(engines, deleted_engines=None):
             ),
             html.Div(
                 style={
-                    "display": "grid", "gridTemplateColumns": "0.8fr 1.2fr 0.8fr 1fr 0.8fr 1fr",
+                    "minWidth": "1164px",
+                    "display": "grid", "gridTemplateColumns": ENGINE_TABLE_COLUMNS,
+                    "columnGap": "16px",
                     "padding": "10px 24px",
                     "background": "rgba(74,158,255,0.06)",
                     "borderTop": "1px solid rgba(74,158,255,0.12)",
@@ -143,7 +153,8 @@ def build_engines_table(engines, deleted_engines=None):
                 children=[
                     html.Span("ENGINE ID",    style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
                     html.Span("MODEL TYPE",   style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
-                    html.Span("STATUS",       style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
+                    html.Span("CONDITION",       style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
+                    html.Span("MAINTENANCE", style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
                     html.Span("CURRENT CYCLE",style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
                     html.Span("CREATED",      style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),
                     html.Span("ACTIONS",      style={"color": "rgba(168,212,255,0.5)", "fontSize": "11px", "fontWeight": "700"}),

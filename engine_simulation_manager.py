@@ -1448,12 +1448,18 @@ def resume_all_simulations(supabase):
             continue
 
         # ── Start simulation thread ──
-        start_engine_simulation(
-            engine_db_id=engine_db_id,
-            json_path=json_path,
-            model_type=model_type,
-            supabase=supabase,
-        )
+        try:
+            start_engine_simulation(
+                engine_db_id=engine_db_id,
+                json_path=json_path,
+                model_type=model_type,
+                supabase=supabase,
+            )
+        except (httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as exc:
+            # Preserve the verification hold if its saved state is unavailable:
+            # skip this runner rather than starting it without that state.
+            print(f"[SIM][ERROR] Could not resume engine {engine_db_id}: {exc}. "
+                  "Engine was not started; restart the app when the connection recovers.")
 
 
 def get_simulation_state(engine_db_id):

@@ -1,5 +1,6 @@
 import logging
 import time
+import httpx
 
 
 _SLOW_QUERY_SECONDS = 1.0
@@ -37,7 +38,17 @@ def fetch_records(client, table, columns="*", *, filters=(), order_by=(), limit=
         query = query.single()
     started = time.perf_counter()
     try:
-        return query.execute()
+        # Reads can safely be repeated after a transient socket failure. Do not
+        # apply this to writes: the server may already have committed a write.
+        for attempt in range(3):
+            try:
+                return query.execute()
+            except (httpx.ReadError, httpx.ConnectError, httpx.TimeoutException):
+                if attempt == 2:
+                    raise
+                _logger.warning("Transient Supabase read failure: table=%s; retry %s/2",
+                                table, attempt + 1)
+                time.sleep(0.25 * (attempt + 1))
     finally:
         elapsed = time.perf_counter() - started
         if elapsed >= _SLOW_QUERY_SECONDS:

@@ -132,7 +132,11 @@ def text_input(input_id, placeholder="", value="", input_type="text", icon=None)
         "color": "white", 
         "fontSize": "14px",
         "fontFamily": "inherit", 
-        "padding": "10px 12px",
+        "padding": "0 12px",
+        "height": "42px",
+        "minHeight": "42px",
+        "lineHeight": "20px",
+        "boxSizing": "border-box",
         "width": "100%",
         "MozAppearance": "textfield",  # Firefox
         "WebkitAppearance": "none",     # Chrome/Safari
@@ -158,6 +162,7 @@ def text_input(input_id, placeholder="", value="", input_type="text", icon=None)
         )
     )
     return html.Div(
+        className="engine-form-text-field",
         style={
             "display": "flex", 
             "alignItems": "center",
