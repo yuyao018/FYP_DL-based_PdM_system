@@ -1,3 +1,4 @@
+from engine_dataset import resolve_engine_dataset
 """
 engine_simulation_manager.py
 ─────────────────────────────
@@ -1382,7 +1383,9 @@ def resume_all_simulations(supabase):
 
             # Try model_type template folder
             if not json_path:
-                storage_path = f"{model_type}/engine_test_{engine_id}.json"
+                dataset_model, storage_path = resolve_engine_dataset(engine_id, model_type)
+                if dataset_model != model_type:
+                    raise ValueError(f"Engine {engine_id} encodes {dataset_model}, but its saved model is {model_type}; correct the engine model first.")
                 result = download_engine_json(storage_path)
                 if result:
                     json_path = result

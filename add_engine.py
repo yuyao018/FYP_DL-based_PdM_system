@@ -1,3 +1,4 @@
+from engine_dataset import resolve_engine_dataset
 from assets import database_integration as db
 from auth_security import require_trusted_role
 import dash
@@ -291,7 +292,7 @@ def build_add_engine_body(edit_engine=None):
                                           value=model_type_val),
                     ]),
                     html.Div(
-                        "Engine ID must be unique within the system",
+                        "Use 3001 for FD003 engine 1, or 4002 for FD004 engine 2. Engine ID must be unique.",
                         style={
                             "color": "#4a9eff", "fontSize": "12px",
                             "background": "rgba(74,158,255,0.06)",
@@ -506,6 +507,20 @@ def register_add_engine_callbacks(app, supabase=None):
             return "", "", ""
 
     @app.callback(
+        Output("new-engine-model", "value"),
+        Input("new-engine-id", "value"),
+        prevent_initial_call=True,
+    )
+    def infer_engine_model(engine_id):
+        text = str(engine_id or "").strip()
+        if len(text) != 4:
+            return dash.no_update
+        try:
+            return resolve_engine_dataset(text, "FD001")[0]
+        except ValueError:
+            return dash.no_update
+
+    @app.callback(
         Output("add-engine-status", "children"),
         Output("url", "pathname", allow_duplicate=True),
         Output("toast-store", "data", allow_duplicate=True),
@@ -558,6 +573,11 @@ def register_add_engine_callbacks(app, supabase=None):
         if engine_id < 1:
             return html.Span("Engine ID must be a positive number.",
                             style={"color": "#ff6b6b", "fontSize": "13px"}), dash.no_update, dash.no_update
+
+        try:
+            model_type, template_path = resolve_engine_dataset(engine_id, model_type)
+        except ValueError as exc:
+            return html.Span(str(exc), style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
 
         if not supabase:
             return html.Span("Supabase not connected.",
@@ -646,56 +666,46 @@ def register_add_engine_callbacks(app, supabase=None):
             from storage_utils import ENGINE_DATA_BUCKET
             from data_utils import get_org_folder
             import json as _json
-            import random
             import tempfile
 
             folder_name = get_org_folder(org_name, org_id or "local")
             engine_file = f"engine_{new_engine_db_id}.json" if new_engine_db_id else f"engine_{str(engine_id).zfill(3)}.json"
 
-            # Download a random template JSON from storage/<model_type>/
+            # Download the exact template encoded by the engine ID
             # and store it in storage at orgs/<org_folder>/engine_<id>.json
             has_cycles = False
             file_path = None
             try:
                 _sb_storage = supabase
                 if _sb_storage:
-                    # List available JSON files in the model_type folder
-                    file_list = db.list_files(_sb_storage, ENGINE_DATA_BUCKET, model_type)
-                    json_files = [f["name"] for f in file_list if f.get("name", "").endswith(".json")]
+                    storage_path = template_path
+                    print(f"[OK] Selected template: {storage_path}")
 
-                    if json_files:
-                        # Randomly select one
-                        selected_template = random.choice(json_files)
-                        storage_path = f"{model_type}/{selected_template}"
-                        print(f"[OK] Selected template: {storage_path}")
+                    # Download template data
+                    template_data = db.download_file(_sb_storage, ENGINE_DATA_BUCKET, storage_path)
 
-                        # Download template data
-                        template_data = db.download_file(_sb_storage, ENGINE_DATA_BUCKET, storage_path)
+                    # Upload to orgs folder in storage (persistent)
+                    org_storage_path = f"orgs/{folder_name}/{engine_file}"
+                    try:
+                        db.remove_files(_sb_storage, ENGINE_DATA_BUCKET, [org_storage_path])
+                    except Exception:
+                        pass
+                    db.upload_file(
+                        _sb_storage,
+                        ENGINE_DATA_BUCKET,
+                        path=org_storage_path,
+                        file=template_data,
+                        file_options={"content-type": "application/json"},
+                    )
+                    print(f"[OK] Stored engine data in storage: {org_storage_path}")
 
-                        # Upload to orgs folder in storage (persistent)
-                        org_storage_path = f"orgs/{folder_name}/{engine_file}"
-                        try:
-                            db.remove_files(_sb_storage, ENGINE_DATA_BUCKET, [org_storage_path])
-                        except Exception:
-                            pass
-                        db.upload_file(
-                            _sb_storage,
-                            ENGINE_DATA_BUCKET,
-                            path=org_storage_path,
-                            file=template_data,
-                            file_options={"content-type": "application/json"},
-                        )
-                        print(f"[OK] Stored engine data in storage: {org_storage_path}")
-
-                        # Write to temp file for simulation to read
-                        tmp_dir = os.path.join(tempfile.gettempdir(), "pdm_engines", folder_name)
-                        os.makedirs(tmp_dir, exist_ok=True)
-                        file_path = os.path.join(tmp_dir, engine_file)
-                        with open(file_path, "wb") as _wf:
-                            _wf.write(template_data)
-                        has_cycles = True
-                    else:
-                        print(f"[WARN] No template JSON files found in {model_type}/")
+                    # Write to temp file for simulation to read
+                    tmp_dir = os.path.join(tempfile.gettempdir(), "pdm_engines", folder_name)
+                    os.makedirs(tmp_dir, exist_ok=True)
+                    file_path = os.path.join(tmp_dir, engine_file)
+                    with open(file_path, "wb") as _wf:
+                        _wf.write(template_data)
+                    has_cycles = True
             except Exception as _storage_err:
                 print(f"[WARN] Storage template download failed: {_storage_err}")
 

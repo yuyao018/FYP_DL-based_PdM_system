@@ -1,5 +1,17 @@
 # AI-Driven Predictive Maintenance System for Turbofan Engines
 
+## Engine IDs and simulation data
+
+Four-digit engine IDs encode the dataset in the first digit (1–4) and the
+engine number in the remaining three digits (001–999). For example, `3001`
+selects `FD003/engine_test_1.json`, and `4002` selects
+`FD004/engine_test_2.json`. Registration selects the model automatically and
+copies that exact template to the engine's organization folder; it no longer
+chooses a random template. The template must exist in Supabase Storage.
+Startup uses the same mapping if the organization-specific file is missing.
+Existing organization-specific files are preserved. Older short IDs use the
+selected model and their full engine number.
+
 ## Post-maintenance engine status
 
 Engine condition (Healthy, Warning, Critical) remains based on sensor predictions.

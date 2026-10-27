@@ -13,7 +13,7 @@ def build_sensor_placeholder(message="Loading sensor trends…"):
     fig = go.Figure()
     fig.update_layout(
         template="none", paper_bgcolor="#0f1d34", plot_bgcolor="#0f1d34",
-        height=160, margin=dict(l=12, r=12, t=12, b=12),
+        autosize=True, margin=dict(l=12, r=12, t=12, b=12),
         xaxis=dict(visible=False, range=[0, 1]),
         yaxis=dict(visible=False, range=[0, 1]),
         showlegend=False,
@@ -691,7 +691,8 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
             style={"display": "flex", "gap": "20px", "alignItems": "stretch"},
             children=[
                 card(
-                    style_extra={"flex": "3", "minWidth": "0", "overflow": "hidden"},
+                    style_extra={"flex": "3", "minWidth": "0", "overflow": "hidden",
+                                 "display": "flex", "flexDirection": "column"},
                     children=[
                         # Header with "more information" link
                         html.Div(
@@ -714,9 +715,11 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                         ),
                         # 3 mini charts in a row
                         html.Div(
-                            style={"display": "flex", "gap": "12px", "marginBottom": "8px"},
+                            style={"display": "flex", "flex": "1", "minHeight": "0",
+                                   "gap": "12px", "marginBottom": "8px"},
                             children=[
-                                html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                                html.Div(style={"flex": "1", "minWidth": "0",
+                                                "display": "flex", "flexDirection": "column"}, children=[
                                     html.Div("Upward Trending (Rolling Mean)",
                                              style={"color": "#a8d4ff", "fontSize": "10px",
                                                     "fontWeight": "600", "marginBottom": "4px",
@@ -725,10 +728,12 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                         id="sensor-mini-up",
                                         figure=build_sensor_placeholder(),
                                         config={"displayModeBar": False, "responsive": True},
-                                        style={"height": "160px"},
+                                        responsive=True,
+                                        style={"flex": "1", "height": "100%", "minHeight": "160px", "width": "100%"},
                                     ),
                                 ]),
-                                html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                                html.Div(style={"flex": "1", "minWidth": "0",
+                                                "display": "flex", "flexDirection": "column"}, children=[
                                     html.Div("Downward Trending (Rolling Mean)",
                                              style={"color": "#a8d4ff", "fontSize": "10px",
                                                     "fontWeight": "600", "marginBottom": "4px",
@@ -737,10 +742,12 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                         id="sensor-mini-down",
                                         figure=build_sensor_placeholder(),
                                         config={"displayModeBar": False, "responsive": True},
-                                        style={"height": "160px"},
+                                        responsive=True,
+                                        style={"flex": "1", "height": "100%", "minHeight": "160px", "width": "100%"},
                                     ),
                                 ]),
-                                html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                                html.Div(style={"flex": "1", "minWidth": "0",
+                                                "display": "flex", "flexDirection": "column"}, children=[
                                     html.Div("All Sensors (Standardized)",
                                              style={"color": "#a8d4ff", "fontSize": "10px",
                                                     "fontWeight": "600", "marginBottom": "4px",
@@ -749,7 +756,8 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                         id="sensor-mini-all",
                                         figure=build_sensor_placeholder(),
                                         config={"displayModeBar": False, "responsive": True},
-                                        style={"height": "160px"},
+                                        responsive=True,
+                                        style={"flex": "1", "height": "100%", "minHeight": "160px", "width": "100%"},
                                     ),
                                 ]),
                             ]
@@ -1183,7 +1191,7 @@ def register_overview_callbacks(app, supabase=None):
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=30, r=8, t=5, b=28),
-            height=160,
+            autosize=True,
             showlegend=False,
             xaxis=dict(
                 showgrid=False, zeroline=False,
