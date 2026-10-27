@@ -1268,7 +1268,10 @@ def start_engine_simulation(
         # Completed work remains unverified: do not replay more degradation data
         # after an application restart either.
         schedules = db.fetch_records(supabase, "maintenance_schedules", "status",
-            filters=[('eq', "engine_id", engine_db_id)],
+            filters=[('eq', "engine_id", engine_db_id),
+                     ('in_', "status", ["in_progress", "completed", "follow_up_required"])],
+            # Future bookings and cancelled jobs do not verify completed work.
+            # Match the lifecycle shown by the engine pages.
             order_by=[("created_at", True)], limit=1)
         awaiting_verification = bool(schedules.data and schedules.data[0].get("status") == "completed")
         if awaiting_verification:
@@ -1460,6 +1463,9 @@ def get_simulation_state(engine_db_id):
             return None
         state = entry["clock"].snapshot()
         state["awaiting_verification"] = entry.get("awaiting_verification", False)
+        state["maintenance_status"] = (
+            "pending_verification" if state["awaiting_verification"] else None
+        )
         state["running"] = entry["thread"].is_alive() and not entry["stop"].is_set()
         return state
 

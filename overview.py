@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import base64
 import numpy as np
 from assets.components import (build_sidebar, build_topbar, icon_sidebar)
+from engine_maintenance_status import engine_maintenance_statuses, maintenance_badge
 
 def build_sensor_placeholder(message="Loading sensor trends…"):
     """Match the dashboard before the first sensor callback returns."""
@@ -537,6 +538,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                 html.H2(f"ENGINE-{engine_id}",
                         style={"margin": "0", "color": "white", "fontSize": "22px", "fontWeight": "800"}),
                 html.Div(id="engine-status-badge", children=[status_badge(status)]),
+                html.Div(id="engine-maintenance-badge", role="status"),
             ]
         ),
 
@@ -924,6 +926,21 @@ def register_overview_callbacks(app, supabase=None):
     Register the live RUL chart polling callback.
     Called once from app.py at startup.
     """
+
+    @app.callback(
+        Output("engine-maintenance-badge", "children"),
+        Input("rul-poll-interval", "n_intervals"),
+        Input("overview-engine-id-store", "data"),
+    )
+    def refresh_maintenance_status(_tick, engine_id):
+        if not engine_id or supabase is None:
+            return []
+        try:
+            status = engine_maintenance_statuses(supabase, [engine_id]).get(str(engine_id))
+        except Exception:
+            status = "unavailable"
+        badge = maintenance_badge(status)
+        return [badge] if badge is not None else []
 
     @app.callback(
         Output("rul-line-chart",       "figure"),

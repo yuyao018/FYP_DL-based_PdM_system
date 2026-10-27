@@ -98,11 +98,18 @@ def register_simulation_callbacks(app, supabase):
         except Exception:
             return "Unable to verify engine access.", "", True, True, True, True
         state = get_simulation_state(engine_id)
+        # Read saved lifecycle even for completed runners, which may have no clock.
+        from engine_maintenance_status import engine_maintenance_statuses
+        try:
+            maintenance = engine_maintenance_statuses(supabase, [engine_id]).get(str(engine_id))
+        except Exception:
+            return "Unable to verify maintenance status.", "", True, True, True, True
+        if maintenance == "pending_verification" or (state and state.get("awaiting_verification")):
+            cycle = state["cycle"] if state else "—"
+            return (f"Engine {result.data[0].get('engine_id', engine_id)} · Pending Verification · Cycle {cycle}.",
+                    "Maintenance is complete. Simulation remains paused pending post-maintenance verification.", True, True, True, True)
         if not state or not state["running"]:
             return "Simulation inactive or completed.", "", True, True, True, True
-        if state.get("awaiting_verification"):
-            return (f"Engine {result.data[0].get('engine_id', engine_id)} · Paused · Cycle {state['cycle']} · Maintenance completed.",
-                    "", True, True, True, True)
         action = ctx.triggered_id
         changes = {}
         if action == "simulation-apply":

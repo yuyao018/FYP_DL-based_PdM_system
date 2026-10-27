@@ -1,5 +1,6 @@
 from assets import database_integration as db
 from auth_security import require_trusted_role
+from engine_maintenance_status import engine_maintenance_statuses, maintenance_badge
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -38,7 +39,10 @@ def engine_table_row(engine, idx):
                      style={"color": "white", "fontSize": "13px", "fontWeight": "600"}),
             html.Span(engine.get("model_type", "—"), 
                      style={"color": "#a8d4ff", "fontSize": "13px"}),
-            status_badge(engine.get("condition_status", "healthy")),
+            html.Div([
+                status_badge(engine.get("condition_status", "healthy")),
+                maintenance_badge(engine.get("maintenance_status")),
+            ], style={"display": "flex", "flexDirection": "column", "gap": "6px", "alignItems": "flex-start"}),
             html.Span(f"{engine.get('current_cycle', 0)} cycles", 
                      style={"color": "#a8d4ff", "fontSize": "12px"}),
             html.Span(engine.get("created_at", "—"), 
@@ -111,6 +115,7 @@ def build_engines_table(engines, deleted_engines=None):
     healthy = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "healthy")
     warning = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "warning")
     critical = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "critical")
+    pending = sum(e.get("maintenance_status") == "pending_verification" for e in engines)
 
     return html.Div(
         style={
@@ -123,7 +128,7 @@ def build_engines_table(engines, deleted_engines=None):
                        "padding": "16px 24px 12px"},
                 children=[
                     html.Span("Engines", style={"color": "white", "fontSize": "15px", "fontWeight": "700"}),
-                    html.Span(f"{total} total · {healthy} healthy · {warning} warning · {critical} critical",
+                    html.Span(f"{total} total · {healthy} healthy · {warning} warning · {critical} critical · {pending} pending verification",
                               style={"color": "rgba(168,212,255,0.5)", "fontSize": "12px"}),
                 ]
             ),
@@ -231,6 +236,10 @@ def create_engine_management_layout(supabase=None, org_id=None):
 
             if resp.data:
                 engine_ids = [e.get("id") for e in resp.data if e.get("id")]
+                try:
+                    maintenance_states = engine_maintenance_statuses(supabase, engine_ids)
+                except Exception:
+                    maintenance_states = {str(eid): "unavailable" for eid in engine_ids}
 
                 # ── Batch-fetch latest predicted_rul per engine ──
                 latest_rul_map = {}
@@ -282,6 +291,7 @@ def create_engine_management_layout(supabase=None, org_id=None):
                         "engine_id":        e.get("engine_id", 0),
                         "model_type":       e.get("model_type", "—"),
                         "condition_status": condition_status,
+                        "maintenance_status": maintenance_states.get(db_id),
                         "current_cycle":    e.get("current_cycle", 0),
                         "created_at":       created_at,
                         "is_deleted":       e.get("is_deleted", True),

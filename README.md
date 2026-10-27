@@ -1,5 +1,20 @@
 # AI-Driven Predictive Maintenance System for Turbofan Engines
 
+## Post-maintenance engine status
+
+Engine condition (Healthy, Warning, Critical) remains based on sensor predictions.
+A separate maintenance badge appears in Engine Management and Overview:
+Under Maintenance for started work, Pending Verification for completed work, and
+Follow-up Required when additional work is needed. Pending Verification uses a
+purple badge and does not claim that the last measured condition has recovered.
+
+The lifecycle is read from saved maintenance schedules, so it survives restarts.
+Future bookings and cancelled jobs do not clear completed, unverified work.
+Completed maintenance keeps the existing simulation verification hold in place;
+simulation controls display the reason and prevent resuming. A verification
+submission/release workflow is not implemented yet, so completing maintenance
+does not automatically set an engine to Healthy or release the hold.
+
 ## Login security: temporary lockout
 
 Sign-in uses the account username and password. Five failed attempts lock the
