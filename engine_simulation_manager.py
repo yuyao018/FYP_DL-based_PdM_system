@@ -47,7 +47,7 @@ import torch
 TICK_INTERVAL    = 5          # healthy default; pacing is controlled per engine
 RUL_CAP          = 100        # clamp predicted RUL — matches training rul_cap in model metadata
 
-SHAP_INTERVAL = 5
+SHAP_INTERVAL = 1  # Explain every successful prediction using its current input window.
 
 # Per-dataset window sizes (must match training)
 WINDOW_SIZES = {
@@ -1018,8 +1018,8 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
                            cluster_stds=cl_stds)
     _no_model_warned = False  # log "waiting for model" only once
 
-    # SHAP throttle: only run GradientExplainer every SHAP_INTERVAL predictions
-    # to avoid OOM on memory-constrained hosts. Carry the last result forward.
+    # Production computes SHAP for every successful prediction (interval = 1).
+    # The interval remains configurable for isolated integration-test fixtures.
     _shap_pred_counter = 0
     _last_shap_data: list = []
     _last_shap_base: float = 0.0
@@ -1127,8 +1127,8 @@ def _simulation_loop(engine_db_id: str, json_path: str, model_type: str, supabas
                     print(f"[SIM] pred_raw={pred_rul_raw:.4f} bias={_bias:.4f} "
                           f"bias_corrected={pred_rul_raw - _bias:.4f} "
                           f"clamped={pred_rul:.4f} RUL_CAP={RUL_CAP}")
-                    # Compute SHAP values every SHAP_INTERVAL cycles to limit RAM usage.
-                    # Carry the previous result forward on skipped cycles.
+                    # With the production interval of 1, SHAP describes this
+                    # prediction's input window, including the first prediction.
                     _shap_pred_counter += 1
                     if _shap_pred_counter >= SHAP_INTERVAL:
                         _shap_pred_counter = 0
