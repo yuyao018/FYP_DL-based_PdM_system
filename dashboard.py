@@ -3,6 +3,7 @@ import dash
 from dash import dcc, html
 import dash_bootstrap_components as dbc
 import base64
+from dashboard_analytics import build_admin_analytics
 
 
 def gear_icon():
@@ -216,7 +217,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
             # ── Fetch unresolved maintenance alerts for responsible engines ──
             # One alert per engine: critical beats warning, latest wins within same severity.
-            if not alert_engine_ids:
+            if not alert_engine_ids or role == "admin":
                 pass
             else:
                 alert_query = dict(
@@ -746,7 +747,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                 ]
                             ),
                             # ── Maintenance alerts (now from Supabase) ──
-                            html.Div(
+                            build_admin_analytics(supabase, org_id) if role == "admin" else html.Div(
                                 style={
                                     "flex": "1",
                                     "minHeight": "0",

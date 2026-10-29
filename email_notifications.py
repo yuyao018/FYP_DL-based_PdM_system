@@ -402,10 +402,8 @@ def _should_send_alert(engine_db_id: str, new_level: str, supabase=None) -> bool
 
 def _get_alert_recipients(supabase, engine_db_id: str) -> list:
     """
-    Look up email recipients for an engine alert:
-    1. The responsible user (engines.responsible_by → users.email_address)
-    2. All admins in the same organization
-    Returns a deduplicated list of email addresses.
+    Return only the engine's responsible user's email address.
+    Organization administrators monitor alerts through the dashboard.
     """
     recipients = set()
 
@@ -440,27 +438,6 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
                     print(f"[EMAIL] Responsible user {responsible_by} has no email_address")
             except Exception as e:
                 print(f"[EMAIL] Failed to fetch responsible user email: {e}")
-
-        # Get all admins in the same organization
-        if org_id:
-            try:
-                admins_resp = db.fetch_records(
-                    supabase, "users", "email_address, username",
-                    filters=[("eq", "organization_id", org_id),
-                             ("eq", "role", "admin"),
-                             ("eq", "is_deleted", False)])
-                print(f"[EMAIL] Found {len(admins_resp.data or [])} admin(s) in org {org_id}")
-                for u in (admins_resp.data or []):
-                    email = u.get("email_address")
-                    if email:
-                        recipients.add(email)
-                        print(f"[EMAIL] Admin recipient: {email} ({u.get('username','')})")
-                    else:
-                        print(f"[EMAIL] Admin {u.get('username','')} has no email_address set")
-            except Exception as e:
-                print(f"[EMAIL] Failed to fetch admin emails: {e}")
-        else:
-            print("[EMAIL] No org_id on engine — cannot find org admins")
 
     except Exception as e:
         print(f"[EMAIL] Failed to resolve recipients for engine {engine_db_id}: {e}")
@@ -529,7 +506,7 @@ def check_and_send_threshold_alert(
         if level == "critical"
         else f"⚠️ RUL Warning — {display_id}"
     )
-    # ── Resolve recipients: org admin(s) + responsible user ──
+    # Resolve only the responsible user; administrators use dashboard charts.
     dynamic_recipients = _get_alert_recipients(supabase, engine_db_id)
 
     def _send():

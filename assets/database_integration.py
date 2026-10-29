@@ -13,7 +13,7 @@ def _apply_filters(query, filters):
         if operator == "not_in":
             query = query.not_.in_(column, value)
             continue
-        if operator not in {"eq", "in_", "lte"}:
+        if operator not in {"eq", "in_", "lte", "gte"}:
             raise ValueError(f"Unsupported database filter: {operator}")
         query = getattr(query, operator)(column, value)
     return query
