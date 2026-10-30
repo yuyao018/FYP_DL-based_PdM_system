@@ -48,12 +48,27 @@ def summarize(alerts, jobs, now=None):
     return days, counts, statuses
 
 
-def build_admin_analytics(client, org_id):
+def build_admin_analytics(client, org_id, *, loading=False):
+    if loading:
+        # Do not construct Plotly figures on the navigation critical path.
+        return html.Div(
+            style={"flex": "1", "minWidth": "0", "minHeight": "0", "display": "grid",
+                   "gridTemplateRows": "minmax(0, 1fr) minmax(0, 1fr)", "gap": "16px"},
+            children=[html.Div(
+                style={"background": "#101a2f", "border": "1px solid rgba(74,158,255,0.3)",
+                       "borderRadius": "16px", "padding": "18px"},
+                children=[html.H3(title, style={"fontSize": "15px", "margin": "0 0 16px"}),
+                          html.Div("Loading chart data…", id=graph_id, role="status",
+                                   style={"color": "#a8d4ff", "fontSize": "13px"})],
+            ) for title, graph_id in (
+                ("Alerts Generated — Last 7 Days", "admin-alert-trend"),
+                ("Maintenance Job Status", "admin-maintenance-status"))],
+        )
     alerts, jobs = [], []
     unavailable = False
     now = datetime.now(LOCAL_TZ)
     try:
-        if not client or not org_id:
+        if loading or not client or not org_id:
             raise ValueError("Organization context unavailable")
         engines = _all_rows(client, "engines", "id", [("eq", "organization_id", org_id)])
         engine_ids = [row["id"] for row in engines]
@@ -91,7 +106,7 @@ def build_admin_analytics(client, org_id):
                           plot_bgcolor="rgba(0,0,0,0)", font=dict(size=11, color="#dbe8ff"),
                           margin=dict(l=10, r=12, t=30, b=35), autosize=True)
         if unavailable:
-            fig.add_annotation(text="Data unavailable. Reload to try again.", x=.5, y=.5,
+            fig.add_annotation(text="Loading chart data…" if loading else "Data unavailable. Reload to try again.", x=.5, y=.5,
                                xref="paper", yref="paper", showarrow=False)
             fig.update_xaxes(visible=False)
             fig.update_yaxes(visible=False)

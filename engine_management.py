@@ -5,6 +5,8 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
+import json
+import logging
 from datetime import datetime
 from assets.components import (build_admin_sidebar, build_topbar)
 
@@ -29,6 +31,7 @@ def status_badge(status):
 
 def engine_table_row(engine, idx):
     return html.Div(
+        id={"type": "active-engine-row", "index": engine["id"]},
         style={
             "minWidth": "1164px",
             "display": "grid",
@@ -87,6 +90,7 @@ def engine_table_row(engine, idx):
 
 def deleted_engine_table_row(engine, idx):
     return html.Div(
+        id={"type": "deleted-engine-row", "index": engine["id"]},
         style={
             "minWidth": "1164px",
             "display": "grid",
@@ -115,15 +119,17 @@ def deleted_engine_table_row(engine, idx):
     )
 
 
+def engine_count_summary(engines):
+    counts = {status: sum((e.get("condition_status") or "healthy").lower() == status
+                          for e in engines) for status in ("healthy", "warning", "critical")}
+    pending = sum(e.get("maintenance_status") == "pending_verification" for e in engines)
+    return (f"{len(engines)} total · {counts['healthy']} healthy · {counts['warning']} warning · "
+            f"{counts['critical']} critical · {pending} pending verification")
+
+
 def build_engines_table(engines, deleted_engines=None):
     if deleted_engines is None:
         deleted_engines = []
-
-    total = len(engines)
-    healthy = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "healthy")
-    warning = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "warning")
-    critical = sum(1 for e in engines if e.get("condition_status", "healthy").lower() == "critical")
-    pending = sum(e.get("maintenance_status") == "pending_verification" for e in engines)
 
     return html.Div(
         style={
@@ -136,7 +142,7 @@ def build_engines_table(engines, deleted_engines=None):
                        "padding": "16px 24px 12px"},
                 children=[
                     html.Span("Engines", style={"color": "white", "fontSize": "15px", "fontWeight": "700"}),
-                    html.Span(f"{total} total · {healthy} healthy · {warning} warning · {critical} critical · {pending} pending verification",
+                    html.Span(engine_count_summary(engines), id="engine-count-summary",
                               style={"color": "rgba(168,212,255,0.5)", "fontSize": "12px"}),
                 ]
             ),
@@ -198,6 +204,15 @@ def build_engine_management_body(engines=None, deleted_engines=None):
         ),
         html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.15)", "marginBottom": "20px"}),
 
+        dcc.Store(id="engine-action-timer"),
+        dcc.Store(id="engine-action-dismiss-delay", data=None),
+        dbc.Toast(
+            id="engine-action-status", header="Engine management", children="",
+            is_open=False, dismissable=True, duration=None, icon="success",
+            className="engine-action-toast",
+            style={"position": "fixed", "top": "76px", "right": "24px",
+                   "width": "360px", "maxWidth": "calc(100vw - 32px)", "zIndex": 2000},
+        ),
         build_engines_table(engines, deleted_engines=deleted_engines),
 
         dcc.Store(id="engines-data", data=engines),
@@ -217,59 +232,50 @@ def create_engine_management_layout(supabase=None, org_id=None):
         print("[WARN] Supabase not connected - no engine data available")
     else:
         try:
-            # ── Fetch alert thresholds ──
-            warn_thresh = 50
-            crit_thresh = 30
-            max_life    = 125
+            filters = [('eq', "organization_id", org_id)] if org_id else []
+            initial = db.fetch_records_parallel(supabase, {
+                "thresholds": dict(table="alert_thresholds",
+                                   columns="warning_threshold,critical_threshold,max_rul_cap",
+                                   order_by=[("updated_at", True)], limit=1),
+                "engines": dict(table="engines",
+                                columns="id,engine_id,model_type,condition_status,current_cycle,created_at,is_deleted",
+                                filters=filters, order_by=[("engine_id", False)]),
+            })
+            warn_thresh, crit_thresh = 50, 30
             try:
-                t_resp = db.get_alert_thresholds(
-                    supabase,
-                    "warning_threshold, critical_threshold, max_rul_cap",
-                )
+                t_resp = initial["thresholds"].result()
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
-                    max_life    = int(t_resp.data[0].get("max_rul_cap", max_life))
             except Exception:
                 pass
-
-            query = dict(
-                client=supabase,
-                table="engines",
-                columns="id, engine_id, model_type, condition_status, current_cycle, created_at, is_deleted",
-                filters=[],
-            )
-
-            if org_id:
-                query["filters"].append(('eq', "organization_id", org_id))
-
-            resp = db.fetch_records(**query, order_by=[("engine_id", False)])
+            resp = initial["engines"].result()
 
             if resp.data:
                 engine_ids = [e.get("id") for e in resp.data if e.get("id")]
+                details = db.fetch_records_parallel(supabase, {
+                    "maintenance": dict(table="maintenance_schedules", columns="engine_id,status,created_at",
+                        filters=[('in_', "engine_id", engine_ids),
+                                 ('in_', "status", ["in_progress", "completed", "follow_up_required"])],
+                        order_by=[("created_at", True)]),
+                    "predictions": dict(table="rul_predictions", columns="engine_id,predicted_rul",
+                        filters=[('in_', "engine_id", engine_ids)], order_by=[("predicted_at", True)]),
+                })
                 try:
-                    maintenance_states = engine_maintenance_statuses(supabase, engine_ids)
+                    from engine_maintenance_status import maintenance_status
+                    maintenance_states = {}
+                    for row in details["maintenance"].result().data or []:
+                        maintenance_states.setdefault(str(row.get("engine_id")), maintenance_status(row.get("status")))
                 except Exception:
                     maintenance_states = {str(eid): "unavailable" for eid in engine_ids}
-
-                # ── Batch-fetch latest predicted_rul per engine ──
                 latest_rul_map = {}
-                if engine_ids:
-                    try:
-                        pred_resp = db.fetch_records(
-                            supabase,
-                            "rul_predictions",
-                            "engine_id, predicted_rul",
-                            filters=[('in_', "engine_id", engine_ids)],
-                            order_by=[("predicted_at", True)],
-                        )
-                        for row in (pred_resp.data or []):
-                            eid = row.get("engine_id")
-                            if eid and eid not in latest_rul_map \
-                                    and row.get("predicted_rul") is not None:
-                                latest_rul_map[eid] = float(row["predicted_rul"])
-                    except Exception:
-                        pass
+                try:
+                    for row in details["predictions"].result().data or []:
+                        eid = str(row.get("engine_id") or "")
+                        if eid and eid not in latest_rul_map and row.get("predicted_rul") is not None:
+                            latest_rul_map[eid] = float(row["predicted_rul"])
+                except Exception:
+                    pass
 
                 for e in resp.data:
                     created_at = e.get("created_at")
@@ -367,115 +373,134 @@ def create_engine_management_layout(supabase=None, org_id=None):
 
 def register_engine_management_callbacks(app, supabase=None):
 
+    # The Toast stays open between pending and success. Its built-in timer
+    # does not reliably restart on that transition, so own the timer explicitly.
+    app.clientside_callback(
+        """function(message, duration, isOpen) {
+            const key = '__engineActionToastTimer';
+            if (window[key]) {
+                window.clearTimeout(window[key]);
+                window[key] = null;
+            }
+            if (isOpen && duration > 0) {
+                window[key] = window.setTimeout(function() {
+                    window[key] = null;
+                    window.dash_clientside.set_props('engine-action-status', {is_open: false});
+                }, duration);
+            }
+            return window.dash_clientside.no_update;
+        }""",
+        Output("engine-action-timer", "data"),
+        Input("engine-action-status", "children"),
+        Input("engine-action-dismiss-delay", "data"),
+        Input("engine-action-status", "is_open"),
+        prevent_initial_call=True,
+    )
+
+    # Browser feedback runs without waiting for an HTTP/database round trip.
+    # The server always returns authoritative rows, including on failure.
+    for action, row_type, message in (
+        ("remove", "active-engine-row", "Removing engine… Saving change."),
+        ("restore", "deleted-engine-row", "Restoring engine… Saving change."),
+    ):
+        app.clientside_callback(
+            """function(clicks, style) {
+                if (!clicks) return window.dash_clientside.no_update;
+                window.dash_clientside.set_props('engine-action-dismiss-delay', {data: null});
+                window.dash_clientside.set_props('engine-action-status',
+                    {children: %s, header: 'Saving change', icon: 'primary',
+                     duration: null, is_open: true});
+                return Object.assign({}, style, {display: 'none'});
+            }""" % json.dumps(message),
+            Output({"type": row_type, "index": dash.MATCH}, "style"),
+            Input({"type": action + "-engine-btn", "index": dash.MATCH}, "n_clicks"),
+            State({"type": row_type, "index": dash.MATCH}, "style"),
+            prevent_initial_call=True,
+        )
+
     @app.callback(
         Output("engines-table-body", "children"),
         Output("engines-data", "data"),
-        Output("deleted-engines-body", "children", allow_duplicate=True),
-        Output("deleted-engines-data", "data", allow_duplicate=True),
-        Input({"type": "remove-engine-btn", "index": dash.ALL}, "n_clicks"),
-        State("engines-data", "data"),
-        State("deleted-engines-data", "data"),
-        prevent_initial_call=True,
-    )
-    def remove_engine(n_clicks_list, engines_data, deleted_engines_data):
-        ctx = dash.callback_context
-        if not ctx.triggered or not any(n_clicks_list):
-            raise dash.exceptions.PreventUpdate
-        try:
-            principal = require_trusted_role("admin")
-        except PermissionError:
-            raise dash.exceptions.PreventUpdate
-
-        if deleted_engines_data is None:
-            deleted_engines_data = []
-
-        import json
-        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        engine_id = json.loads(trigger_id)["index"]
-
-        # Soft-delete: set is_deleted = False in Supabase
-        if supabase:
-            try:
-                db.update_records(
-                    supabase,
-                    "engines",
-                    {"is_deleted": False},
-                    filters=[('eq', "id", engine_id), ('eq', "organization_id", principal["organization_id"])],
-                )
-                print(f"[OK] Soft-deleted engine {engine_id}")
-            except Exception as e:
-                print(f"[ERROR] soft-delete engine: {e}")
-
-        # Stop the simulation thread if running
-        try:
-            from engine_simulation_manager import stop_engine_simulation, _SENSOR_BUFFER, _SENSOR_LOCK
-            stop_engine_simulation(engine_id)
-            # Clear sensor buffer
-            with _SENSOR_LOCK:
-                _SENSOR_BUFFER.pop(engine_id, None)
-        except Exception:
-            pass
-
-        # Move engine from active to deleted list
-        removed_engine = next((e for e in engines_data if e["id"] == engine_id), None)
-        updated_engines = [e for e in engines_data if e["id"] != engine_id]
-        if removed_engine:
-            deleted_engines_data.append(removed_engine)
-
-        active_rows = [engine_table_row(e, i) for i, e in enumerate(updated_engines)]
-        deleted_rows = [deleted_engine_table_row(e, i) for i, e in enumerate(deleted_engines_data)]
-        return active_rows, updated_engines, deleted_rows, deleted_engines_data
-
-    @app.callback(
-        Output("engines-table-body", "children", allow_duplicate=True),
-        Output("engines-data", "data", allow_duplicate=True),
         Output("deleted-engines-body", "children"),
         Output("deleted-engines-data", "data"),
+        Output("engine-action-status", "children"),
+        Output("engine-count-summary", "children"),
+        Output("engine-action-status", "header"),
+        Output("engine-action-status", "icon"),
+        Output("engine-action-dismiss-delay", "data"),
+        Output("engine-action-status", "is_open"),
+        Input({"type": "remove-engine-btn", "index": dash.ALL}, "n_clicks"),
         Input({"type": "restore-engine-btn", "index": dash.ALL}, "n_clicks"),
         State("engines-data", "data"),
         State("deleted-engines-data", "data"),
+        running=[
+            (Output({"type": "remove-engine-btn", "index": dash.ALL}, "disabled"), True, False),
+            (Output({"type": "restore-engine-btn", "index": dash.ALL}, "disabled"), True, False),
+        ],
         prevent_initial_call=True,
     )
-    def restore_engine(n_clicks_list, engines_data, deleted_engines_data):
+    def change_engine_visibility(remove_clicks, restore_clicks, engines_data, deleted_engines_data):
         ctx = dash.callback_context
-        if not ctx.triggered or not any(n_clicks_list):
+        trigger = ctx.triggered_id
+        if not isinstance(trigger, dict) or not any(
+            item.get("value") for item in ctx.triggered
+        ):
             raise dash.exceptions.PreventUpdate
+
+        active = [dict(e) for e in (engines_data or [])]
+        deleted = [dict(e) for e in (deleted_engines_data or [])]
+        engine_id = trigger["index"]
+        restoring = trigger["type"] == "restore-engine-btn"
+        message = ""
+        saved = False
         try:
             principal = require_trusted_role("admin")
-        except PermissionError:
-            raise dash.exceptions.PreventUpdate
+            if not supabase:
+                raise RuntimeError("Database is unavailable")
+            response = db.update_records(
+                supabase, "engines", {"is_deleted": restoring},
+                filters=[('eq', "id", engine_id),
+                         ('eq', "organization_id", principal["organization_id"])],
+            )
+            if not response.data:
+                raise RuntimeError("No engine was updated")
+        except Exception as exc:
+            if getattr(exc, "code", None) == "42501":
+                logging.getLogger(__name__).warning("Engine visibility update blocked by database access policy")
+                message = ("Could not save: the database access policy blocked this change. "
+                           "The engine was returned to its previous position. "
+                           "Please contact your administrator.")
+            else:
+                logging.getLogger(__name__).exception("Engine visibility update failed")
+                message = "Could not save the change. The engine was returned to its previous position. Please try again."
+        else:
+            saved = True
+            source, destination = (deleted, active) if restoring else (active, deleted)
+            engine = next((e for e in source if e["id"] == engine_id), None)
+            if engine:
+                source.remove(engine)
+                engine["is_deleted"] = restoring
+                destination.append(engine)
+            message = "Engine restored." if restoring else "Engine removed."
+            if not restoring:
+                # An idle engine should not load the heavy inference libraries.
+                import sys
+                manager = sys.modules.get("engine_simulation_manager")
+                if manager is not None:
+                    try:
+                        manager.stop_engine_simulation(engine_id)
+                        with manager._SENSOR_LOCK:
+                            manager._SENSOR_BUFFER.pop(engine_id, None)
+                    except Exception:
+                        logging.getLogger(__name__).exception("Could not stop removed engine simulation")
 
-        if engines_data is None:
-            engines_data = []
-        if deleted_engines_data is None:
-            deleted_engines_data = []
-
-        import json
-        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        engine_id = json.loads(trigger_id)["index"]
-
-        # Restore: set is_deleted = True in Supabase
-        if supabase:
-            try:
-                db.update_records(
-                    supabase,
-                    "engines",
-                    {"is_deleted": True},
-                    filters=[('eq', "id", engine_id), ('eq', "organization_id", principal["organization_id"])],
-                )
-                print(f"[OK] Restored engine {engine_id}")
-            except Exception as e:
-                print(f"[ERROR] restore engine: {e}")
-
-        # Move engine from deleted to active list
-        restored_engine = next((e for e in deleted_engines_data if e["id"] == engine_id), None)
-        updated_deleted = [e for e in deleted_engines_data if e["id"] != engine_id]
-        if restored_engine:
-            engines_data.append(restored_engine)
-
-        active_rows = [engine_table_row(e, i) for i, e in enumerate(engines_data)]
-        deleted_rows = [deleted_engine_table_row(e, i) for i, e in enumerate(updated_deleted)]
-        return active_rows, engines_data, deleted_rows, updated_deleted
+        return (
+            [engine_table_row(e, i) for i, e in enumerate(active)], active,
+            [deleted_engine_table_row(e, i) for i, e in enumerate(deleted)], deleted,
+            message, engine_count_summary(active),
+            ("Engine restored" if restoring else "Engine removed") if saved else "Change wasn’t saved",
+            "success" if saved else "danger", 3500 if saved else None, True,
+        )
 
 
 # ─────────────────────────────────────────────

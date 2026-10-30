@@ -1165,15 +1165,22 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
     elif username:
         current_user_label = username
 
+    initial_queries = {}
+    if supabase:
+        initial_queries["thresholds"] = dict(table="alert_thresholds", columns="warning_threshold,critical_threshold",
+                                            order_by=[("updated_at", True)], limit=1)
+        if role == "admin" and org_id:
+            initial_queries["users"] = dict(table="users", columns="id,username,first_name,last_name",
+                filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", False)])
+        if not engine_db_id and org_id:
+            initial_queries["scope"] = dict(table="engines", columns="id",
+                filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", False)])
+    initial_reads = db.fetch_records_parallel(supabase, initial_queries) if initial_queries else {}
+
     # Fetch org users for admin assignee dropdown
     if supabase and role == "admin" and org_id:
         try:
-            u_resp = db.fetch_records(
-                supabase,
-                "users",
-                "id,username,first_name,last_name",
-                filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", False)],
-            )
+            u_resp = initial_reads["users"].result()
             for u in (u_resp.data or []):
                 first = u.get("first_name") or ""
                 last  = u.get("last_name")  or ""
@@ -1187,7 +1194,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
             # Fetch thresholds
             warn_thresh, crit_thresh = 50, 30
             try:
-                t_resp = db.get_alert_thresholds(supabase, "warning_threshold,critical_threshold")
+                t_resp = initial_reads["thresholds"].result()
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", 50))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", 30))
@@ -1209,12 +1216,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
             elif org_id:
                 # Scope to engines belonging to this org
                 try:
-                    eng_scope_resp = db.fetch_records(
-                        supabase,
-                        "engines",
-                        "id",
-                        filters=[('eq', "organization_id", org_id), ('eq', "is_deleted", False)],
-                    )
+                    eng_scope_resp = initial_reads["scope"].result()
                     org_engine_ids = [e["id"] for e in (eng_scope_resp.data or [])]
                 except Exception:
                     org_engine_ids = []
@@ -1259,15 +1261,20 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                 for s in schedules_by_id.values()
                 if s.get("assign_to")
             })
+            schedule_ids = list(schedules_by_id.keys())
+            job_queries = {}
+            if assigned_user_ids:
+                job_queries["users"] = dict(table="users", columns="id,username",
+                    filters=[('in_', "id", assigned_user_ids)])
+            if schedule_ids:
+                job_queries["reports"] = dict(table="maintenance_reports",
+                    columns="id,maintenance_schedule_id,fault_confirmed,ai_recommendation_usefulness,follow_up_reason,outcome,user_id",
+                    filters=[('in_', "maintenance_schedule_id", schedule_ids)], order_by=[("created_at", True)])
+            job_reads = db.fetch_records_parallel(supabase, job_queries)
             usernames_by_id = {}
             if assigned_user_ids:
                 try:
-                    users_resp = db.fetch_records(
-                        supabase,
-                        "users",
-                        "id,username",
-                        filters=[('in_', "id", assigned_user_ids)],
-                    )
+                    users_resp = job_reads["users"].result()
                     usernames_by_id = {
                         u["id"]: u.get("username")
                         for u in (users_resp.data or [])
@@ -1279,23 +1286,21 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
 
             if schedule_ids:
                 try:
-                    rpt_resp = (
-                        db.fetch_records(
-                            supabase,
-                            "maintenance_reports",
-                            "id,maintenance_schedule_id,"
-                            "fault_confirmed,ai_recommendation_usefulness,"
-                            "follow_up_reason,outcome,user_id",
-                            filters=[('in_', "maintenance_schedule_id", schedule_ids)],
-                            order_by=[("created_at", True)],
-                        )
-                    )
+                    rpt_resp = job_reads["reports"].result()
                     for r in (rpt_resp.data or []):
                         sid = r.get("maintenance_schedule_id")
                         if sid and sid not in reports_by_schedule:
                             reports_by_schedule[sid] = r
                 except Exception as e:
                     print(f"[ALERT] reports fetch: {e}")
+
+            # Alerts from the same engine share the same prediction history.
+            # Load it once per engine instead of once per alert.
+            prediction_reads = db.fetch_records_parallel(supabase, {
+                eid: dict(table="rul_predictions", columns="cycle,predicted_rul",
+                          filters=[('eq', "engine_id", eid)], order_by=[("cycle", False)])
+                for eid in engine_ids
+            })
 
             # Build alert dicts
             for i, log in enumerate(logs):
@@ -1331,13 +1336,7 @@ def create_alert_log_layout(supabase=None, engine_db_id=None,
                 rul_progression = []
                 alert_rul = 0
                 try:
-                    pred_resp = db.fetch_records(
-                        supabase,
-                        "rul_predictions",
-                        "cycle,predicted_rul",
-                        filters=[('eq', "engine_id", alert_engine_id)],
-                        order_by=[("cycle", False)],
-                    )
+                    pred_resp = prediction_reads[alert_engine_id].result()
                     all_preds = pred_resp.data or []
                     if snapshot_cycle is not None:
                         preds = [r for r in all_preds

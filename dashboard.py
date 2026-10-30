@@ -92,27 +92,24 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
     try:
         if supabase:
-            # ── Fetch alert thresholds ──
-            warn_thresh = 50
-            crit_thresh = 30
+            filters = [('eq', "is_deleted", True)]
+            if org_id:
+                filters.append(('eq', "organization_id", org_id))
+            initial = db.fetch_records_parallel(supabase, {
+                "thresholds": dict(table="alert_thresholds", columns="warning_threshold,critical_threshold",
+                                   order_by=[("updated_at", True)], limit=1),
+                "engines": dict(table="engines", columns="id,engine_id,responsible_by,model_type,created_at",
+                                filters=filters),
+            })
+            warn_thresh, crit_thresh = 50, 30
             try:
-                t_resp = db.get_alert_thresholds(supabase, "warning_threshold, critical_threshold")
+                t_resp = initial["thresholds"].result()
                 if t_resp.data:
                     warn_thresh = int(t_resp.data[0].get("warning_threshold", warn_thresh))
                     crit_thresh = int(t_resp.data[0].get("critical_threshold", crit_thresh))
             except Exception:
                 pass
-
-            # ── Base query builder: always filter by org_id ──
-            def eng_query():
-                q = dict(client=supabase, table="engines",
-                         columns="id,engine_id,responsible_by,model_type,created_at", filters=[])
-                if org_id:
-                    q["filters"].append(('eq', "organization_id", org_id))
-                q["filters"].append(('eq', "is_deleted", True))
-                return q
-
-            response     = db.fetch_records(**eng_query())
+            response = initial["engines"].result()
             engines_by_id = {e["id"]: e for e in (response.data or []) if e.get("id")}
 
             # warning_count / critical_count are derived below from engine_data
@@ -121,39 +118,31 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
 
             engine_ids = [e.get("id") for e in (response.data or []) if e.get("id")]
 
-            # Alert count — one per engine (latest active warning/critical only)
-            if org_id and not engine_ids:
-                alert_count = 0
-            else:
+            responsible_engine_ids = [e["id"] for e in (response.data or [])
+                                      if e.get("id") and (role == "admin" or
+                                      (user_id and str(e.get("responsible_by")) == str(user_id)))]
+            detail_queries = {}
+            if engine_ids or not org_id:
+                alert_filters = [('in_', "severity", ["warning", "critical"]), ('eq', "status", "active")]
+                if org_id:
+                    alert_filters.append(('in_', "engine_id", engine_ids))
+                detail_queries["alerts"] = dict(table="alert_logs", columns="engine_id", filters=alert_filters)
+            if engine_ids:
+                detail_queries["predictions"] = dict(table="rul_predictions", columns="engine_id,predicted_rul",
+                    filters=[('in_', "engine_id", engine_ids)], order_by=[("predicted_at", True)])
+            if responsible_engine_ids:
+                detail_queries["schedules"] = dict(table="maintenance_schedules", columns="engine_id,status",
+                    filters=[('in_', "engine_id", responsible_engine_ids)], order_by=[("created_at", True)])
+            details = db.fetch_records_parallel(supabase, detail_queries)
+            if "alerts" in details:
                 try:
-                    ac_query = dict(
-                        client=supabase,
-                        table="alert_logs",
-                        columns="engine_id",
-                        filters=[('in_', "severity", ["warning", "critical"]), ('eq', "status", "active")],
-                    )
-                    if org_id and engine_ids:
-                        ac_query["filters"].append(('in_', "engine_id", engine_ids))
-                    ac_resp = db.fetch_records(**ac_query)
-                    # Count distinct engines with an active alert
-                    alert_count = len({r["engine_id"] for r in (ac_resp.data or []) if r.get("engine_id")})
+                    alert_count = len({r["engine_id"] for r in (details["alerts"].result().data or []) if r.get("engine_id")})
                 except Exception:
                     alert_count = 0
-
-            # ── Batch-fetch latest predicted_rul per engine from rul_predictions ──
-            latest_rul_map = {}   # engine_db_id → predicted_rul float
-            if engine_ids:
+            latest_rul_map = {}
+            if "predictions" in details:
                 try:
-                    # Fetch all predictions for these engines ordered newest first,
-                    # then keep only the first (latest) row per engine
-                    pred_resp = db.fetch_records(
-                        supabase,
-                        "rul_predictions",
-                        "engine_id, predicted_rul",
-                        filters=[('in_', "engine_id", engine_ids)],
-                        order_by=[("predicted_at", True)],
-                    )
-                    for row in (pred_resp.data or []):
+                    for row in details["predictions"].result().data or []:
                         eid = row.get("engine_id")
                         if eid and eid not in latest_rul_map and row.get("predicted_rul") is not None:
                             latest_rul_map[eid] = float(row["predicted_rul"])
@@ -205,11 +194,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                       (user_id and str(e.get("responsible_by")) == str(user_id))]
             latest_maintenance = {}
             if responsible_engine_ids:
-                schedules = db.fetch_records(
-                    supabase, "maintenance_schedules", "engine_id,status",
-                    filters=[('in_', "engine_id", responsible_engine_ids)],
-                    order_by=[("created_at", True)],
-                )
+                schedules = details["schedules"].result()
                 for schedule in schedules.data or []:
                     latest_maintenance.setdefault(schedule["engine_id"], schedule.get("status"))
             alert_engine_ids = [eid for eid in responsible_engine_ids
@@ -747,7 +732,11 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                 ]
                             ),
                             # ── Maintenance alerts (now from Supabase) ──
-                            build_admin_analytics(supabase, org_id) if role == "admin" else html.Div(
+                            html.Div(
+                                id="admin-analytics-content",
+                                children=build_admin_analytics(None, org_id, loading=True),
+                                style={"display": "flex", "flex": "1", "minWidth": "0", "minHeight": "0"},
+                            ) if role == "admin" else html.Div(
                                 style={
                                     "flex": "1",
                                     "minHeight": "0",
@@ -781,5 +770,18 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                 ]
             ),
             dcc.Store(id="engine-data-store", data=engine_data),
+            dcc.Store(id="admin-analytics-load", data=True) if role == "admin" else html.Div(),
         ]
     )
+
+
+def register_dashboard_callbacks(app, supabase=None):
+    from dash import Input, Output
+    from auth_security import require_trusted_role
+
+    @app.callback(Output("admin-analytics-content", "children"),
+                  Input("admin-analytics-load", "data"))
+    def load_admin_analytics(_load):
+        # The charts load after the usable dashboard, using live server claims.
+        principal = require_trusted_role("admin")
+        return build_admin_analytics(supabase, principal["organization_id"])

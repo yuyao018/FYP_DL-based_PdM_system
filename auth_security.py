@@ -16,6 +16,7 @@ import hmac
 import threading
 from flask import current_app, g, session as flask_session
 from supabase import create_client
+from supabase_connections import create_request_client
 from assets import database_integration as db
 
 MAX_LOGIN_FAILURES = 5
@@ -154,7 +155,7 @@ def _configured_supabase_client():
     url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
     if not url or not key:
         raise RuntimeError("Supabase URL and anon key must be configured")
-    return create_client(url, key)
+    return create_request_client(url, key)
 
 
 def authenticate_username(username: str, password: str, selected_role: str,
@@ -329,14 +330,12 @@ def user_supabase_client():
     if cached is not None:
         return cached
     client = _configured_supabase_client()
-    # Bind Auth as well as PostgREST so password updates use this user's JWT.
-    client.auth.set_session(token, flask_session["auth_refresh_token"])
-    token = flask_session.get("auth_access_token")
+    # Ordinary reads need the JWT, not an Auth get_user round trip.
+    # The request hook handles expiry; trusted_profile checks live permissions.
+    # Storage also needs the JWT when its native service client is created.
+    client.options.headers["Authorization"] = f"Bearer {token}"
     client.postgrest.auth(token)
-    try:
-        client.storage.set_auth(token)
-    except AttributeError:
-        pass
+    # Storage initializes lazily with the JWT in options.headers.
     g.auth_supabase_client = client
     return client
 
@@ -365,7 +364,7 @@ def trusted_profile() -> dict[str, Any] | None:
     if admin_client is None:
         url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
         if url and key:
-            admin_client = create_client(url, key)
+            admin_client = create_request_client(url, key)
             g.auth_profile_admin = admin_client
     if admin_client is None:
         return None
@@ -387,11 +386,19 @@ def trusted_profile() -> dict[str, Any] | None:
 
 class RequestSupabaseProxy:
     """Resolve DB calls against the JWT client for this HTTP request only."""
+    def _resolve_request_client(self):
+        return user_supabase_client()
+
     def __getattr__(self, name):
         client = user_supabase_client()
         if client is None:
             # Anonymous requests remain anonymous; RLS/grants must deny data.
             client = _configured_supabase_client()
+        if name == "auth" and not getattr(g, "auth_session_bound", False):
+            # Auth mutations (e.g. password changes) still require SDK session state.
+            client.auth.set_session(flask_session["auth_access_token"],
+                                    flask_session["auth_refresh_token"])
+            g.auth_session_bound = True
         return getattr(client, name)
 
 

@@ -4,6 +4,8 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import base64
+import json
+import logging
 from datetime import datetime
 from assets.components import (build_admin_sidebar, build_topbar)
 
@@ -118,6 +120,7 @@ def user_table_row(user, idx):
     is_admin = role_lower in ("admin", "administrator")
 
     return html.Div(
+        id={"type": "active-user-row", "index": user["id"]},
         style={
             "display": "grid",
             "gridTemplateColumns": "1fr 1.4fr 0.7fr 1fr 0.7fr 1fr",
@@ -154,11 +157,14 @@ def user_table_row(user, idx):
     )
 
 
+def user_count_summary(users):
+    active = sum((u.get("status") or "offline").lower() == "active" for u in users)
+    return f"{len(users)} accounts · {active} active sessions"
+
+
 def build_users_table(users, deleted_users=None):
     if deleted_users is None:
         deleted_users = []
-    total = len(users)
-    active = sum(1 for u in users if u["status"].lower() == "active")
 
     return html.Div(
         style={
@@ -171,7 +177,7 @@ def build_users_table(users, deleted_users=None):
                        "padding": "16px 24px 12px"},
                 children=[
                     html.Span("Users", style={"color": "white", "fontSize": "15px", "fontWeight": "700"}),
-                    html.Span(f"{total} accounts · {active} active sessions",
+                    html.Span(user_count_summary(users), id="user-count-summary",
                               style={"color": "rgba(168,212,255,0.5)", "fontSize": "12px"}),
                 ]
             ),
@@ -225,6 +231,7 @@ def _sample_users():
 def deleted_user_table_row(user, idx):
     """Render a greyed-out row for a soft-deleted user with a Restore button."""
     return html.Div(
+        id={"type": "deleted-user-row", "index": user["id"]},
         style={
             "display": "grid",
             "gridTemplateColumns": "1fr 1.4fr 0.7fr 1fr 0.7fr 1fr",
@@ -279,6 +286,15 @@ def build_user_management_body(users=None, deleted_users=None):
         ),
         html.Div(style={"height": "1px", "background": "rgba(74,158,255,0.15)", "marginBottom": "20px"}),
 
+        dcc.Store(id="user-action-timer"),
+        dcc.Store(id="user-action-dismiss-delay", data=None),
+        dbc.Toast(
+            id="user-action-status", header="User management", children="",
+            is_open=False, dismissable=True, duration=None, icon="success",
+            className="user-action-toast",
+            style={"position": "fixed", "top": "76px", "right": "24px",
+                   "width": "360px", "maxWidth": "calc(100vw - 32px)", "zIndex": 2000},
+        ),
         build_permission_matrix(),
         build_users_table(users, deleted_users=deleted_users),
 
@@ -391,95 +407,131 @@ def create_user_management_layout(supabase=None, org_id=None):
 #  CALLBACKS
 # ─────────────────────────────────────────────
 
-def register_user_management_callbacks(app, supabase=None):
+def register_user_management_callbacks(app, supabase=None, supabase_admin=None):
+
+    # The Toast stays open between pending and success. Its built-in timer
+    # does not reliably restart on that transition, so own the timer explicitly.
+    app.clientside_callback(
+        """function(message, duration, isOpen) {
+            const key = '__userActionToastTimer';
+            if (window[key]) {
+                window.clearTimeout(window[key]);
+                window[key] = null;
+            }
+            if (isOpen && duration > 0) {
+                window[key] = window.setTimeout(function() {
+                    window[key] = null;
+                    window.dash_clientside.set_props('user-action-status', {is_open: false});
+                }, duration);
+            }
+            return window.dash_clientside.no_update;
+        }""",
+        Output("user-action-timer", "data"),
+        Input("user-action-status", "children"),
+        Input("user-action-dismiss-delay", "data"),
+        Input("user-action-status", "is_open"),
+        prevent_initial_call=True,
+    )
+
+    # Browser feedback runs without waiting for an HTTP/database round trip.
+    # The server always returns authoritative rows, including on failure.
+    for action, row_type, message in (
+        ("remove", "active-user-row", "Removing user… Saving change."),
+        ("restore", "deleted-user-row", "Restoring user… Saving change."),
+    ):
+        app.clientside_callback(
+            """function(clicks, style) {
+                if (!clicks) return window.dash_clientside.no_update;
+                window.dash_clientside.set_props('user-action-dismiss-delay', {data: null});
+                window.dash_clientside.set_props('user-action-status',
+                    {children: %s, header: 'Saving change', icon: 'primary',
+                     duration: null, is_open: true});
+                return Object.assign({}, style, {display: 'none'});
+            }""" % json.dumps(message),
+            Output({"type": row_type, "index": dash.MATCH}, "style"),
+            Input({"type": action + "-user-btn", "index": dash.MATCH}, "n_clicks"),
+            State({"type": row_type, "index": dash.MATCH}, "style"),
+            prevent_initial_call=True,
+        )
 
     @app.callback(
         Output("users-table-body", "children"),
         Output("users-data", "data"),
         Output("deleted-users-body", "children"),
         Output("deleted-users-data", "data"),
+        Output("user-action-status", "children"),
+        Output("user-count-summary", "children"),
+        Output("user-action-status", "header"),
+        Output("user-action-status", "icon"),
+        Output("user-action-dismiss-delay", "data"),
+        Output("user-action-status", "is_open"),
         Input({"type": "remove-user-btn", "index": dash.ALL}, "n_clicks"),
-        State("users-data", "data"),
-        State("deleted-users-data", "data"),
-        prevent_initial_call=True,
-    )
-    def remove_user(n_clicks_list, users_data, deleted_data):
-        ctx = dash.callback_context
-        if not ctx.triggered or not any(n_clicks_list):
-            raise dash.exceptions.PreventUpdate
-        try:
-            principal = require_trusted_role("admin")
-        except PermissionError:
-            raise dash.exceptions.PreventUpdate
-
-        import json
-        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        user_id = json.loads(trigger_id)["index"]
-
-        # Soft delete: mark as deleted (is_deleted = false means removed)
-        if supabase:
-            try:
-                db.update_records(supabase, "users", {"is_deleted": False},
-                                  filters=[('eq', "id", user_id), ('eq', "organization_id", principal["organization_id"])])
-            except Exception as e:
-                print(f"[ERROR] soft-delete user: {e}")
-
-        # Move user from active to deleted list
-        removed_user = next((u for u in users_data if u["id"] == user_id), None)
-        updated_users = [u for u in users_data if u["id"] != user_id]
-        if deleted_data is None:
-            deleted_data = []
-        if removed_user:
-            removed_user["is_deleted"] = True
-            deleted_data.append(removed_user)
-
-        user_rows = [user_table_row(u, i) for i, u in enumerate(updated_users)]
-        deleted_rows = [deleted_user_table_row(u, i) for i, u in enumerate(deleted_data)]
-
-        return user_rows, updated_users, deleted_rows, deleted_data
-
-    @app.callback(
-        Output("users-table-body", "children", allow_duplicate=True),
-        Output("users-data", "data", allow_duplicate=True),
-        Output("deleted-users-body", "children", allow_duplicate=True),
-        Output("deleted-users-data", "data", allow_duplicate=True),
         Input({"type": "restore-user-btn", "index": dash.ALL}, "n_clicks"),
         State("users-data", "data"),
         State("deleted-users-data", "data"),
+        running=[
+            (Output({"type": "remove-user-btn", "index": dash.ALL}, "disabled"), True, False),
+            (Output({"type": "restore-user-btn", "index": dash.ALL}, "disabled"), True, False),
+        ],
         prevent_initial_call=True,
     )
-    def restore_user(n_clicks_list, users_data, deleted_data):
+    def change_user_visibility(remove_clicks, restore_clicks, users_data, deleted_users_data):
         ctx = dash.callback_context
-        if not ctx.triggered or not any(n_clicks_list):
+        trigger = ctx.triggered_id
+        if not isinstance(trigger, dict) or not any(
+            item.get("value") for item in ctx.triggered
+        ):
             raise dash.exceptions.PreventUpdate
+
+        active = [dict(e) for e in (users_data or [])]
+        deleted = [dict(e) for e in (deleted_users_data or [])]
+        user_id = trigger["index"]
+        restoring = trigger["type"] == "restore-user-btn"
+        message = ""
+        saved = False
         try:
             principal = require_trusted_role("admin")
-        except PermissionError:
-            raise dash.exceptions.PreventUpdate
+            client = supabase_admin if supabase_admin is not None else supabase
+            if client is None:
+                raise RuntimeError("Database is unavailable")
+            # Account administration follows add_user: server-side authorization
+            # plus organization and protected-role filters on the privileged write.
+            filters = [('eq', "id", user_id),
+                       ('eq', "organization_id", principal["organization_id"]),
+                       ('not_in', "role", ["admin", "administrator", "developer"])]
+            if principal.get("user_id"):
+                filters.append(('not_in', "id", [principal["user_id"]]))
+            response = db.update_records(
+                client, "users", {"is_deleted": restoring}, filters=filters,
+            )
+            if not response.data:
+                raise RuntimeError("No user was updated")
+        except Exception as exc:
+            if getattr(exc, "code", None) == "42501":
+                logging.getLogger(__name__).warning("User visibility update blocked by database access policy")
+                message = ("Could not save: the database access policy blocked this change. "
+                           "The user was returned to its previous position. "
+                           "Please contact your administrator.")
+            else:
+                logging.getLogger(__name__).exception("User visibility update failed")
+                message = "Could not save the change. The user was returned to its previous position. Please try again."
+        else:
+            saved = True
+            source, destination = (deleted, active) if restoring else (active, deleted)
+            user = next((e for e in source if e["id"] == user_id), None)
+            if user:
+                source.remove(user)
+                user["is_deleted"] = not restoring
+                destination.append(user)
+            message = "User restored." if restoring else "User removed."
 
-        import json
-        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        user_id = json.loads(trigger_id)["index"]
-
-        # Restore: set is_deleted back to true (active)
-        if supabase:
-            try:
-                db.update_records(supabase, "users", {"is_deleted": True},
-                                  filters=[('eq', "id", user_id), ('eq', "organization_id", principal["organization_id"])])
-            except Exception as e:
-                print(f"[ERROR] restore user: {e}")
-
-        # Move user from deleted to active list
-        restored_user = next((u for u in (deleted_data or []) if u["id"] == user_id), None)
-        updated_deleted = [u for u in (deleted_data or []) if u["id"] != user_id]
-        if restored_user:
-            restored_user["is_deleted"] = False
-            users_data.append(restored_user)
-
-        user_rows = [user_table_row(u, i) for i, u in enumerate(users_data)]
-        deleted_rows = [deleted_user_table_row(u, i) for i, u in enumerate(updated_deleted)]
-
-        return user_rows, users_data, deleted_rows, updated_deleted
+        return (
+            [user_table_row(e, i) for i, e in enumerate(active)], active,
+            [deleted_user_table_row(e, i) for i, e in enumerate(deleted)], deleted,
+            message, user_count_summary(active),
+            ("User restored" if restoring else "User removed") if saved else "Change wasn’t saved",
+            "success" if saved else "danger", 3500 if saved else None, True,
+        )
 
 
 # ─────────────────────────────────────────────

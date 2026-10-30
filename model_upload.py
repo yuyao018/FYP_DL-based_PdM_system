@@ -112,7 +112,7 @@ def build_admin_sidebar(active_page="model"):
                 "background": "rgba(74,158,255,0.18)", "color": "white",
                 "fontWeight": "700", "borderLeft": "3px solid #4a9eff", "paddingLeft": "11px",
             })
-        return html.A(href=href, style={"textDecoration": "none"},
+        return dcc.Link(href=href, style={"textDecoration": "none"},
                       children=[html.Div(style=style, children=[icon_fn(), html.Span(label)])])
 
     return html.Div(
@@ -124,7 +124,7 @@ def build_admin_sidebar(active_page="model"):
             "overflow": "hidden", "transition": "width 0.3s ease",
         },
         children=[
-            html.A(href="/dashboard", style={"textDecoration": "none"}, children=[
+            dcc.Link(href="/dashboard", style={"textDecoration": "none"}, children=[
                 html.Div(style={
                     "padding": "20px 20px 18px",
                     "borderBottom": "1px solid rgba(74,158,255,0.12)",

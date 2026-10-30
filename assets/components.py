@@ -1,5 +1,5 @@
 import base64
-from dash import html
+from dash import dcc, html
 
 def _svg_img(svg_str, size="22px"):
     b64 = base64.b64encode(svg_str.strip().encode("utf-8")).decode("utf-8")
@@ -192,7 +192,7 @@ def build_sidebar(active_page="overview", engine_db_id=None):
                 "borderLeft": "3px solid #4a9eff",
                 "paddingLeft": "11px",
             })
-        return html.A(
+        return dcc.Link(
             href=href,
             style={"textDecoration": "none"},
             children=[
@@ -222,7 +222,7 @@ def build_sidebar(active_page="overview", engine_db_id=None):
         },
         children=[
             # ── Dashboard top link ──
-            html.A(
+            dcc.Link(
                 href="/dashboard",
                 style={"textDecoration": "none", "flexShrink": "0"},
                 children=[
@@ -347,7 +347,7 @@ def build_admin_sidebar(active_page="engines"):
                 "background": "rgba(74,158,255,0.18)", "color": "white",
                 "fontWeight": "700", "borderLeft": "3px solid #4a9eff", "paddingLeft": "11px",
             })
-        return html.A(href=href, style={"textDecoration": "none"},
+        return dcc.Link(href=href, style={"textDecoration": "none"},
                       children=[html.Div(style=style, children=[icon_fn(), html.Span(label)])])
 
     return html.Div(
@@ -360,7 +360,7 @@ def build_admin_sidebar(active_page="engines"):
             "overflow": "hidden", "transition": "width 0.3s ease",
         },
         children=[
-            html.A(href="/dashboard", style={"textDecoration": "none", "flexShrink": "0"}, children=[
+            dcc.Link(href="/dashboard", style={"textDecoration": "none", "flexShrink": "0"}, children=[
                 html.Div(style={
                     "padding": "20px 20px 18px",
                     "borderBottom": "1px solid rgba(74,158,255,0.12)",
@@ -425,7 +425,7 @@ def build_dev_sidebar(active_page="dashboard"):
                 "borderLeft": "3px solid #4a9eff",
                 "paddingLeft": "11px",
             })
-        return html.A(
+        return dcc.Link(
             href=href,
             style={"textDecoration": "none"},
             children=[html.Div(style=style, children=[icon_fn(), html.Span(label)])]
@@ -448,7 +448,7 @@ def build_dev_sidebar(active_page="dashboard"):
         },
         children=[
             # ── Dashboard top link ──
-            html.A(
+            dcc.Link(
                 href="/dev-dashboard",
                 style={"textDecoration": "none"},
                 children=[

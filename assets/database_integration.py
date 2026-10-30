@@ -1,6 +1,7 @@
 import logging
 import time
 import httpx
+from navigation_metrics import current_metrics, timed_read
 
 
 _SLOW_QUERY_SECONDS = 1.0
@@ -50,7 +51,11 @@ def fetch_records(client, table, columns="*", *, filters=(), order_by=(), limit=
                                 table, attempt + 1)
                 time.sleep(0.25 * (attempt + 1))
     finally:
-        elapsed = time.perf_counter() - started
+        ended = time.perf_counter()
+        elapsed = ended - started
+        metrics = current_metrics.get()
+        if metrics is not None:
+            metrics.record(table, started, ended)
         if elapsed >= _SLOW_QUERY_SECONDS:
             _logger.warning("Slow Supabase read: table=%s elapsed=%.2fs", table, elapsed)
 
@@ -109,3 +114,20 @@ def remove_files(client, bucket, paths):
 def upload_file(client, bucket, *args, **kwargs):
     """Preserve Supabase upload options such as content type and upsert."""
     return client.storage.from_(bucket).upload(*args, **kwargs)
+
+
+def fetch_records_parallel(client, queries):
+    """Run independent reads together and keep per-query error handling possible.
+
+    Resolve the Flask proxy before starting workers: Flask sessions must never
+    be accessed from a background thread. No credentials or results are cached.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    resolver = getattr(type(client), "_resolve_request_client", None)
+    if resolver is not None:
+        client = resolver(client)
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(queries)))) as executor:
+        pending = {key: executor.submit(timed_read, current_metrics.get(), fetch_records, client, **query)
+                   for key, query in queries.items()}
+        # Futures preserve existing optional-read fallback behavior at each caller.
+        return pending

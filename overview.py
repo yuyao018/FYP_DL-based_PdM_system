@@ -700,7 +700,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                    "justifyContent": "space-between", "marginBottom": "10px"},
                             children=[
                                 card_title("Sensor Trends"),
-                                html.A(
+                                dcc.Link(
                                     style={"display": "flex", "alignItems": "center", "gap": "4px",
                                            "color": "#4a9eff", "fontSize": "11px", "fontWeight": "600",
                                            "textDecoration": "none", "cursor": "pointer",
@@ -779,7 +779,7 @@ def build_overview_body(engine_id="01", status="healthy", rul=None, degradation=
                                    "justifyContent": "space-between", "marginBottom": "10px"},
                             children=[
                                 card_title("Top Drivers"),
-                                html.A(
+                                dcc.Link(
                                     style={"display": "flex", "alignItems": "center", "gap": "4px",
                                            "color": "#4a9eff", "fontSize": "11px", "fontWeight": "600",
                                            "textDecoration": "none", "cursor": "pointer",
@@ -845,12 +845,14 @@ def create_overview_layout(supabase, engine_db_id=None):
 
     try:
         if supabase and engine_db_id is not None:
-            # Fetch engine row by PK
-            eng_resp = db.get_engine(supabase, engine_db_id, "*")
-            engine = eng_resp.data or {}
-
-            # Fetch latest RUL prediction for this engine
-            pred_resp = db.get_latest_prediction(supabase, engine_db_id, "*")
+            reads = db.fetch_records_parallel(supabase, {
+                "engine": dict(table="engines", columns="*", filters=[('eq', "id", engine_db_id)], single=True),
+                "prediction": dict(table="rul_predictions", columns="*",
+                                   filters=[('eq', "engine_id", engine_db_id)],
+                                   order_by=[("predicted_at", True)], limit=1),
+            })
+            engine = reads["engine"].result().data or {}
+            pred_resp = reads["prediction"].result()
             pred = pred_resp.data[0] if pred_resp.data else {}
 
             engine_id   = str(engine.get("engine_id")).zfill(2)

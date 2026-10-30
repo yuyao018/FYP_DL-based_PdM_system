@@ -1,9 +1,10 @@
 from assets import database_integration as db
+from page_navigation import navigation_components, register_page_navigation
 import dash
 from simulation_panel import build_simulation_panel, register_simulation_callbacks
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
-from dashboard import create_dashboard_layout
+from dashboard import create_dashboard_layout, register_dashboard_callbacks
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
 from login_page import validate_login_inputs
 from dev_login_page import create_dev_login_layout
@@ -31,6 +32,8 @@ from auth_security import (RequestSupabaseProxy, authenticate_username,
 
 # Load environment variables
 load_dotenv()
+from supabase_connections import prepare_request_connections
+prepare_request_connections()
 
 # Initialize Supabase client 
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
@@ -55,13 +58,16 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY) if SUPABASE_URL
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server  # Expose Flask server for deployment
 configure_flask_session(server)
+from navigation_performance import register_navigation_timing
+register_navigation_timing(server)
 server.before_request(refresh_auth_session_if_needed)
 request_supabase = RequestSupabaseProxy()
 from maintenance_recommendations import register_response_routes
 register_response_routes(server, supabase_admin)
+register_dashboard_callbacks(app, supabase=request_supabase)
 register_sensor_callbacks(app, supabase=request_supabase)
 register_alert_log_callbacks(app, supabase=request_supabase)
-register_user_management_callbacks(app, supabase=request_supabase)
+register_user_management_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
 register_add_user_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
 register_model_upload_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
 register_alert_thresholds_callbacks(app, supabase=request_supabase)
@@ -102,35 +108,12 @@ app.layout = html.Div([
             "whiteSpace": "nowrap",
         },
     ),
-    dcc.Loading(
-        id="page-navigation-loading",
-        target_components={"page-content": "children"},
-        type=None,
-        fullscreen=True,
-        delay_show=150,
-        overlay_style={
-            "backgroundColor": "#0a1628",
-            "visibility": "visible",
-            "opacity": "1",
-        },
-        custom_spinner=html.Div(
-            html.Div(className="page-loading-spinner"),
-            className="page-loading-screen",
-            role="status",
-            **{"aria-label": "Loading page"},
-        ),
-        children=html.Div(id="page-content"),
-    ),
+    html.Div(id="page-content"),
+    *navigation_components(),
     build_simulation_panel(),
 ])
 
-# Routing callback
-@app.callback(
-    Output("page-content", "children"),
-    Input("url", "pathname"),
-    Input("url", "search"),
-    State("session-store", "data"),
-)
+# Protected page renderer; navigation itself is handled in the browser.
 def display_page(pathname, search, session):
     # dcc.Store is client-editable. Route access uses the signed Flask session.
     session = trusted_profile()
@@ -284,6 +267,8 @@ def display_page(pathname, search, session):
                      style={"color": "#4a9eff", "textDecoration": "none", "marginTop": "12px"}),
         ]
     )
+
+register_page_navigation(app, display_page)
 
 # Toast notification — clientside callback for smooth slide-in/out animation
 app.clientside_callback(

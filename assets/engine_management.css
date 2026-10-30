@@ -1,0 +1,26 @@
+/* Floating feedback keeps actions from shifting the engine table. */
+:is(.engine-action-toast, .user-action-toast).toast {
+    background: #13233b;
+    color: #dcecff;
+    border: 1px solid rgba(112, 164, 222, 0.28);
+    border-radius: 12px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+}
+:is(.engine-action-toast, .user-action-toast) .toast-header {
+    background: #192d48;
+    color: #eef6ff;
+    border-bottom: 1px solid rgba(112, 164, 222, 0.16);
+    padding: 12px 16px;
+}
+:is(.engine-action-toast, .user-action-toast) .toast-body {
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+:is(.engine-action-toast, .user-action-toast) .btn-close {
+    filter: invert(1) grayscale(1) brightness(2);
+}
+@media (max-width: 576px) {
+    :is(.engine-action-toast, .user-action-toast).toast { right: 16px !important; }
+}
