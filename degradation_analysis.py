@@ -213,6 +213,8 @@ def build_top_drivers_chart(shap_data: list[dict] = None, top_n: int | str = "al
         textposition="inside",
         insidetextanchor="end",
         textfont=dict(color="white", size=10),
+        hoverinfo="none",
+        hovertemplate=None,
     ))
 
     fig.update_layout(
@@ -343,12 +345,9 @@ def build_shap_waterfall(shap_data: list[dict], cycle_label: str = "Latest", bas
             mode="markers",
             marker=dict(size=max(12, abs(score) * 0.5), color="rgba(0,0,0,0)",
                         line=dict(width=0)),
-            hovertemplate=(
-                f"<b>{sensor}</b><br>"
-                f"SHAP: <b>{score:+.4f}</b><br>"
-                f"Running output: <b>{cum_val:.2f}</b>"
-                f"<extra></extra>"
-            ),
+            customdata=[[sensor, score, cum_val, color]],
+            hoverinfo="none",
+            hovertemplate=None,
             showlegend=False,
         ))
 

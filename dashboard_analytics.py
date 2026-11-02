@@ -90,7 +90,7 @@ def build_admin_analytics(client, org_id, *, loading=False):
         for severity, color in (("warning", "#ffd93d"), ("critical", "#ff4d4d")):
             alert_fig.add_bar(name=severity.capitalize(), x=[day.isoformat() for day in days],
                               y=[counts[severity][day] for day in days], marker_color=color,
-                              hovertemplate="%{x}<br>%{y} alerts<extra>%{fullData.name}</extra>")
+                              hovertemplate="<b>%{fullData.name}</b><br>%{x}<br>%{y} alerts<extra></extra>")
         labels = list(JOB_LABELS.values())
         job_fig.add_bar(x=[statuses[key] for key in JOB_LABELS], y=labels, orientation="h",
                         marker_color=["#4a9eff", "#ffd93d", "#a78bfa", "#ff934d"],
@@ -102,9 +102,16 @@ def build_admin_analytics(client, org_id, *, loading=False):
         alert_fig.update_yaxes(title="Alerts", rangemode="tozero", dtick=1)
         job_fig.update_xaxes(title="Jobs", rangemode="tozero", dtick=1)
     for fig in (alert_fig, job_fig):
+        # Preserve hover events for the overview-style custom tooltip card.
+        fig.update_traces(hoverinfo="none", hovertemplate=None)
         fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
                           plot_bgcolor="rgba(0,0,0,0)", font=dict(size=11, color="#dbe8ff"),
-                          margin=dict(l=10, r=12, t=30, b=35), autosize=True)
+                          margin=dict(l=10, r=12, t=30, b=35), autosize=True,
+                          hoverlabel=dict(
+                              bgcolor="#0d1e3a",
+                              bordercolor="rgba(74,158,255,0.4)",
+                              font=dict(color="white", size=12),
+                          ))
         if unavailable:
             fig.add_annotation(text="Loading chart data…" if loading else "Data unavailable. Reload to try again.", x=.5, y=.5,
                                xref="paper", yref="paper", showarrow=False)
