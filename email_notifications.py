@@ -11,7 +11,7 @@ Two notification types:
 Configuration (add to .env):
     EMAIL_SENDER=your-sender@gmail.com
     EMAIL_PASSWORD=your-app-password          # Gmail App Password
-    EMAIL_RECIPIENTS=a@co.com,b@co.com        # comma-separated
+    # Daily recipients come from users and engine responsibility assignments.
     DASHBOARD_URL=http://localhost:8050  # base URL for the Open Dashboard button
     EMAIL_DAILY_HOUR=9                        # hour (0-23) for daily report, default 9
     SMTP_HOST=smtp.gmail.com                  # optional, default smtp.gmail.com
@@ -105,7 +105,7 @@ def _fetch_thresholds(supabase) -> tuple[int, int]:
     return 50, 30
 
 
-def _fetch_fleet_summary(supabase) -> dict:
+def _fetch_fleet_summary(supabase, engine_ids=None) -> dict:
     """
     Return fleet summary counts using the latest predicted_rul per engine,
     evaluated against the current alert_thresholds.
@@ -114,8 +114,9 @@ def _fetch_fleet_summary(supabase) -> dict:
     total = critical = warning = normal = 0
 
     try:
-        engines_resp = db.fetch_records(supabase, "engines", "id")
-        engine_ids   = [e["id"] for e in (engines_resp.data or []) if e.get("id")]
+        if engine_ids is None:
+            engines_resp = db.fetch_records(supabase, "engines", "id")
+            engine_ids = [e["id"] for e in (engines_resp.data or []) if e.get("id")]
         total        = len(engine_ids)
 
         if not engine_ids:
@@ -167,67 +168,95 @@ def _fmt_date(dt: Optional[datetime] = None) -> str:
     return dt.strftime(f"{day}{suffix} %b %Y")
 
 
-def _daily_report_html(summary: dict) -> str:
-    login_url = _cfg("DASHBOARD_URL", "http://localhost:8050") + "/login"
-    date_str = _fmt_date()
+def _email_header(title: str, subtitle: str) -> str:
+    """One email-safe PRISM heading shared by daily and threshold reports."""
+    from html import escape
+    return f'''<table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+      <tr><td style="background:#0d1e36;padding:28px 30px;border-radius:15px 15px 0 0;border-top:4px solid #49cfc6;font-family:Arial,Helvetica,sans-serif;">
+        <div style="font-size:23px;font-weight:700;letter-spacing:4px;color:#ffffff;">PRISM<span style="color:#64e6dd;"> /</span></div>
+        <div style="font-size:11px;letter-spacing:1.5px;color:#a8c4df;padding-top:7px;">PREDICTIVE MAINTENANCE</div>
+        <h1 style="font-size:26px;line-height:34px;font-weight:700;color:#ffffff;margin:28px 0 6px;">{escape(title)}</h1>
+        <div style="font-size:13px;color:#a8c4df;">{escape(subtitle)}</div>
+      </td></tr>
+    </table>'''
 
-    return f"""<!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8">
-    <style>
-    body {{ font-family: Georgia, serif; background: #f4f4f4; margin: 0; padding: 0; }}
-    .wrapper {{ max-width: 640px; margin: 30px auto; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
-    .header {{ background: #1a3a6b; padding: 18px 28px; }}
-    .header h1 {{ color: #fff; margin: 0; font-size: 18px; font-weight: normal; letter-spacing: 0.3px; }}
-    .header span {{ color: #a8c4f0; font-size: 14px; }}
-    .body {{ padding: 28px 28px 20px; color: #222; font-size: 14px; line-height: 1.6; }}
-    .cards {{ display: flex; gap: 12px; margin: 22px 0; }}
-    .card {{ flex: 1; text-align: center; padding: 14px 10px; border-radius: 6px; border: 1px solid #ddd; }}
-    .card .label {{ font-size: 12px; color: #666; margin-bottom: 6px; }}
-    .card .value {{ font-size: 28px; font-weight: bold; }}
-    .card-monitored {{ background: #f0f4ff; }}
-    .card-critical  {{ background: #fff0f0; }} .card-critical .value {{ color: #c0392b; }}
-    .card-warning   {{ background: #fffbea; }} .card-warning  .value {{ color: #b8860b; }}
-    .card-normal    {{ background: #f0fff4; }} .card-normal   .value {{ color: #27ae60; }}
-    .btn {{ display: inline-block; background: #1a3a6b; color: #ffffff !important; padding: 11px 22px; border-radius: 4px; text-decoration: none; font-size: 13px; margin-top: 6px; font-weight: 600; }}
-    .footer {{ padding: 14px 28px; border-top: 1px solid #eee; color: #999; font-size: 11px; }}
-    </style>
-    </head>
-    <body>
-    <div class="wrapper">
-    <div class="header">
-        <h1>Daily RUL Status Report &mdash; <span>{date_str}</span></h1>
-    </div>
-    <div class="body">
-        <p>Hi <strong>Team</strong>,</p>
-        <p>Here is your fleet status summary for today.</p>
-        <div class="cards">
-        <div class="card card-monitored">
-            <div class="label">Monitored</div>
-            <div class="value">{summary['total']}</div>
-        </div>
-        <div class="card card-critical">
-            <div class="label" style="color:#c0392b">Critical</div>
-            <div class="value">{summary['critical']}</div>
-        </div>
-        <div class="card card-warning">
-            <div class="label" style="color:#b8860b">Warning</div>
-            <div class="value">{summary['warning']}</div>
-        </div>
-        <div class="card card-normal">
-            <div class="label" style="color:#27ae60">Normal</div>
-            <div class="value">{summary['normal']}</div>
-        </div>
-        </div>
-        <p>For detailed sensor data and RUL predictions, visit the dashboard:</p>
-        <a class="btn" href="{login_url}" style="color: #ffffff !important; text-decoration: none;">Open Dashboard</a>
-    </div>
-    <div class="footer">
-        This is an automated message from the Predictive Maintenance Monitoring System. Do not reply to this email.
-    </div>
-    </div>
-    </body>
-    </html>"""
+
+def _daily_report_html(summary: dict) -> str:
+    from html import escape
+
+    login_url = escape(_cfg("DASHBOARD_URL", "http://localhost:8050").rstrip("/") + "/login", quote=True)
+    date_str = _fmt_date()
+    critical, warning = summary["critical"], summary["warning"]
+    if critical:
+        headline = "Critical engines need your attention"
+        message = "Review critical engines first, then plan maintenance for those in warning."
+        accent, tint = "#c03640", "#fff1f2"
+    elif warning:
+        headline = "Plan ahead for engines in warning"
+        message = "Review their remaining useful life and upcoming maintenance in your dashboard."
+        accent, tint = "#946200", "#fff8e8"
+    elif not summary["total"]:
+        headline = "No engines in this report"
+        message = "Your daily summary will appear here once engines are available."
+        accent, tint = "#245caa", "#eff5ff"
+    else:
+        headline = "No warning or critical engines reported"
+        message = "Open your dashboard to review the latest predictions and monitoring coverage."
+        accent, tint = "#167457", "#edf9f3"
+
+    cards = []
+    for label, key, color, background in (
+        ("MONITORED", "total", "#245caa", "#eff5ff"),
+        ("CRITICAL", "critical", "#c03640", "#fff1f2"),
+        ("WARNING", "warning", "#946200", "#fff8e8"),
+        ("NORMAL", "normal", "#167457", "#edf9f3"),
+    ):
+        cards.append(f'''<td width="50%" valign="top" style="padding:6px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:{background};border:1px solid #e2e8f0;border-radius:10px;">
+            <tr><td style="padding:20px 22px;">
+              <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:{color};">{label}</div>
+              <div style="padding-top:8px;font-size:36px;line-height:42px;font-weight:700;color:#102440;">{summary[key]}</div>
+              <div style="font-size:12px;color:#64748b;padding-top:3px;">engines</div>
+            </td></tr>
+          </table>
+        </td>''')
+    return f'''<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PRISM daily report</title></head>
+<body style="margin:0;padding:0;background:#eef2f7;font-family:Arial,Helvetica,sans-serif;color:#102440;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your daily engine summary: {critical} critical, {warning} warning, {summary['total']} monitored.</div>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef2f7;">
+<tr><td align="center" style="padding:32px 12px;">
+  <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#ffffff;border:1px solid #dce4ee;border-radius:16px;">
+    <tr><td>{_email_header("Your daily engine briefing", date_str + " · Daily RUL status report")}</td></tr>
+    <tr><td style="padding:26px 24px 0;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:{tint};border-left:3px solid {accent};border-radius:6px;">
+        <tr><td style="padding:16px 18px;">
+          <div style="font-size:15px;line-height:22px;font-weight:700;color:{accent};">{headline}</div>
+          <div style="font-size:13px;line-height:21px;color:#475569;padding-top:5px;">{message}</div>
+        </td></tr>
+      </table>
+    </td></tr>
+    <tr><td style="padding:24px 30px 10px;font-size:11px;font-weight:700;letter-spacing:1.5px;color:#64748b;">ENGINE STATUS AT A GLANCE</td></tr>
+    <tr><td style="padding:0 18px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr>
+      </table>
+    </td></tr>
+    <tr><td style="padding:24px 30px 28px;">
+      <p style="font-size:14px;line-height:23px;color:#475569;margin:0 0 20px;">Explore engine predictions, sensor trends and maintenance activity in PRISM.</p>
+      <table role="presentation" cellspacing="0" cellpadding="0"><tr><td bgcolor="#205caa" style="border-radius:7px;text-align:center;">
+        <a href="{login_url}" style="display:inline-block;padding:14px 24px;border:1px solid #205caa;border-radius:7px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;">Open dashboard &nbsp;&rarr;</a>
+      </td></tr></table>
+    </td></tr>
+    <tr><td style="padding:20px 30px;border-top:1px solid #e6edf5;background:#f8fafc;border-radius:0 0 15px 15px;">
+      <div style="font-size:12px;font-weight:700;color:#475569;">PRISM &middot; Predictive Maintenance Monitoring System</div>
+      <p style="font-size:11px;line-height:18px;color:#7b889a;margin:7px 0 0;">This report covers the engines available to your account. Status counts use the configured RUL thresholds; engines without predictions are currently included as normal.</p>
+      <p style="font-size:11px;line-height:18px;color:#7b889a;margin:7px 0 0;">Automated daily report. Please do not reply to this email.</p>
+    </td></tr>
+  </table>
+</td></tr></table>
+</body></html>'''
+
 
 
 def _threshold_alert_html(
@@ -245,7 +274,6 @@ def _threshold_alert_html(
     date_str = _fmt_date(triggered_at)
     is_critical = level.lower() == "critical"
 
-    header_bg   = "#8b1a1a" if is_critical else "#7a5c1e"
     btn_bg      = "#a00000" if is_critical else "#7a5c1e"
     badge_bg    = "#f5c6c6" if is_critical else "#fde8a0"
     badge_color = "#a00000" if is_critical else "#7a5c1e"
@@ -270,8 +298,6 @@ def _threshold_alert_html(
     <style>
     body {{ font-family: Georgia, serif; background: #f4f4f4; margin: 0; padding: 0; }}
     .wrapper {{ max-width: 640px; margin: 30px auto; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
-    .header {{ background: {header_bg}; padding: 16px 24px; display: flex; align-items: center; gap: 12px; }}
-    .header h1 {{ color: #fff; margin: 0; font-size: 17px; font-weight: normal; }}
     .engine-badge {{ background: rgba(255,255,255,0.18); color: #fff; padding: 3px 10px; border-radius: 4px; font-size: 13px; font-family: monospace; }}
     .body {{ padding: 28px 28px 20px; color: #222; font-size: 14px; line-height: 1.7; }}
     .detail-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
@@ -285,10 +311,7 @@ def _threshold_alert_html(
     </head>
     <body>
     <div class="wrapper">
-    <div class="header">
-        <h1>{title} &mdash; Engine</h1>
-        <span class="engine-badge">#{engine_display_id}</span>
-    </div>
+    {_email_header(title, date_str + " · Engine #" + str(engine_display_id))}
     <div class="body">
         <p>Hi <strong>Team</strong>,</p>
         <p>{intro}</p>
@@ -428,9 +451,12 @@ def _get_alert_recipients(supabase, engine_db_id: str) -> list:
         if responsible_by:
             try:
                 user_resp = db.fetch_records(
-                    supabase, "users", "email_address",
+                    supabase, "users", "email_address,is_deleted",
                     filters=[("eq", "id", responsible_by)], single=True)
-                email = (user_resp.data or {}).get("email_address")
+                profile = user_resp.data or {}
+                if profile.get("is_deleted") is False:
+                    return []
+                email = profile.get("email_address")
                 if email:
                     recipients.add(email)
                     print(f"[EMAIL] Responsible user email: {email}")
@@ -534,6 +560,43 @@ def check_and_send_threshold_alert(
 #  DAILY REPORT SCHEDULER
 # ─────────────────────────────────────────────
 
+def _send_daily_reports(supabase) -> None:
+    """Send private summaries of assigned engines or an admin's organization."""
+    if not supabase:
+        print("[EMAIL] Daily reports skipped — no database client")
+        return
+    users = db.fetch_records(
+        supabase, "users", "id,email_address,role,organization_id,is_deleted").data or []
+    engines = db.fetch_records(
+        supabase, "engines", "id,organization_id,responsible_by").data or []
+    subject = f"Daily RUL Status Report — {_fmt_date()}"
+    summaries = {}
+    for user in users:
+        # Legacy schema: false means removed; true/NULL means available.
+        # Online/offline presence in status does not determine eligibility.
+        if user.get("is_deleted") is False:
+            continue
+        email = (user.get("email_address") or "").strip()
+        org_id = user.get("organization_id")
+        if not email or not org_id or not user.get("id"):
+            continue
+        is_admin = (user.get("role") or "").lower() in ("admin", "administrator")
+        engine_ids = tuple(sorted({
+            engine["id"] for engine in engines
+            if engine.get("id") and engine.get("organization_id") == org_id
+            and (is_admin or engine.get("responsible_by") == user["id"])
+        }))
+        if not engine_ids and not is_admin:
+            continue
+        try:
+            if engine_ids not in summaries:
+                summaries[engine_ids] = _fetch_fleet_summary(supabase, engine_ids)
+            _send_email(subject, _daily_report_html(summaries[engine_ids]),
+                        recipients_override=[email])
+        except Exception:
+            print(f"[EMAIL][ERROR] Daily recipient report failed:\n{traceback.format_exc()}")
+
+
 def _seconds_until_next_run(hour: int) -> float:
     """Return seconds until the next occurrence of `hour:00` local time."""
     now  = datetime.now()
@@ -551,11 +614,7 @@ def _daily_scheduler_loop(supabase, hour: int) -> None:
         threading.Event().wait(wait)  # interruptible sleep
 
         try:
-            summary = _fetch_fleet_summary(supabase)
-            date_str = _fmt_date()
-            subject  = f"Daily RUL Status Report — {date_str}"
-            html     = _daily_report_html(summary)
-            _send_email(subject, html)
+            _send_daily_reports(supabase)
         except Exception:
             print(f"[EMAIL][ERROR] Daily report failed:\n{traceback.format_exc()}")
 

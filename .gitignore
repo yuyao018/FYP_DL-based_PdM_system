@@ -1,5 +1,6 @@
 # Environment Variables
 .env
+.env.selenium
 
 # Python
 __pycache__/
