@@ -568,7 +568,7 @@ def _send_daily_reports(supabase) -> None:
     users = db.fetch_records(
         supabase, "users", "id,email_address,role,organization_id,is_deleted").data or []
     engines = db.fetch_records(
-        supabase, "engines", "id,organization_id,responsible_by").data or []
+        supabase, "engines", "id,organization_id,responsible_by,is_deleted").data or []
     subject = f"Daily RUL Status Report — {_fmt_date()}"
     summaries = {}
     for user in users:
@@ -580,10 +580,14 @@ def _send_daily_reports(supabase) -> None:
         org_id = user.get("organization_id")
         if not email or not org_id or not user.get("id"):
             continue
-        is_admin = (user.get("role") or "").lower() in ("admin", "administrator")
+        role = (user.get("role") or "").strip().lower()
+        if role not in ("admin", "administrator", "user"):
+            continue
+        is_admin = role in ("admin", "administrator")
         engine_ids = tuple(sorted({
             engine["id"] for engine in engines
             if engine.get("id") and engine.get("organization_id") == org_id
+            and engine.get("is_deleted") is not False
             and (is_admin or engine.get("responsible_by") == user["id"])
         }))
         if not engine_ids and not is_admin:
