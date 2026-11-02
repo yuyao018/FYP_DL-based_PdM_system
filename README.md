@@ -78,8 +78,12 @@ Yes opens a confirmation page; only its form submission inserts a row into
 scanners. No leads through login to an open scheduling form prefilled with the
 recommended engine, date, and times. Links are signed and expire after seven
 days. Treat them as booking capabilities: anyone holding a link can confirm its
-specific proposal. Existing alert recipients include organization admins and the
-responsible technician.
+specific proposal. Threshold alert emails are sent only to the engine's
+responsible technician. Administrators use dashboard charts for organization-wide
+alert and maintenance oversight. Charts refresh on page load and use existing
+alert/job records, not SMTP submission or inbox delivery tracking. Alert trends
+include reminders and use Malaysia calendar dates; maintenance counts include
+all recorded jobs, with completed work labelled pending verification.
 
 Configure `DASHBOARD_URL` to the public application origin and optionally set
 `MAINTENANCE_LINK_SECRET`; otherwise the service role key supplies the signing
