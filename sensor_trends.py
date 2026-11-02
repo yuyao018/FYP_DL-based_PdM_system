@@ -185,7 +185,7 @@ def _apply_chart_layout(fig, normalize, x_max=None, x_min=None):
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(10,20,45,0.6)",
         margin=dict(l=10, r=20, t=30, b=10),
-        height=420,
+        autosize=True,
         showlegend=False,
         xaxis=dict(
             title=dict(text="Operational Cycles", font=dict(color="#a8d4ff", size=11)),
@@ -402,7 +402,9 @@ def build_sensor_trends_body(engine_id="01", status="healthy"):
                                     figure=build_sensor_chart(DEFAULT_SELECTED,
                                                               sensor_history=None, normalize=True),
                                     config={"displayModeBar": False},
-                                    style={"width": "100%", "height": "100%"},
+                                    responsive=True,
+                                    style={"position": "absolute", "inset": "0",
+                                           "width": "100%", "height": "100%"},
                                     clear_on_unhover=True,
                                 ),
                                 # Vertical dashed line
@@ -602,7 +604,7 @@ def register_sensor_callbacks(app, supabase=None):
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(10,20,45,0.6)",
                 margin=dict(l=10, r=20, t=30, b=10),
-                height=420,
+                autosize=True,
                 showlegend=False,
                 xaxis=dict(visible=False),
                 yaxis=dict(visible=False),
