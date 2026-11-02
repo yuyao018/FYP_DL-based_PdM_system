@@ -55,7 +55,10 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY) if SUPABASE_URL
 #     print("   The app will run, but login will be disabled until you add SUPABASE_URL and SUPABASE_KEY to .env")
 
 # Initialize Dash app
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
+app = dash.Dash(
+    __name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
+    suppress_callback_exceptions=True, title="PRISM", update_title=None,
+)
 server = app.server  # Expose Flask server for deployment
 configure_flask_session(server)
 from navigation_performance import register_navigation_timing
