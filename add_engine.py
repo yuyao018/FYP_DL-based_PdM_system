@@ -392,15 +392,17 @@ def create_add_engine_layout(supabase=None, org_id=None, edit_engine_id=None):
                         user_resp = db.fetch_records(
                             supabase,
                             "users",
-                            "first_name, last_name, email_address, department",
+                            "first_name, last_name, email_address, department, is_deleted",
                             filters=[('eq', "id", responsible_by)],
                             single=True,
                         )
-                        if user_resp.data:
+                        if user_resp.data and user_resp.data.get("is_deleted") is not False:
                             u = user_resp.data
                             edit_engine["_user_name"] = f"{u.get('last_name', '')} {u.get('first_name', '')}".strip()
                             edit_engine["_user_email"] = u.get("email_address", "")
                             edit_engine["_user_dept"] = u.get("department", "")
+                        else:
+                            edit_engine["responsible_by"] = None
                     except Exception:
                         pass
                 print(f"[DEBUG] Edit engine loaded: {edit_engine}")
@@ -460,7 +462,7 @@ def register_add_engine_callbacks(app, supabase=None):
             query = dict(
                 client=supabase,
                 table="users",
-                columns="id, username, first_name, last_name, email_address, department",
+                columns="id, username, first_name, last_name, email_address, department, is_deleted",
                 filters=[],
             )
             if org_id:
@@ -468,6 +470,9 @@ def register_add_engine_callbacks(app, supabase=None):
             resp = db.fetch_records(**query)
             options = []
             for u in (resp.data or []):
+                # Legacy schema: false means removed; true/NULL means available.
+                if u.get("is_deleted") is False:
+                    continue
                 name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
                 label = f"{name} ({u.get('username', '')})" if name else u.get("username", "")
                 options.append({"label": label, "value": u["id"]})
@@ -494,11 +499,13 @@ def register_add_engine_callbacks(app, supabase=None):
             resp = db.fetch_records(
                 supabase,
                 "users",
-                "first_name, last_name, email_address, department",
+                "first_name, last_name, email_address, department, is_deleted",
                 filters=[('eq', "id", user_id), ('eq', "organization_id", principal["organization_id"])],
                 single=True,
             )
             u = resp.data or {}
+            if u.get("is_deleted") is False:
+                return "", "", ""
             name = f"{u.get('last_name', '')} {u.get('first_name', '')}".strip()
             email = u.get("email_address", "")
             dept = u.get("department", "")
@@ -550,10 +557,10 @@ def register_add_engine_callbacks(app, supabase=None):
 
         if assign_to_user_id:
             assigned = db.fetch_records(
-                supabase, "users", "id", filters=[("eq", "id", assign_to_user_id),
+                supabase, "users", "id,is_deleted", filters=[("eq", "id", assign_to_user_id),
                                                     ("eq", "organization_id", org_id)], limit=1)
-            if not assigned.data:
-                return html.Span("Select a user from your organization.", style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
+            if not assigned.data or assigned.data[0].get("is_deleted") is False:
+                return html.Span("Select an available user from your organization.", style={"color": "#ff6b6b"}), dash.no_update, dash.no_update
 
         is_edit = edit_engine_id is not None
 
@@ -663,7 +670,7 @@ def register_add_engine_callbacks(app, supabase=None):
                 new_engine_db_id = str(result.data[0].get("id", ""))
 
             # ── 4. Get engine data from storage and start simulation ──
-            from storage_utils import ENGINE_DATA_BUCKET
+            from storage_utils import ENGINE_DATA_BUCKET, _get_supabase_admin
             from data_utils import get_org_folder
             import json as _json
             import tempfile
@@ -676,7 +683,11 @@ def register_add_engine_callbacks(app, supabase=None):
             has_cycles = False
             file_path = None
             try:
-                _sb_storage = supabase
+                # Registration is authorized above. Shared templates and the
+                # server-managed organization copy use server storage access.
+                _sb_storage = _get_supabase_admin()
+                if not _sb_storage:
+                    raise RuntimeError("Server storage credentials are not configured")
                 if _sb_storage:
                     storage_path = template_path
                     print(f"[OK] Selected template: {storage_path}")
@@ -707,7 +718,16 @@ def register_add_engine_callbacks(app, supabase=None):
                         _wf.write(template_data)
                     has_cycles = True
             except Exception as _storage_err:
-                print(f"[WARN] Storage template download failed: {_storage_err}")
+                print(f"[WARN] Engine data setup failed for {ENGINE_DATA_BUCKET}/{template_path}: {_storage_err}")
+
+            if not has_cycles or not file_path:
+                return (
+                    html.Span("Engine registered, but simulation data setup failed. "
+                              "Check server storage access and logs before registering it again.",
+                              style={"color": "#ff6b6b"}),
+                    dash.no_update,
+                    dash.no_update,
+                )
 
             # ── Start background simulation ──
             if new_engine_db_id and has_cycles and file_path:
