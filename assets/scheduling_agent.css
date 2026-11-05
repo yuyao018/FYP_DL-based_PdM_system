@@ -43,3 +43,9 @@
 #scheduling-agent-widget .dash-dropdown-option { background:#10243e !important; color:#d2e3f5 !important; border:0 !important; }
 #scheduling-agent-widget .dash-dropdown-option:hover, #scheduling-agent-widget .dash-dropdown-option.selected { background:#244e77 !important; color:#fff !important; }
 #scheduling-agent-widget :focus-visible { outline:2px solid #75b8ff; outline-offset:2px; }
+#scheduling-agent-widget #sa-engine .dash-dropdown-trigger,
+#scheduling-agent-widget #sa-engine .dash-dropdown-grid-container { align-items:center; }
+#scheduling-agent-widget .dash-dropdown-option,
+#scheduling-agent-widget .dash-options-list-option { display:flex; align-items:center; }
+#scheduling-agent-widget .dash-dropdown-option label,
+#scheduling-agent-widget .dash-options-list-option label { margin:0; color:inherit; }

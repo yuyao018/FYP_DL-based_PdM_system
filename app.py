@@ -57,7 +57,7 @@ supabase_admin = create_client(SUPABASE_URL, SUPABASE_ADMIN_KEY) if SUPABASE_URL
 # Initialize Dash app
 app = dash.Dash(
     __name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
-    suppress_callback_exceptions=True, title="PRISM", update_title=None,
+    suppress_callback_exceptions=True, title="EPMS", update_title=None,
 )
 server = app.server  # Expose Flask server for deployment
 configure_flask_session(server)

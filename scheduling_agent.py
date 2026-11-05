@@ -37,12 +37,14 @@ def build_scheduling_agent(engine_options, engine_id=None):
                 html.Label("Your message", htmlFor="sa-input"),
                 dcc.Textarea(id="sa-input", placeholder="Find an afternoon slot next week…", maxLength=1500),
                 html.Button("Send", id="sa-send", n_clicks=0),
-                html.Label("Available slots", htmlFor="sa-choice"),
-                dcc.Dropdown(id="sa-choice", options=[], searchable=False, clearable=False,
-                             placeholder="Ask for a recommendation"),
-                html.Button("Use selected slot", id="sa-use", n_clicks=0),
-                html.Div(id="sa-feedback", role="status"),
-                html.Small("Use selected slot saves the booking directly to your maintenance calendar."),
+                html.Div(id="sa-slots", hidden=True, children=[
+                    html.Label("Available slots", htmlFor="sa-choice"),
+                    dcc.Dropdown(id="sa-choice", options=[], searchable=False, clearable=False,
+                                 placeholder="Ask for a recommendation"),
+                    html.Button("Use selected slot", id="sa-use", n_clicks=0),
+                    html.Div(id="sa-feedback", role="status"),
+                    html.Small("Use selected slot saves the booking directly to your maintenance calendar."),
+                ]),
             ]),
         ]),
     ])
@@ -52,6 +54,7 @@ def register_scheduling_agent(app, sb):
     @app.callback(
         Output("sa-messages", "children"), Output("sa-history", "data"),
         Output("sa-choice", "options"), Output("sa-choice", "value"), Output("sa-input", "value"),
+        Output("sa-slots", "hidden"),
         Input("sa-send", "n_clicks"), Input("sa-engine", "value"),
         State("sa-input", "value"), State("sa-history", "data"), State("session-store", "data"),
         prevent_initial_call=True,
@@ -64,7 +67,7 @@ def register_scheduling_agent(app, sb):
         if not session:
             raise dash.exceptions.PreventUpdate
         if ctx.triggered_id == "sa-engine":
-            return [render_message("assistant", "Ready to plan for this engine. Ask for a day or a preferred time.")], [], [], None, ""
+            return [render_message("assistant", "Ready to plan for this engine. Ask for a day or a preferred time.")], [], [], None, "", True
         if not message or not message.strip():
             raise dash.exceptions.PreventUpdate
         from scheduling_agent_service import chat
@@ -79,7 +82,7 @@ def register_scheduling_agent(app, sb):
         history = history[-12:]
         bubbles = [render_message(h["role"], h.get("content", ""))
                    for h in history]
-        return bubbles, history, options, options[0]["value"] if options else None, ""
+        return bubbles, history, options, options[0]["value"] if options else None, "", False
 
     @app.callback(
         Output("sm-events-store", "data", allow_duplicate=True),
