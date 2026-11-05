@@ -29,6 +29,7 @@
 #simulation-widget .dash-dropdown-trigger {
     background:transparent; border:0; border-radius:0;
     padding:10px 12px; box-shadow:none; min-height:0;
+    align-items:center;
 }
 #simulation-widget button.simulation-speed-select:focus-visible {
     outline:2px solid #75b8ff; outline-offset:2px;
@@ -44,6 +45,7 @@
 #simulation-widget .dash-options-list-virtualized { background:#10243e !important; }
 #simulation-widget .dash-dropdown-option,
 #simulation-widget .dash-options-list-option {
+    display:flex; align-items:center;
     background:#10243e !important; color:#d2e3f5 !important;
     border:0 !important; border-radius:5px; margin:0;
     font-size:13px !important; font-weight:500 !important;

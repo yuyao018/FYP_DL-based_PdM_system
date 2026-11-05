@@ -198,6 +198,7 @@ def register_new_organization_callbacks(app, supabase=None, supabase_admin=None)
             # ── Step 1: Create the organization ──
             org_resp = db.insert_records(client, "organizations", {
                 "name": org_name.strip(),
+                "is_deleted": False,
             })
 
             if not org_resp.data:

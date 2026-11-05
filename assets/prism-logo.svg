@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <title>PRISM predictive maintenance</title>
+  <title>EPMS predictive maintenance</title>
   <rect width="256" height="256" rx="56" fill="#0a1628"/>
   <path d="M128 30 228 204H28Z" fill="#163961" stroke="#4a9eff" stroke-width="12" stroke-linejoin="round"/>
   <path d="m128 30 0 174H28Z" fill="#1a5c85"/>

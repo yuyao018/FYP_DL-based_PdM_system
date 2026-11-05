@@ -49,7 +49,8 @@
                 marginBottom: '6px', paddingBottom: '5px',
                 borderBottom: '1px solid rgba(74,158,255,0.25)'
             });
-            header.textContent = waterfall ? metadata[0] : horizontal ? point.y : point.x;
+            header.textContent = waterfall ? metadata[0] : horizontal ? point.y
+                : id === 'admin-alert-trend' ? point.customdata : point.x;
             tip.replaceChildren(header);
             event.points.forEach(function (p) {
                 const row = document.createElement('div');

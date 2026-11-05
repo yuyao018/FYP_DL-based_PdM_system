@@ -169,11 +169,11 @@ def _fmt_date(dt: Optional[datetime] = None) -> str:
 
 
 def _email_header(title: str, subtitle: str) -> str:
-    """One email-safe PRISM heading shared by daily and threshold reports."""
+    """One email-safe EPMS heading shared by daily and threshold reports."""
     from html import escape
     return f'''<table role="presentation" width="100%" cellspacing="0" cellpadding="0">
       <tr><td style="background:#0d1e36;padding:28px 30px;border-radius:15px 15px 0 0;border-top:4px solid #49cfc6;font-family:Arial,Helvetica,sans-serif;">
-        <div style="font-size:23px;font-weight:700;letter-spacing:4px;color:#ffffff;">PRISM<span style="color:#64e6dd;"> /</span></div>
+        <div style="font-size:23px;font-weight:700;letter-spacing:4px;color:#ffffff;">EPMS<span style="color:#64e6dd;"> /</span></div>
         <div style="font-size:11px;letter-spacing:1.5px;color:#a8c4df;padding-top:7px;">PREDICTIVE MAINTENANCE</div>
         <h1 style="font-size:26px;line-height:34px;font-weight:700;color:#ffffff;margin:28px 0 6px;">{escape(title)}</h1>
         <div style="font-size:13px;color:#a8c4df;">{escape(subtitle)}</div>
@@ -221,7 +221,7 @@ def _daily_report_html(summary: dict) -> str:
           </table>
         </td>''')
     return f'''<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PRISM daily report</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>EPMS daily report</title></head>
 <body style="margin:0;padding:0;background:#eef2f7;font-family:Arial,Helvetica,sans-serif;color:#102440;">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your daily engine summary: {critical} critical, {warning} warning, {summary['total']} monitored.</div>
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef2f7;">
@@ -243,13 +243,13 @@ def _daily_report_html(summary: dict) -> str:
       </table>
     </td></tr>
     <tr><td style="padding:24px 30px 28px;">
-      <p style="font-size:14px;line-height:23px;color:#475569;margin:0 0 20px;">Explore engine predictions, sensor trends and maintenance activity in PRISM.</p>
+      <p style="font-size:14px;line-height:23px;color:#475569;margin:0 0 20px;">Explore engine predictions, sensor trends and maintenance activity in EPMS.</p>
       <table role="presentation" cellspacing="0" cellpadding="0"><tr><td bgcolor="#205caa" style="border-radius:7px;text-align:center;">
         <a href="{login_url}" style="display:inline-block;padding:14px 24px;border:1px solid #205caa;border-radius:7px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;">Open dashboard &nbsp;&rarr;</a>
       </td></tr></table>
     </td></tr>
     <tr><td style="padding:20px 30px;border-top:1px solid #e6edf5;background:#f8fafc;border-radius:0 0 15px 15px;">
-      <div style="font-size:12px;font-weight:700;color:#475569;">PRISM &middot; Predictive Maintenance Monitoring System</div>
+      <div style="font-size:12px;font-weight:700;color:#475569;">EPMS &middot; Predictive Maintenance Monitoring System</div>
       <p style="font-size:11px;line-height:18px;color:#7b889a;margin:7px 0 0;">This report covers the engines available to your account. Status counts use the configured RUL thresholds; engines without predictions are currently included as normal.</p>
       <p style="font-size:11px;line-height:18px;color:#7b889a;margin:7px 0 0;">Automated daily report. Please do not reply to this email.</p>
     </td></tr>

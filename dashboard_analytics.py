@@ -90,6 +90,7 @@ def build_admin_analytics(client, org_id, *, loading=False):
         for severity, color in (("warning", "#ffd93d"), ("critical", "#ff4d4d")):
             alert_fig.add_bar(name=severity.capitalize(), x=[day.isoformat() for day in days],
                               y=[counts[severity][day] for day in days], marker_color=color,
+                              customdata=[day.strftime("%d %b %Y") + " (Malaysia time)" for day in days],
                               hovertemplate="<b>%{fullData.name}</b><br>%{x}<br>%{y} alerts<extra></extra>")
         labels = list(JOB_LABELS.values())
         job_fig.add_bar(x=[statuses[key] for key in JOB_LABELS], y=labels, orientation="h",
@@ -97,8 +98,11 @@ def build_admin_analytics(client, org_id, *, loading=False):
                         hovertemplate="%{y}: %{x} jobs<extra></extra>")
         job_fig.update_yaxes(autorange="reversed", automargin=True)
         alert_fig.update_layout(barmode="stack", legend=dict(orientation="h", y=1.2, x=0))
-        alert_fig.update_xaxes(type="category", tickvals=[d.isoformat() for d in days],
-                              ticktext=[d.strftime("%d %b") for d in days])
+        alert_fig.update_xaxes(type="date", tickmode="array",
+                              tickvals=[d.isoformat() for d in days],
+                              ticktext=[d.strftime("%d %b") for d in days],
+                              range=[(datetime.combine(days[0], datetime.min.time()) - timedelta(hours=12)).isoformat(),
+                                     (datetime.combine(days[-1], datetime.min.time()) + timedelta(hours=12)).isoformat()])
         alert_fig.update_yaxes(title="Alerts", rangemode="tozero", dtick=1)
         job_fig.update_xaxes(title="Jobs", rangemode="tozero", dtick=1)
     for fig in (alert_fig, job_fig):

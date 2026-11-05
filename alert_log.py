@@ -976,6 +976,7 @@ def build_alert_log_body(engine_id="—", alerts=None, selected_idx=0,
                             n_clicks=0,
                             children=_btn_children0,
                             style=_btn_style0,
+                            disabled=role == "admin" and (not alerts or alerts[0].get("maintenance_status") != "completed"),
                         ),
                     ],
                 ),
@@ -1443,6 +1444,30 @@ def _fetch_report(supabase, maintenance_schedule_id):
         return None
 
 
+def _report_save_error(error, action="save the report"):
+    """Explain database rejections without exposing report data or SQL details."""
+    code = str(getattr(error, "code", ""))
+    detail = str(error).lower()
+    if code == "23514":
+        if "fault_confirmed" in detail:
+            reason = "The database rejected the fault confirmation selection."
+        elif "ai_recommendation_usefulness" in detail:
+            reason = "The database rejected the AI usefulness selection."
+        else:
+            reason = "The database rejected a report value or maintenance status."
+    elif code == "42501" or isinstance(error, PermissionError):
+        reason = "Your account does not have permission to update this report or booking."
+    elif code == "23505":
+        reason = "A report already exists for this booking. Reopen it before saving."
+    elif code in ("42703", "PGRST204"):
+        reason = "The report fields do not match the database schema."
+    elif isinstance(error, ValueError):
+        reason = str(error)
+    else:
+        reason = "The database could not save the changes. Please retry."
+    return f"Unable to {action}. {reason}" + (f" (Error {code})" if code else "")
+
+
 def _start_maintenance_report(supabase, schedule_id, user_id=None):
     """Persist the first report opening as the start; preserve it on reopen."""
     report = _fetch_report(supabase, schedule_id) or {}
@@ -1662,6 +1687,16 @@ def _generate_pdf(alert, report):
 #  CALLBACKS
 def register_alert_log_callbacks(app, supabase=None):
     @app.callback(
+        Output("al-engine-action-btn", "disabled"),
+        Input("alerts-data", "data"),
+        Input("al-sched-role-store", "data"),
+    )
+    def disable_admin_maintenance_actions(alerts_data, role):
+        return role == "admin" and (
+            not alerts_data or alerts_data[0].get("maintenance_status") != "completed"
+        )
+
+    @app.callback(
         Output("al-report-export-container", "style"),
         Input("al-report-readonly-store", "data"),
     )
@@ -1864,6 +1899,8 @@ def register_alert_log_callbacks(app, supabase=None):
         idx = 0
         alert    = alerts[idx]
         mstatus  = (alert.get("maintenance_status") or "maintenance_required").lower().strip()
+        if (trusted_profile() or {}).get("role") == "admin" and mstatus != "completed":
+            raise dash.exceptions.PreventUpdate
         alert_id = alert.get("alert_id")
 
         sched_hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",
@@ -2339,7 +2376,7 @@ def register_alert_log_callbacks(app, supabase=None):
         prevent_initial_call=True,
     )
 
-    def save_report_progress(n_clicks, actions, comp_insp, comp_rep, findings, notes, fault, ai_use, schedule_id, report_id, session):
+    def save_report_progress(n_clicks, actions, comp_insp, comp_rep, findings, fault, ai_use, notes, schedule_id, report_id, session):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
         session = trusted_profile()
@@ -2358,7 +2395,6 @@ def register_alert_log_callbacks(app, supabase=None):
             "outcome":                   "in_progress",
             "updated_at":                now,
         }
-        payload["user_id"] = session["user_id"]
 
         if supabase:
             try:
@@ -2374,11 +2410,12 @@ def register_alert_log_callbacks(app, supabase=None):
                         filters=[("eq", "id", schedule_id), ("eq", "assign_to", session["user_id"])], limit=1)
                     if not owned_schedule.data:
                         raise PermissionError("Schedule is not assigned to this user")
+                    payload["user_id"] = session["user_id"]
                     payload["maintenance_schedule_id"] = schedule_id
                     db.insert_records(supabase, "maintenance_reports", payload)
             except Exception as _e:
                 print(f"[ALERT] save progress: {_e}")
-                return html.Span("⚠ Save failed. Please try again.",
+                return html.Span("⚠ Save failed. " + _report_save_error(_e),
                                  style={"color": "#ff6b6b", "fontSize": "12px"})
 
         return html.Span("✓ Progress saved.",
@@ -2488,15 +2525,16 @@ def register_alert_log_callbacks(app, supabase=None):
             "follow_up_reason":          followup_reason or "" if is_followup else "",
             "updated_at":                now,
         }
-        payload["user_id"] = session["user_id"]
 
         if supabase:
             try:
+                if not maintenance_schedule_id:
+                    raise ValueError("Reopen the report from its maintenance booking before confirming.")
+                assigned_schedule = db.fetch_records(supabase, "maintenance_schedules", "id",
+                    filters=[("eq", "id", maintenance_schedule_id), ("eq", "assign_to", session["user_id"])], limit=1)
+                if not assigned_schedule.data:
+                    raise PermissionError("Schedule is not assigned to this user")
                 if not report_id and maintenance_schedule_id:
-                    assigned_schedule = db.fetch_records(supabase, "maintenance_schedules", "id",
-                        filters=[("eq", "id", maintenance_schedule_id), ("eq", "assign_to", session["user_id"])], limit=1)
-                    if not assigned_schedule.data:
-                        raise PermissionError("Schedule is not assigned to this user")
                     existing_report = _fetch_report(supabase, maintenance_schedule_id)
                     report_id = (existing_report or {}).get("id")
                 if report_id:
@@ -2504,10 +2542,12 @@ def register_alert_log_callbacks(app, supabase=None):
                         supabase,
                         "maintenance_reports",
                         payload,
-                        filters=[('eq', "id", report_id), ('eq', "user_id", session["user_id"])],
+                        filters=[('eq', "id", report_id), ('eq', "user_id", session["user_id"]),
+                                 ('eq', "maintenance_schedule_id", maintenance_schedule_id)],
                     )
 
                 elif maintenance_schedule_id:
+                    payload["user_id"] = session["user_id"]
                     payload["maintenance_schedule_id"] = maintenance_schedule_id
                     db.insert_records(supabase, "maintenance_reports", payload)
                 schedule_upd = {
@@ -2523,8 +2563,9 @@ def register_alert_log_callbacks(app, supabase=None):
                 )
             except Exception as _e:
                 print(f"[ALERT] confirm outcome: {_e}")
-                return (dash.no_update, dash.no_update,
-                        html.Span("Unable to complete maintenance. Please try again.", style={"color": "#ff6b6b"}),
+                return (confirm_hidden, dash.no_update,
+                        html.Span(_report_save_error(_e, "mark follow-up required" if is_followup else "complete maintenance"),
+                                  style={"color": "#ff6b6b"}),
                         *([dash.no_update] * 6))
 
         if new_status == "completed" and supabase:

@@ -4,6 +4,11 @@ from dash import html
 
 
 STATUS_LABELS = {
+    "scheduled": "Scheduled",
+    "in_progress": "In Progress",
+    "completed": "Completed · Pending Verification",
+    "cancelled": "Cancelled",
+    "maintenance_required": "Maintenance Required",
     "under_maintenance": "Under Maintenance",
     "pending_verification": "Pending Verification",
     "follow_up_required": "Follow-up Required",
@@ -46,8 +51,10 @@ def maintenance_badge(status):
     label = STATUS_LABELS.get(status)
     if not label:
         return None
-    color = "#a78bfa" if status == "pending_verification" else "#4a9eff"
-    if status == "follow_up_required":
+    color = "#a78bfa" if status in ("pending_verification", "completed") else "#4a9eff"
+    if status == "cancelled":
+        color = "#94a3b8"
+    if status in ("follow_up_required", "maintenance_required"):
         color = "#ffd93d"
     return html.Span(label, style={
         "color": color, "background": "rgba(167,139,250,0.10)",
