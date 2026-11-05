@@ -122,11 +122,6 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                       if e.get("id") and (role == "admin" or
                                       (user_id and str(e.get("responsible_by")) == str(user_id)))]
             detail_queries = {}
-            if engine_ids or not org_id:
-                alert_filters = [('in_', "severity", ["warning", "critical"]), ('eq', "status", "active")]
-                if org_id:
-                    alert_filters.append(('in_', "engine_id", engine_ids))
-                detail_queries["alerts"] = dict(table="alert_logs", columns="engine_id", filters=alert_filters)
             if engine_ids:
                 detail_queries["predictions"] = dict(table="rul_predictions", columns="engine_id,predicted_rul",
                     filters=[('in_', "engine_id", engine_ids)], order_by=[("predicted_at", True)])
@@ -134,11 +129,6 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                 detail_queries["schedules"] = dict(table="maintenance_schedules", columns="engine_id,status",
                     filters=[('in_', "engine_id", responsible_engine_ids)], order_by=[("created_at", True)])
             details = db.fetch_records_parallel(supabase, detail_queries)
-            if "alerts" in details:
-                try:
-                    alert_count = len({r["engine_id"] for r in (details["alerts"].result().data or []) if r.get("engine_id")})
-                except Exception:
-                    alert_count = 0
             latest_rul_map = {}
             if "predictions" in details:
                 try:
@@ -199,27 +189,23 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                     latest_maintenance.setdefault(schedule["engine_id"], schedule.get("status"))
             alert_engine_ids = [eid for eid in responsible_engine_ids
                                 if latest_maintenance.get(eid) != "completed"]
+            from dashboard_analytics import _all_rows
+            unresolved_alerts = _all_rows(supabase, "alert_logs",
+                "id,engine_id,severity,triggered_at",
+                [('in_', "engine_id", alert_engine_ids),
+                 ('in_', "severity", ["warning", "critical"]),
+                 ('in_', "status", ["active", "open"])]) if alert_engine_ids else []
+            alert_count = len({row["engine_id"] for row in unresolved_alerts
+                               if row.get("engine_id") in alert_engine_ids})
 
             # ── Fetch unresolved maintenance alerts for responsible engines ──
             # One alert per engine: critical beats warning, latest wins within same severity.
             if not alert_engine_ids or role == "admin":
                 pass
             else:
-                alert_query = dict(
-                    client=supabase,
-                    table="alert_logs",
-                    columns="engine_id, severity, triggered_at",
-                    filters=[('in_', "severity", ["warning", "critical"]), ('eq', "status", "active")],
-                    order_by=[("triggered_at", True)],
-                )
-
-                alert_query["filters"].append(('in_', "engine_id", alert_engine_ids))
-
-                alerts_resp = db.fetch_records(**alert_query)
-
                 # Deduplicate: keep one per engine, critical > warning, then latest
                 best: dict = {}  # engine_id → alert row
-                for alert in (alerts_resp.data or []):
+                for alert in sorted(unresolved_alerts, key=lambda row: row.get("triggered_at") or "", reverse=True):
                     eid = alert.get("engine_id")
                     if not eid:
                         continue
@@ -506,6 +492,7 @@ def create_dashboard_layout(supabase, org_id=None, role=None, username=None, fir
                                     ),
                                     html.Span(
                                         str(alert_count),
+                                        id="dashboard-alert-count",
                                         style={
                                             "display": "flex" if alert_count > 0 else "none",
                                             "position": "absolute",

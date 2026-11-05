@@ -8,7 +8,7 @@ from dashboard import create_dashboard_layout, register_dashboard_callbacks
 from login_page import create_login_layout, USER_ICON, ADMIN_ICON, PERSON_ICON, LOCK_ICON, GEAR_SVG, feature_icon
 from login_page import validate_login_inputs
 from dev_login_page import create_dev_login_layout
-from dev_dashboard import create_dev_dashboard_layout
+from dev_dashboard import create_dev_dashboard_layout, register_dev_dashboard_callbacks, organization_delete_button
 from dev_new_organization import create_new_organization_layout, register_new_organization_callbacks
 from overview import create_overview_layout, register_overview_callbacks
 from sensor_trends import create_sensor_trends_layout, register_sensor_callbacks
@@ -80,6 +80,7 @@ register_overview_callbacks(app, supabase=request_supabase)
 register_simulation_callbacks(app, supabase=request_supabase)
 register_degradation_analysis_callbacks(app, supabase=request_supabase)
 register_new_organization_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
+register_dev_dashboard_callbacks(app, supabase_admin=supabase_admin)
 register_change_password_callbacks(app, supabase=request_supabase, supabase_admin=supabase_admin)
 register_schedule_maintenance_callbacks(app, supabase=request_supabase)
 
@@ -711,6 +712,7 @@ def filter_dev_orgs(search_value, filter_value, org_data):
                         html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px"}, children=[
                             html.Span(f"{org.get('user_count', 0)} user{'s' if org.get('user_count', 0) != 1 else ''}", style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
                             html.Span(f"{org['engine_count']} engine{'s' if org['engine_count'] != 1 else ''}", style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
+                            organization_delete_button(org["id"]),
                         ]),
                     ]
                 ),

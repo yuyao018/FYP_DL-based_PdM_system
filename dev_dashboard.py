@@ -1,6 +1,7 @@
 from assets import database_integration as db
 import dash
-from dash import dcc, html
+from dash import dcc, html, Input, Output, State, ALL, ctx, no_update
+from auth_security import require_trusted_role
 import dash_bootstrap_components as dbc
 import base64
 from assets.components import (build_dev_sidebar, icon_sidebar, gear_icon, org_icon)
@@ -32,12 +33,15 @@ def create_dev_dashboard_layout(supabase):
 
             # ── Fetch all organizations ──
             orgs_resp = db.fetch_records(supabase, "organizations", "*")
-            orgs = orgs_resp.data or []
+            orgs = [org for org in (orgs_resp.data or []) if org.get("is_deleted") is not True]
             total_orgs = len(orgs)
+            active_org_ids = {org["id"] for org in orgs}
 
-            # ── Fetch all engines ──
+            # Legacy flag: false means removed; true/null means active.
             engines_resp = db.fetch_records(supabase, "engines", "*")
-            all_engines = engines_resp.data or []
+            all_engines = [engine for engine in (engines_resp.data or [])
+                           if engine.get("is_deleted") is not False
+                           and engine.get("organization_id") in active_org_ids]
             total_engines = len(all_engines)
 
             # ── Batch-fetch latest predicted_rul per engine ──
@@ -63,9 +67,11 @@ def create_dev_dashboard_layout(supabase):
             # Fetch all users to count per org
             all_users = []
             try:
-                users_resp = db.fetch_records(supabase, "users", "id, organization_id", count="exact")
-                all_users = users_resp.data or []
-                total_users = users_resp.count if users_resp.count is not None else len(all_users)
+                users_resp = db.fetch_records(supabase, "users", "id, organization_id, is_deleted", count="exact")
+                all_users = [user for user in (users_resp.data or [])
+                             if user.get("organization_id") in active_org_ids
+                             and user.get("is_deleted") is not False]
+                total_users = len(all_users)
             except Exception:
                 pass
 
@@ -206,6 +212,7 @@ def create_dev_dashboard_layout(supabase):
                                       style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
                             html.Span(f"{org['engine_count']} engine{'s' if org['engine_count'] != 1 else ''}",
                                       style={"color": "rgba(168,212,255,0.7)", "fontSize": "13px", "fontWeight": "600"}),
+                            organization_delete_button(org["id"]),
                         ]),
                     ]
                 ),
@@ -309,7 +316,7 @@ def create_dev_dashboard_layout(supabase):
                                         "minWidth": "220px", "justifyContent": "space-between",
                                     }, children=[
                                         html.Span("ORGANIZATIONS", style={"color": "#4a9eff", "fontSize": "14px", "fontWeight": "600"}),
-                                        html.Span(str(total_orgs), style={"color": "#4a9eff", "fontSize": "36px", "fontWeight": "700"}),
+                                        html.Span(str(total_orgs), id="dev-total-organizations", style={"color": "#4a9eff", "fontSize": "36px", "fontWeight": "700"}),
                                     ]),
                                     html.Div(style={
                                         "background": "linear-gradient(135deg, #2a354a 0%, #1a2335 100%)",
@@ -319,7 +326,7 @@ def create_dev_dashboard_layout(supabase):
                                         "minWidth": "220px", "justifyContent": "space-between",
                                     }, children=[
                                         html.Span("TOTAL ENGINES", style={"color": "white", "fontSize": "14px", "fontWeight": "600"}),
-                                        html.Span(str(total_engines), style={"color": "white", "fontSize": "36px", "fontWeight": "700"}),
+                                        html.Span(str(total_engines), id="dev-total-engines", style={"color": "white", "fontSize": "36px", "fontWeight": "700"}),
                                     ]),
                                     html.Div(style={
                                         "background": "linear-gradient(135deg, rgba(74,158,255,0.15) 0%, rgba(42,111,212,0.08) 100%)",
@@ -329,7 +336,7 @@ def create_dev_dashboard_layout(supabase):
                                         "minWidth": "220px", "justifyContent": "space-between",
                                     }, children=[
                                         html.Span("TOTAL USERS", style={"color": "#4a9eff", "fontSize": "14px", "fontWeight": "600"}),
-                                        html.Span(str(total_users), style={"color": "#4a9eff", "fontSize": "36px", "fontWeight": "700"}),
+                                        html.Span(str(total_users), id="dev-total-users", style={"color": "#4a9eff", "fontSize": "36px", "fontWeight": "700"}),
                                     ]),
                                 ]
                             ),
@@ -398,5 +405,100 @@ def create_dev_dashboard_layout(supabase):
             ),
             # Store org data for client-side filtering
             dcc.Store(id="dev-org-data-store", data=org_data),
+            organization_delete_modal(),
         ]
     )
+
+
+def organization_delete_button(org_id):
+    return html.Button("Delete", id={"type": "dev-org-delete", "index": str(org_id)},
+                       n_clicks=0, style={"color": "#ff6b6b", "background": "rgba(255,77,77,0.12)",
+                       "border": "1px solid rgba(255,77,77,0.4)", "borderRadius": "7px",
+                       "padding": "6px 12px", "fontSize": "12px", "cursor": "pointer"})
+
+
+def organization_delete_modal():
+    return html.Div([
+        dcc.Store(id="dev-org-delete-target"),
+        dcc.Location(id="dev-org-delete-redirect", refresh=True),
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Delete Organization"), close_button=False),
+            dbc.ModalBody([
+                html.P(id="dev-org-delete-description"),
+                html.P("The organization will be removed from the dashboard. Its historical records will be retained."),
+                html.Label("Enter the exact organization name to confirm:", htmlFor="dev-org-delete-name"),
+                dbc.Input(id="dev-org-delete-name", value="", type="text", autoComplete="off",
+                          style={"marginTop": "10px"}),
+                html.Div(id="dev-org-delete-error", role="alert", style={"color": "#ff6b6b", "marginTop": "12px"}),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button("Cancel", id="dev-org-delete-cancel", color="secondary", n_clicks=0),
+                dbc.Button("Confirm Deletion", id="dev-org-delete-confirm", color="danger", disabled=True, n_clicks=0),
+            ]),
+        ], id="dev-org-delete-modal", is_open=False, centered=True,
+           backdrop="static", content_style={"background": "#0d1e3a", "color": "white"}),
+    ])
+
+
+def delete_organization(client, org_id, typed_name):
+    """Recheck developer privileges and the stored name before a soft delete."""
+    require_trusted_role("developer")
+    if client is None or not org_id:
+        raise ValueError("Organization deletion is unavailable.")
+    rows = db.fetch_records(client, "organizations", "id,name,is_deleted",
+                            filters=[("eq", "id", org_id)], limit=1).data or []
+    if not rows or rows[0].get("is_deleted") is True:
+        raise ValueError("This organization is no longer available. Refresh the dashboard.")
+    if not rows[0].get("name") or typed_name != rows[0]["name"]:
+        raise ValueError("Enter the exact organization name to confirm deletion.")
+    result = db.update_records(client, "organizations", {"is_deleted": True},
+                               filters=[("eq", "id", org_id), ("eq", "name", rows[0]["name"])])
+    if not result.data:
+        raise ValueError("Deletion was not confirmed. Refresh the dashboard and try again.")
+
+
+def register_dev_dashboard_callbacks(app, supabase_admin=None):
+    @app.callback(
+        Output("dev-org-delete-confirm", "disabled"),
+        Input("dev-org-delete-name", "value"), Input("dev-org-delete-target", "data"),
+    )
+    def enable_delete(typed_name, target):
+        return not target or not target.get("name") or typed_name != target["name"]
+
+    @app.callback(
+        Output("dev-org-delete-modal", "is_open"),
+        Output("dev-org-delete-target", "data"),
+        Output("dev-org-delete-description", "children"),
+        Output("dev-org-delete-name", "value"),
+        Output("dev-org-delete-error", "children"),
+        Output("dev-org-delete-redirect", "href"),
+        Input({"type": "dev-org-delete", "index": ALL}, "n_clicks"),
+        Input("dev-org-delete-cancel", "n_clicks"), Input("dev-org-delete-confirm", "n_clicks"),
+        State("dev-org-delete-target", "data"), State("dev-org-delete-name", "value"),
+        prevent_initial_call=True,
+    )
+    def handle_delete(clicks, cancel, confirm, target, typed_name):
+        trigger = ctx.triggered_id
+        if not ctx.triggered or not ctx.triggered[0].get("value"):
+            raise dash.exceptions.PreventUpdate
+        if isinstance(trigger, dict) and not any(clicks or []):
+            raise dash.exceptions.PreventUpdate
+        if trigger == "dev-org-delete-cancel":
+            return False, None, "", "", "", no_update
+        try:
+            require_trusted_role("developer")
+            if trigger == "dev-org-delete-confirm":
+                delete_organization(supabase_admin, (target or {}).get("id"), typed_name)
+                return False, None, "", "", "", "/dev-dashboard"
+            if not isinstance(trigger, dict):
+                raise dash.exceptions.PreventUpdate
+            rows = db.fetch_records(supabase_admin, "organizations", "id,name,is_deleted",
+                                    filters=[("eq", "id", trigger["index"])], limit=1).data or []
+            if not rows or rows[0].get("is_deleted") is True:
+                raise ValueError("Organization is no longer available. Refresh the dashboard.")
+            org = rows[0]
+            return True, {"id": org["id"], "name": org["name"]}, f'Delete {org["name"]}?', "", "", no_update
+        except (ValueError, PermissionError) as exc:
+            return True, no_update, no_update, no_update, str(exc), no_update
+        except Exception:
+            return True, no_update, no_update, no_update, "Could not delete the organization. Please try again.", no_update

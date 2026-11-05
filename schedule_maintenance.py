@@ -226,7 +226,7 @@ def _build_calendar(events: list[dict], offset: int = 0) -> html.Div:
                             "height": f"{card_height}px",
                             "boxSizing": "border-box",
                             "overflow": "hidden",
-                            "cursor": "pointer",
+                            "cursor": "not-allowed" if ev.get("readonly") else "pointer",
                         }
                     )
                 )
@@ -522,6 +522,7 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                     "db_id":            str(row.get("id", "")),
                     "created_by_name":  cb_name,
                     "user_color":       cb_color,
+                    "readonly":         role == "admin",
                 })
         except Exception as e:
             print(f"[SM] Could not load existing schedules: {e}")
@@ -599,8 +600,9 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                                 ],
                                 id="sm-new-btn",
                                 n_clicks=0,
+                                disabled=role == "admin",
                                 style={
-                                    "display": "flex",
+                                    "display": "none" if role == "admin" else "flex",
                                     "alignItems": "center",
                                     "background": "rgba(74,158,255,0.14)",
                                     "border": "1px solid rgba(74,158,255,0.45)",
@@ -635,10 +637,10 @@ def create_schedule_maintenance_layout(supabase=None, engine_db_id: str = None,
                 ]
             ),
 
-            build_scheduling_agent(
+            html.Div(build_scheduling_agent(
                 engine_options,
                 str(engine_db_id) if engine_db_id and str(engine_db_id) in engine_label_map else None,
-            ),
+            ), style={"display": "none"} if role == "admin" else {}),
 
             # ── Modal (fixed overlay) ─────────────────────────────────────
             build_schedule_modal(
@@ -902,6 +904,9 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         if ev is None:
             raise dash.exceptions.PreventUpdate
 
+        if ev.get("readonly"):
+            raise dash.exceptions.PreventUpdate
+
         visible = {
             "display": "flex",
             "position": "fixed", "top": "0", "left": "0",
@@ -982,23 +987,31 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # ── DELETE ────────────────────────────────────────────────────────
         if triggered == "sm-edit-delete-btn":
             try:
+                if session.get("role") == "admin":
+                    raise ValueError("Administrators cannot delete maintenance events.")
                 authorized_engine(supabase, (selected_ev or {}).get("engine_id"), session)
-            except ValueError:
-                raise dash.exceptions.PreventUpdate
-            if not db_id:
-                raise dash.exceptions.PreventUpdate
+                if not supabase or not db_id:
+                    raise ValueError("Reopen the maintenance event before deleting it.")
+                result = db.delete_records(
+                    supabase, "maintenance_schedules",
+                    filters=[("eq", "id", db_id),
+                             ("eq", "assign_to", session["user_id"])])
+                if not result.data:
+                    raise PermissionError("No maintenance event was deleted.")
+            except Exception as e:
+                print(f"[SM][WARN] Delete failed: {e}")
+                return (dash.no_update, dash.no_update, dash.no_update,
+                        html.Span("Delete failed. The event has not been removed. "
+                                  "Check your assignment and database delete permissions.",
+                                  style={"color": "#ff6b6b"}))
             updated = [e for e in events if e.get("_idx") != ev_idx]
-            if supabase and db_id:
-                try:
-                    db.delete_records(
-                        supabase, "maintenance_schedules",
-                        filters=[("eq", "id", db_id),
-                                 ("eq", "created_by", session["user_id"])])
-                except Exception as e:
-                    print(f"[SM][WARN] Delete failed: {e}")
             return updated, [_build_calendar(updated, 0)], hidden_style, ""
 
         # ── SAVE (edit) ───────────────────────────────────────────────────
+        if engine_id != (selected_ev or {}).get("engine_id"):
+            return dash.no_update, dash.no_update, dash.no_update, html.Span(
+                "An existing maintenance event cannot be moved to another engine.",
+                style={"color": "#ff6b6b"})
         try:
             authorized_engine(supabase, engine_id, session)
             authorized_engine(supabase, (selected_ev or {}).get("engine_id"), session)
@@ -1040,7 +1053,7 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
             except Exception:
                 pass
 
-        updated_ev = {
+        updated_ev = {**(selected_ev or {}),
             "_idx":       ev_idx,
             "day":        day_name,
             "hour":       hour_str,
@@ -1059,13 +1072,14 @@ def register_schedule_maintenance_callbacks(app, supabase=None):
         # Persist to Supabase
         if supabase and db_id:
             try:
-                db.update_records(supabase, "maintenance_schedules", {
-                    "engine_id":      engine_id,
+                result = db.update_records(supabase, "maintenance_schedules", {
                     "scheduled_date": sel_date,
                     "start_time":     start_time,
                     "end_time":       end_time,
                 }, filters=[("eq", "id", db_id),
-                            ("eq", "created_by", session["user_id"])])
+                            ("eq", "assign_to", session["user_id"])])
+                if not result.data:
+                    raise PermissionError("The booking is no longer assigned to you or is unavailable.")
             except Exception as e:
                 print(f"[SM][WARN] Update failed: {e}")
                 return (dash.no_update, dash.no_update, dash.no_update,

@@ -976,6 +976,7 @@ def build_alert_log_body(engine_id="—", alerts=None, selected_idx=0,
                             n_clicks=0,
                             children=_btn_children0,
                             style=_btn_style0,
+                            disabled=role == "admin" and (not alerts or alerts[0].get("maintenance_status") != "completed"),
                         ),
                     ],
                 ),
@@ -1686,6 +1687,16 @@ def _generate_pdf(alert, report):
 #  CALLBACKS
 def register_alert_log_callbacks(app, supabase=None):
     @app.callback(
+        Output("al-engine-action-btn", "disabled"),
+        Input("alerts-data", "data"),
+        Input("al-sched-role-store", "data"),
+    )
+    def disable_admin_maintenance_actions(alerts_data, role):
+        return role == "admin" and (
+            not alerts_data or alerts_data[0].get("maintenance_status") != "completed"
+        )
+
+    @app.callback(
         Output("al-report-export-container", "style"),
         Input("al-report-readonly-store", "data"),
     )
@@ -1888,6 +1899,8 @@ def register_alert_log_callbacks(app, supabase=None):
         idx = 0
         alert    = alerts[idx]
         mstatus  = (alert.get("maintenance_status") or "maintenance_required").lower().strip()
+        if (trusted_profile() or {}).get("role") == "admin" and mstatus != "completed":
+            raise dash.exceptions.PreventUpdate
         alert_id = alert.get("alert_id")
 
         sched_hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",

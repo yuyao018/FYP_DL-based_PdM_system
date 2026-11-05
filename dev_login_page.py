@@ -168,7 +168,7 @@ def create_dev_login_layout():
                                     dcc.Input(
                                         id="dev-username-input",
                                         type="text",
-                                        placeholder="developer_1",
+                                        placeholder="username",
                                         value="",
                                         style={
                                             "flex": "1", "background": "transparent",

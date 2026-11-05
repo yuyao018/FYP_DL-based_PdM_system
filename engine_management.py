@@ -29,7 +29,20 @@ def status_badge(status):
     })
     return html.Div(style={"display": "flex", "justifyContent": "flex-start"}, children=[badge])
 
+def management_maintenance_states(rows):
+    """Show the latest booking's actual workflow status (rows newest first)."""
+    states = {}
+    for row in rows:
+        state = row.get("status")
+        if state:
+            states.setdefault(str(row.get("engine_id")), state)
+    return states
+
+
 def engine_table_row(engine, idx):
+    maintenance = engine.get("maintenance_status")
+    if not maintenance and (engine.get("condition_status") or "healthy").lower() in ("warning", "critical"):
+        maintenance = "maintenance_required"
     return html.Div(
         id={"type": "active-engine-row", "index": engine["id"]},
         style={
@@ -47,8 +60,8 @@ def engine_table_row(engine, idx):
             html.Span(engine.get("model_type", "—"), 
                      style={"color": "#a8d4ff", "fontSize": "13px"}),
             status_badge(engine.get("condition_status", "healthy")),
-            html.Div(children=maintenance_badge(engine.get("maintenance_status"))
-                     if engine.get("maintenance_status") else html.Span(
+            html.Div(children=maintenance_badge(maintenance)
+                     if maintenance else html.Span(
                          "—", style={"color": "rgba(168,212,255,0.4)"}),
                      title="Maintenance workflow; condition reflects the last sensor prediction."),
             html.Span(f"{engine.get('current_cycle', 0)} cycles", 
@@ -122,7 +135,7 @@ def deleted_engine_table_row(engine, idx):
 def engine_count_summary(engines):
     counts = {status: sum((e.get("condition_status") or "healthy").lower() == status
                           for e in engines) for status in ("healthy", "warning", "critical")}
-    pending = sum(e.get("maintenance_status") == "pending_verification" for e in engines)
+    pending = sum(e.get("maintenance_status") in ("pending_verification", "completed") for e in engines)
     return (f"{len(engines)} total · {counts['healthy']} healthy · {counts['warning']} warning · "
             f"{counts['critical']} critical · {pending} pending verification")
 
@@ -255,17 +268,13 @@ def create_engine_management_layout(supabase=None, org_id=None):
                 engine_ids = [e.get("id") for e in resp.data if e.get("id")]
                 details = db.fetch_records_parallel(supabase, {
                     "maintenance": dict(table="maintenance_schedules", columns="engine_id,status,created_at",
-                        filters=[('in_', "engine_id", engine_ids),
-                                 ('in_', "status", ["in_progress", "completed", "follow_up_required"])],
+                        filters=[('in_', "engine_id", engine_ids)],
                         order_by=[("created_at", True)]),
                     "predictions": dict(table="rul_predictions", columns="engine_id,predicted_rul",
                         filters=[('in_', "engine_id", engine_ids)], order_by=[("predicted_at", True)]),
                 })
                 try:
-                    from engine_maintenance_status import maintenance_status
-                    maintenance_states = {}
-                    for row in details["maintenance"].result().data or []:
-                        maintenance_states.setdefault(str(row.get("engine_id")), maintenance_status(row.get("status")))
+                    maintenance_states = management_maintenance_states(details["maintenance"].result().data or [])
                 except Exception:
                     maintenance_states = {str(eid): "unavailable" for eid in engine_ids}
                 latest_rul_map = {}
