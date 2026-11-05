@@ -976,7 +976,7 @@ def build_alert_log_body(engine_id="—", alerts=None, selected_idx=0,
                             n_clicks=0,
                             children=_btn_children0,
                             style=_btn_style0,
-                            disabled=role == "admin" and (not alerts or alerts[0].get("maintenance_status") != "completed"),
+                            disabled=role == "admin" and (not alerts or alerts[0].get("maintenance_status") not in ("in_progress", "completed", "follow_up_required")),
                         ),
                     ],
                 ),
@@ -1693,8 +1693,27 @@ def register_alert_log_callbacks(app, supabase=None):
     )
     def disable_admin_maintenance_actions(alerts_data, role):
         return role == "admin" and (
-            not alerts_data or alerts_data[0].get("maintenance_status") != "completed"
+            not alerts_data or alerts_data[0].get("maintenance_status") not in ("in_progress", "completed", "follow_up_required")
         )
+
+    @app.callback(
+        *[Output(component_id, "disabled") for component_id in (
+            "al-report-actions", "al-report-components-inspected", "al-report-components-repaired",
+            "al-report-findings",
+            "al-report-technician-notes", "al-report-followup-reason")],
+        Output("al-report-fault-confirmed", "options"),
+        Output("al-report-ai-usefulness", "options"),
+        *[Output(component_id, "style") for component_id in (
+            "al-report-save-btn", "al-report-complete-btn", "al-report-followup-btn")],
+        Input("al-report-readonly-store", "data"),
+        State("al-report-fault-confirmed", "options"),
+        State("al-report-ai-usefulness", "options"),
+    )
+    def set_report_readonly(readonly, fault_options, ai_options):
+        options = [[{**option, "disabled": bool(readonly)} for option in (items or [])]
+                   for items in (fault_options, ai_options)]
+        return (*([bool(readonly)] * 6), *options,
+                *([{"display": "none"} if readonly else {}] * 3))
 
     @app.callback(
         Output("al-report-export-container", "style"),
@@ -1899,7 +1918,9 @@ def register_alert_log_callbacks(app, supabase=None):
         idx = 0
         alert    = alerts[idx]
         mstatus  = (alert.get("maintenance_status") or "maintenance_required").lower().strip()
-        if (trusted_profile() or {}).get("role") == "admin" and mstatus != "completed":
+        session = trusted_profile()
+        is_admin = (session or {}).get("role") == "admin"
+        if not session or (is_admin and mstatus not in ("in_progress", "completed", "follow_up_required")):
             raise dash.exceptions.PreventUpdate
         alert_id = alert.get("alert_id")
 
@@ -1954,6 +1975,7 @@ def register_alert_log_callbacks(app, supabase=None):
                     None, "09:00", "10:00", None, None)
 
         def _open_report_modal(readonly=False):
+            readonly = readonly or is_admin
             schedule_id = alert.get("maintenance_schedule_id")
 
             if not schedule_id:
@@ -1999,6 +2021,8 @@ def register_alert_log_callbacks(app, supabase=None):
             )
 
         # ── Engine-level action button ─────────────────────────────────
+        if is_admin:
+            return _open_report_modal(readonly=True)
         if mstatus == "maintenance_required":
             return _open_schedule_modal(is_followup=False)
         elif mstatus == "scheduled":
@@ -2380,7 +2404,7 @@ def register_alert_log_callbacks(app, supabase=None):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
         session = trusted_profile()
-        if not session:
+        if not session or session.get("role") == "admin":
             raise dash.exceptions.PreventUpdate
 
         now = datetime.now(timezone.utc).isoformat()
@@ -2498,7 +2522,7 @@ def register_alert_log_callbacks(app, supabase=None):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
         session = trusted_profile()
-        if not session:
+        if not session or session.get("role") == "admin":
             raise dash.exceptions.PreventUpdate
 
         confirm_hidden = {"display": "none", "position": "fixed", "top": "0", "left": "0",
